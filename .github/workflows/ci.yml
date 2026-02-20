@@ -62,6 +62,16 @@ jobs:
 
           solana --version
 
+      - name: Install system deps (Anchor build)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libudev-dev \
+            libusb-1.0-0-dev \
+            clang \
+            make
+
       - name: Install Anchor CLI v0.32.1
         run: |
           cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
