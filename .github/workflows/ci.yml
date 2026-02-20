@@ -13,17 +13,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22.22.0
           cache: pnpm
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.29.3
-          run_install: true
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
 
       - name: pnpm -r test
         run: pnpm -r test
