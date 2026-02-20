@@ -58,9 +58,17 @@ jobs:
 
             # The SBF SDK is published as a separate artifact.
             curl -fsSLo sbf-sdk.tar.bz2 "$URL_SBF_SDK_TARBALL"
-            mkdir -p "$RUNNER_TEMP/sbf-sdk"
-            tar -xjf sbf-sdk.tar.bz2 -C "$RUNNER_TEMP/sbf-sdk"
-            echo "SBF_SDK_PATH=$RUNNER_TEMP/sbf-sdk" >> "$GITHUB_ENV"
+            tar -xjf sbf-sdk.tar.bz2 -C "$RUNNER_TEMP"
+
+            STRIP_SH=$(find "$RUNNER_TEMP" -maxdepth 6 -type f -path "*/scripts/strip.sh" -print -quit)
+            if [ -z "$STRIP_SH" ]; then
+              echo "Could not locate scripts/strip.sh in extracted sbf-sdk" >&2
+              find "$RUNNER_TEMP" -maxdepth 4 -type d -print
+              exit 1
+            fi
+            SDK_ROOT=$(dirname "$(dirname "$STRIP_SH")")
+            echo "SBF_SDK_PATH=$SDK_ROOT" >> "$GITHUB_ENV"
+            test -f "$SDK_ROOT/scripts/strip.sh"
           else
             sh -c "$(curl -sSfL $URL_FALLBACK_INSTALLER)"
             echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
