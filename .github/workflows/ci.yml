@@ -103,8 +103,20 @@ jobs:
 
       - name: anchor build
         run: |
-          anchor build
-          ls -la target/deploy || true
+          set -euo pipefail
+          echo "PATH=$PATH"
+          which solana
+          solana --version
+          which cargo-build-sbf
+          cargo build-sbf --version || true
+
+          anchor build --arch sbf
+
+          echo "=== search for receipt.so ==="
+          find target -maxdepth 5 -type f -name 'receipt.so' -print || true
+
+          echo "=== target/deploy listing ==="
+          ls -la target/deploy
           test -f target/deploy/receipt.so
 
       - name: anchor test
