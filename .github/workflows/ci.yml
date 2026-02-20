@@ -101,6 +101,12 @@ jobs:
           fi
           solana-keygen pubkey "$HOME/.config/solana/id.json"
 
+      - name: anchor build
+        run: |
+          anchor build
+          ls -la target/deploy || true
+          test -f target/deploy/receipt.so
+
       - name: anchor test
         run: anchor test
 
