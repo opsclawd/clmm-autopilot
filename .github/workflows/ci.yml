@@ -77,6 +77,14 @@ jobs:
           cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
           anchor --version
 
+      - name: Setup Solana keypair (CI)
+        run: |
+          mkdir -p "$HOME/.config/solana"
+          if [ ! -f "$HOME/.config/solana/id.json" ]; then
+            solana-keygen new --no-bip39-passphrase -s -o "$HOME/.config/solana/id.json"
+          fi
+          solana-keygen pubkey "$HOME/.config/solana/id.json"
+
       - name: anchor test
         run: anchor test
 
