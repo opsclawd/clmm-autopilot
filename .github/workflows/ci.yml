@@ -43,8 +43,21 @@ jobs:
 
       - name: Install Solana CLI (Agave) v2.3.0
         run: |
-          sh -c "$(curl -sSfL https://release.solana.com/v2.3.0/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          # Prefer GitHub-hosted release artifacts (more reliable than release.solana.com in CI).
+          URL_PRIMARY="https://github.com/solana-labs/solana/releases/download/v2.3.0/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
+          URL_FALLBACK_INSTALLER="https://release.solana.com/v2.3.0/install"
+
+          if curl -fsSLI "$URL_PRIMARY" >/dev/null; then
+            curl -fsSLo solana.tar.bz2 "$URL_PRIMARY"
+            tar -xjf solana.tar.bz2
+            echo "$RUNNER_TEMP/solana-release/bin" >> "$GITHUB_PATH"
+          else
+            sh -c "$(curl -sSfL $URL_FALLBACK_INSTALLER)"
+            echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          fi
+
           solana --version
 
       - name: Install Anchor CLI v0.32.1
