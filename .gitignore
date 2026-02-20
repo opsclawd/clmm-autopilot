@@ -2,8 +2,8 @@
 node_modules
 
 # next
-web/.next
-web/out
+apps/web/.next
+apps/web/out
 
 # env
 .env
@@ -23,6 +23,10 @@ pnpm-debug.log*
 **/target
 **/.anchor
 **/.solana
+
+# expo
+apps/mobile/.expo
+apps/mobile/dist
 
 # editor
 .vscode

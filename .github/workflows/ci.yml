@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+          cache: pnpm
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+          run_install: true
+
+      - name: pnpm -r test
+        run: pnpm -r test
+
+      - name: pnpm -r typecheck
+        run: pnpm -r typecheck
+
+      - name: pnpm -r lint
+        run: pnpm -r lint
+
+      - name: Setup Rust (for Anchor)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.1
+
+      - name: Install Solana CLI (Agave) v2.3.0
+        run: |
+          sh -c "$(curl -sSfL https://release.solana.com/v2.3.0/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+          solana --version
+
+      - name: Install Anchor CLI v0.32.1
+        run: |
+          cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
+          anchor --version
+
+      - name: anchor test
+        run: anchor test
+
+      - name: Mobile sanity build (Expo export)
+        run: pnpm -C apps/mobile export
