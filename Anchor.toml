@@ -1,0 +1,18 @@
+# Anchor workspace config
+# Pinned tooling versions (documented in README):
+# - Agave/Solana CLI: 2.3.0
+# - Anchor CLI/crates: 0.32.1
+
+[workspace]
+# Programs will live in ./programs (added in next phase)
+members = []
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+# (placeholder) anchor test hooks
+
+# NOTE: Anchor 0.32.x supports pinning via this field.
+anchor_version = "0.32.1"
