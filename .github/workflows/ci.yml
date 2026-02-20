@@ -53,9 +53,11 @@ jobs:
             curl -fsSLo solana.tar.bz2 "$URL_PRIMARY"
             tar -xjf solana.tar.bz2
             echo "$RUNNER_TEMP/solana-release/bin" >> "$GITHUB_PATH"
+            export PATH="$RUNNER_TEMP/solana-release/bin:$PATH"
           else
             sh -c "$(curl -sSfL $URL_FALLBACK_INSTALLER)"
             echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
           fi
 
           solana --version
