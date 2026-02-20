@@ -46,14 +46,21 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP"
           # Prefer GitHub-hosted release artifacts (more reliable than release.solana.com in CI).
-          URL_PRIMARY="https://github.com/anza-xyz/agave/releases/download/v2.3.0/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
+          URL_SOLANA_TARBALL="https://github.com/anza-xyz/agave/releases/download/v2.3.0/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
+          URL_SBF_SDK_TARBALL="https://github.com/anza-xyz/agave/releases/download/v2.3.0/sbf-sdk.tar.bz2"
           URL_FALLBACK_INSTALLER="https://release.solana.com/v2.3.0/install"
 
-          if curl -fsSLI "$URL_PRIMARY" >/dev/null; then
-            curl -fsSLo solana.tar.bz2 "$URL_PRIMARY"
+          if curl -fsSLI "$URL_SOLANA_TARBALL" >/dev/null; then
+            curl -fsSLo solana.tar.bz2 "$URL_SOLANA_TARBALL"
             tar -xjf solana.tar.bz2
             echo "$RUNNER_TEMP/solana-release/bin" >> "$GITHUB_PATH"
             export PATH="$RUNNER_TEMP/solana-release/bin:$PATH"
+
+            # The SBF SDK is published as a separate artifact.
+            curl -fsSLo sbf-sdk.tar.bz2 "$URL_SBF_SDK_TARBALL"
+            mkdir -p "$RUNNER_TEMP/sbf-sdk"
+            tar -xjf sbf-sdk.tar.bz2 -C "$RUNNER_TEMP/sbf-sdk"
+            echo "SBF_SDK_PATH=$RUNNER_TEMP/sbf-sdk" >> "$GITHUB_ENV"
           else
             sh -c "$(curl -sSfL $URL_FALLBACK_INSTALLER)"
             echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
@@ -61,6 +68,7 @@ jobs:
           fi
 
           solana --version
+          cargo-build-sbf --help >/dev/null
 
       - name: Install system deps (Anchor build)
         run: |
