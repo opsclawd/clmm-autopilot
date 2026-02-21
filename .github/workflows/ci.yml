@@ -77,6 +77,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-
+
       - name: Install Solana CLI (Agave) v2.3.0 + verify checksums
         run: |
           set -euo pipefail
@@ -125,9 +133,12 @@ jobs:
             libudev-dev \
             libusb-1.0-0-dev \
             clang \
-            make
+            make \
+            sccache
 
       - name: Install Anchor CLI v0.32.1 (cached when possible)
+        env:
+          RUSTC_WRAPPER: sccache
         run: |
           set -euo pipefail
           if command -v anchor >/dev/null 2>&1; then
@@ -138,6 +149,7 @@ jobs:
           fi
           cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
           anchor --version
+          sccache --show-stats || true
 
       - name: Setup Solana keypair (CI)
         run: |
