@@ -33,3 +33,26 @@ Build the unsigned “one-click execute” transaction that closes the position,
 ## Required deliverables
 
 - Builder code + config types:
+  - slippage bps cap
+  - fee buffer (lamports)
+  - max rebuild attempts
+  - quote freshness threshold (slot or time)
+- Integration tests:
+  - validates instruction ordering
+  - validates receipt ix appended
+  - validates that too-tight slippage aborts
+  - validates rebuild-on-stale-quote path (deterministic)
+- “simulate then send exact message” enforcement documented and implemented
+
+## Acceptance criteria (pass/fail)
+
+Pass only if:
+
+1. Builder produces a deterministic tx plan for a fixed snapshot+quote.
+2. Receipt ix is in the same tx.
+3. Simulation gate is mandatory and cannot be bypassed in UI path.
+4. Tight slippage produces safe abort, not retries into worse pricing.
+
+## Definition of Done
+
+- Unsigned tx builder with guardrails + tests ready for UI wiring.
