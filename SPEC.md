@@ -225,3 +225,71 @@ Definition of Done
 ### M4 — Orca Whirlpool position inspector (read-only)
 
 Goal: Reliably load a Whirlpool position and compute “in-range” vs “out-of-range” plus removal preview.
+
+Deliverables
+
+- `packages/solana` can fetch:
+  - position state, whirlpool state, ticks/tick arrays needed
+  - current tick + lower/upper ticks + tick spacing
+  - token mints + decimals
+  - removal preview / expected amounts (best-effort; no execution)
+- Integration tests against fixtures or local validator.
+
+Definition of Done
+
+- Snapshot function returns a stable typed object used by web/mobile shells.
+
+---
+
+### M5 — One-click execution builder: remove + collect + swap + receipt (unsigned)
+
+Goal: Build the exact transaction that a user signs: close position + convert exposure + write receipt, with strict guards.
+
+Deliverables
+
+- Unsigned transaction builder that:
+  - remove liquidity + collect fees
+  - swap remaining exposure into target side (downside SOL→USDC, upside USDC→SOL)
+  - appends `record_execution` ix in same transaction
+  - enforces simulation gate, slippage cap, fee buffer, compute budget
+  - limited retries only for fetch/quote refresh, not blind resend loops
+
+Definition of Done
+
+- Deterministic failure modes (tight slippage aborts, stale quote aborts).
+- Integration tests cover tx composition and guardrails.
+
+---
+
+### M6 — Shell UX: monitor + alert + execute (web + mobile) + notifications stub
+
+Goal: Expose the workflow to users: monitor, confirm trigger, execute with signature.
+
+Deliverables
+
+- Web dev console: connect wallet, input position, display state, execute button
+- Mobile UI: same flow, store-grade minimal UX
+- Notification stub (log + pluggable adapter), no background auto-exec
+
+Definition of Done
+
+- End-to-end devnet runbook: user can execute a triggered exit with receipt recorded.
+
+---
+
+### M7 — Reliability hardening (minimum viable)
+
+Goal: Survive fast markets and common RPC failure modes without unsafe behavior.
+
+Deliverables
+
+- blockhash refresh + rebuild-on-change logic
+- quote freshness rules + rebuild tx if price moved materially
+- idempotency checks via receipt before building tx
+- bounded retries + explicit failure states
+- operational telemetry hooks (structured logs)
+
+Definition of Done
+
+- Documented failure modes and deterministic safeguards.
+- No “auto widen slippage” behavior in Phase 1.
