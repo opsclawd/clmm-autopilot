@@ -115,12 +115,25 @@ jobs:
           # Patch Anchor.toml program IDs (CI-local only).
           sed -i -E "s/^(receipt\s*=\s*)\"[A-Za-z0-9]{32,44}\"/\1\"$PROGRAM_ID\"/" Anchor.toml
 
-      - name: anchor test
+      - name: anchor build + test (localnet)
         run: |
-          # Force localnet so Anchor builds + deploys locally and produces target/deploy artifacts.
-          anchor test --provider.cluster localnet
+          set -euo pipefail
+          echo "PATH=$PATH"
+          which solana
+          solana --version
+          which cargo-build-sbf
+          cargo-build-sbf --help >/dev/null
+
+          # Build first so we can assert the .so exists before deploy/test.
+          anchor build --provider.cluster localnet --arch sbf
+
+          echo "=== find receipt.so ==="
+          find target -maxdepth 6 -type f -name 'receipt.so' -print || true
           ls -la target/deploy || true
           test -f target/deploy/receipt.so
+
+          # Then run tests without rebuilding.
+          anchor test --provider.cluster localnet --skip-build
 
       - name: Mobile sanity build (Expo export)
         run: pnpm -C apps/mobile export
