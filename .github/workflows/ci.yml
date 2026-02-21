@@ -124,11 +124,16 @@ jobs:
           which cargo-build-sbf
           cargo-build-sbf --help >/dev/null
 
-          # Build first so we can assert the .so exists before deploy/test.
-          anchor build --provider.cluster localnet --arch sbf
+          echo "SBF_SDK_PATH=$SBF_SDK_PATH"
+          ls -la "$SBF_SDK_PATH" || true
+          ls -la "$SBF_SDK_PATH/scripts" || true
+
+          # Build SBF artifact explicitly (do not rely on Anchor's implicit build).
+          mkdir -p target/deploy
+          cargo build-sbf --manifest-path programs/receipt/Cargo.toml --sbf-out-dir target/deploy -- --release
 
           echo "=== find receipt.so ==="
-          find target -maxdepth 6 -type f -name 'receipt.so' -print || true
+          find target -maxdepth 8 -type f -name 'receipt.so' -print || true
           ls -la target/deploy || true
           test -f target/deploy/receipt.so
 
