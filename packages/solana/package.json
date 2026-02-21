@@ -1,0 +1,15 @@
+{
+  "name": "@clmm-autopilot/solana",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "echo \"(solana) no tests yet\"",
+    "lint": "echo \"(solana) lint handled at repo root\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

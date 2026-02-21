@@ -27,7 +27,7 @@ Execution must enforce:
 
 ## Tech stack
 
-- App: **Next.js (latest)** (see `./web`)
+- App: **Next.js (latest)** (see `./apps/web`)
 - On-chain: Anchor receipt program (to be added)
 
 ## Tooling (pinned — do not float)
@@ -62,7 +62,7 @@ anchor test
 
 ## Repo layout
 
-- `web/` — Next.js app scaffold
+- `apps/web/` — Next.js app scaffold
 - `Anchor.toml` — Anchor workspace config (pinned version)
 - `.solana-version` — Solana/Agave version pin
 - `rust-toolchain.toml` — Rust toolchain pin

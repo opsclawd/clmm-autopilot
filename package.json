@@ -7,12 +7,14 @@
     "node": "22.22.0"
   },
   "workspaces": [
-    "web"
+    "apps/*",
+    "packages/*"
   ],
   "scripts": {
-    "dev": "pnpm -C web dev",
-    "build": "pnpm -C web build",
-    "lint": "pnpm -C web lint",
-    "typecheck": "pnpm -C web typecheck || true"
+    "dev": "pnpm -C apps/web dev",
+    "build": "pnpm -C apps/web build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
   }
 }

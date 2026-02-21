@@ -4,15 +4,22 @@
 # - Anchor CLI/crates: 0.32.1
 
 [workspace]
-# Programs will live in ./programs (added in next phase)
-members = []
+members = [
+  "programs/receipt",
+]
 
 [provider]
-cluster = "devnet"
+# Default to localnet for deterministic builds/tests.
+# App runtime will explicitly target devnet/mainnet via config.
+cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
-[scripts]
-# (placeholder) anchor test hooks
+[programs.localnet]
+receipt = "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm"
 
-# NOTE: Anchor 0.32.x supports pinning via this field.
+[programs.devnet]
+receipt = "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm"
+
+[toolchain]
 anchor_version = "0.32.1"
+solana_version = "2.3.0"
