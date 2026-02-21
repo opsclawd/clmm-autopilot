@@ -35,6 +35,12 @@ jobs:
           pnpm config set store-dir ~/.pnpm-store
           mkdir -p ~/.pnpm-store
 
+      - name: Assert toolchain versions
+        run: |
+          set -euo pipefail
+          node -v | grep -q "^v22\.22\.0$"
+          pnpm -v | grep -q "^10\.29\.3$"
+
       - name: Cache pnpm store
         uses: actions/cache@v4
         with:
@@ -84,9 +90,10 @@ jobs:
 
           curl -fsSLo solana.tar.bz2 "$URL_SOLANA_TARBALL"
           echo "$SOLANA_SHA256  solana.tar.bz2" | sha256sum -c -
-          tar -xjf solana.tar.bz2
+          mkdir -p "$RUNNER_TEMP/agave"
+          tar -xjf solana.tar.bz2 -C "$RUNNER_TEMP/agave"
 
-          SOLANA_DIR=$(find "$RUNNER_TEMP" -maxdepth 2 -type d -name "solana-release*" -print -quit)
+          SOLANA_DIR=$(find "$RUNNER_TEMP/agave" -maxdepth 2 -type d -name "solana-release*" -print -quit)
           if [ -z "$SOLANA_DIR" ]; then
             echo "Could not locate extracted solana-release directory" >&2
             exit 1
@@ -119,8 +126,15 @@ jobs:
             clang \
             make
 
-      - name: Install Anchor CLI v0.32.1
+      - name: Install Anchor CLI v0.32.1 (cached when possible)
         run: |
+          set -euo pipefail
+          if command -v anchor >/dev/null 2>&1; then
+            if anchor --version | grep -q "anchor-cli 0.32.1"; then
+              echo "anchor-cli 0.32.1 already present"
+              exit 0
+            fi
+          fi
           cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
           anchor --version
 
@@ -138,7 +152,7 @@ jobs:
           cp keys/localnet/receipt-keypair.json target/deploy/receipt-keypair.json
           PROGRAM_ID=$(solana-keygen pubkey target/deploy/receipt-keypair.json)
           grep -q "declare_id!(\"$PROGRAM_ID\")" programs/receipt/src/lib.rs
-          grep -q "receipt = \"$PROGRAM_ID\"" Anchor.toml
+          grep -Eq "^[[:space:]]*receipt[[:space:]]*=[[:space:]]*\"$PROGRAM_ID\"[[:space:]]*$" Anchor.toml
 
       - name: anchor build + test (localnet)
         run: |
