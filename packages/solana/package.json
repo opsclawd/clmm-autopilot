@@ -5,11 +5,16 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "test": "echo \"(solana) no tests yet\"",
+    "test": "vitest run",
     "lint": "echo \"(solana) lint handled at repo root\"",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "@types/node": "^20.19.33",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4"
   }
 }
