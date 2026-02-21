@@ -5,9 +5,16 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
@@ -22,7 +29,25 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22.22.0
-          cache: pnpm
+
+      - name: Configure pnpm store path
+        run: |
+          pnpm config set store-dir ~/.pnpm-store
+          mkdir -p ~/.pnpm-store
+
+      - name: Assert toolchain versions
+        run: |
+          set -euo pipefail
+          node -v | grep -q "^v22\.22\.0$"
+          pnpm -v | grep -q "^10\.29\.3$"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.pnpm-store
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
 
       - name: Install deps
         run: pnpm install --frozen-lockfile
@@ -41,42 +66,64 @@ jobs:
         with:
           toolchain: 1.93.1
 
-      - name: Install Solana CLI (Agave) v2.3.0
+      - name: Cache Rust crates + binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-
+
+      - name: Install Solana CLI (Agave) v2.3.0 + verify checksums
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          # Prefer GitHub-hosted release artifacts (more reliable than release.solana.com in CI).
+
           URL_SOLANA_TARBALL="https://github.com/anza-xyz/agave/releases/download/v2.3.0/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
           URL_SBF_SDK_TARBALL="https://github.com/anza-xyz/agave/releases/download/v2.3.0/sbf-sdk.tar.bz2"
-          URL_FALLBACK_INSTALLER="https://release.solana.com/v2.3.0/install"
 
-          if curl -fsSLI "$URL_SOLANA_TARBALL" >/dev/null; then
-            curl -fsSLo solana.tar.bz2 "$URL_SOLANA_TARBALL"
-            tar -xjf solana.tar.bz2
-            echo "$RUNNER_TEMP/solana-release/bin" >> "$GITHUB_PATH"
-            export PATH="$RUNNER_TEMP/solana-release/bin:$PATH"
+          SOLANA_SHA256="56241fbe862495ff01b2b875195e44f94c22e9f2a504591a3ade1b9d82862730"
+          SBF_SHA256="38f062a39ffaa554c6f2874ce4584461107fbf9b5b4003109759840706c5106d"
 
-            # The SBF SDK is published as a separate artifact.
-            curl -fsSLo sbf-sdk.tar.bz2 "$URL_SBF_SDK_TARBALL"
-            tar -xjf sbf-sdk.tar.bz2 -C "$RUNNER_TEMP"
+          curl -fsSLo solana.tar.bz2 "$URL_SOLANA_TARBALL"
+          echo "$SOLANA_SHA256  solana.tar.bz2" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/agave"
+          tar -xjf solana.tar.bz2 -C "$RUNNER_TEMP/agave"
 
-            STRIP_SH=$(find "$RUNNER_TEMP" -maxdepth 6 -type f -path "*/scripts/strip.sh" -print -quit)
-            if [ -z "$STRIP_SH" ]; then
-              echo "Could not locate scripts/strip.sh in extracted sbf-sdk" >&2
-              find "$RUNNER_TEMP" -maxdepth 4 -type d -print
-              exit 1
-            fi
-            SDK_ROOT=$(dirname "$(dirname "$STRIP_SH")")
-            echo "SBF_SDK_PATH=$SDK_ROOT" >> "$GITHUB_ENV"
-            test -f "$SDK_ROOT/scripts/strip.sh"
-          else
-            sh -c "$(curl -sSfL $URL_FALLBACK_INSTALLER)"
-            echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
-            export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          SOLANA_DIR=$(find "$RUNNER_TEMP/agave" -maxdepth 2 -type d -name "solana-release*" -print -quit)
+          if [ -z "$SOLANA_DIR" ]; then
+            echo "Could not locate extracted solana-release directory" >&2
+            exit 1
           fi
+          echo "$SOLANA_DIR/bin" >> "$GITHUB_PATH"
+          export PATH="$SOLANA_DIR/bin:$PATH"
+
+          curl -fsSLo sbf-sdk.tar.bz2 "$URL_SBF_SDK_TARBALL"
+          echo "$SBF_SHA256  sbf-sdk.tar.bz2" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/sbf"
+          tar -xjf sbf-sdk.tar.bz2 -C "$RUNNER_TEMP/sbf"
+
+          STRIP_SH=$(find "$RUNNER_TEMP/sbf" -maxdepth 6 -type f -path "*/scripts/strip.sh" -print -quit)
+          if [ -z "$STRIP_SH" ]; then
+            echo "Could not locate scripts/strip.sh in extracted sbf-sdk" >&2
+            exit 1
+          fi
+          SDK_ROOT=$(dirname "$(dirname "$STRIP_SH")")
+          echo "SBF_SDK_PATH=$SDK_ROOT" >> "$GITHUB_ENV"
 
           solana --version
-          cargo-build-sbf --help >/dev/null
+          cargo build-sbf --help >/dev/null
 
       - name: Install system deps (Anchor build)
         run: |
@@ -86,59 +133,57 @@ jobs:
             libudev-dev \
             libusb-1.0-0-dev \
             clang \
-            make
+            make \
+            sccache
 
-      - name: Install Anchor CLI v0.32.1
+      - name: Install Anchor CLI v0.32.1 (cached when possible)
+        env:
+          RUSTC_WRAPPER: sccache
         run: |
+          set -euo pipefail
+          if command -v anchor >/dev/null 2>&1; then
+            if anchor --version | grep -q "anchor-cli 0.32.1"; then
+              echo "anchor-cli 0.32.1 already present"
+              exit 0
+            fi
+          fi
           cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli --locked
           anchor --version
+          sccache --show-stats || true
 
       - name: Setup Solana keypair (CI)
         run: |
+          set -euo pipefail
           mkdir -p "$HOME/.config/solana"
-          if [ ! -f "$HOME/.config/solana/id.json" ]; then
-            solana-keygen new --no-bip39-passphrase -s -o "$HOME/.config/solana/id.json"
-          fi
+          solana-keygen new --no-bip39-passphrase -s -o "$HOME/.config/solana/id.json"
           solana-keygen pubkey "$HOME/.config/solana/id.json"
 
-      - name: Generate program keypair (CI) + patch IDs
+      - name: Use deterministic program keypair + verify IDs (fail-fast)
         run: |
           set -euo pipefail
           mkdir -p target/deploy
-          solana-keygen new --no-bip39-passphrase -s -o target/deploy/receipt-keypair.json
+          cp keys/localnet/receipt-keypair.json target/deploy/receipt-keypair.json
           PROGRAM_ID=$(solana-keygen pubkey target/deploy/receipt-keypair.json)
-          echo "PROGRAM_ID=$PROGRAM_ID"
-
-          # Patch program declare_id! to match the generated keypair (CI-local only).
-          sed -i -E "s/^declare_id!\(\"[A-Za-z0-9]{32,44}\"\);/declare_id!(\"$PROGRAM_ID\");/" programs/receipt/src/lib.rs
-
-          # Patch Anchor.toml program IDs (CI-local only).
-          sed -i -E "s/^(receipt\s*=\s*)\"[A-Za-z0-9]{32,44}\"/\1\"$PROGRAM_ID\"/" Anchor.toml
+          grep -q "declare_id!(\"$PROGRAM_ID\")" programs/receipt/src/lib.rs
+          grep -Eq "^[[:space:]]*receipt[[:space:]]*=[[:space:]]*\"$PROGRAM_ID\"[[:space:]]*$" Anchor.toml
 
       - name: anchor build + test (localnet)
+        env:
+          RUSTC_WRAPPER: sccache
         run: |
           set -euo pipefail
-          echo "PATH=$PATH"
-          which solana
-          solana --version
-          which cargo-build-sbf
-          cargo-build-sbf --help >/dev/null
 
           echo "SBF_SDK_PATH=$SBF_SDK_PATH"
-          ls -la "$SBF_SDK_PATH" || true
-          ls -la "$SBF_SDK_PATH/scripts" || true
+          test -d "$SBF_SDK_PATH"
 
-          # Build SBF artifact explicitly (do not rely on Anchor's implicit build).
           mkdir -p target/deploy
           cargo build-sbf --manifest-path programs/receipt/Cargo.toml --sbf-out-dir target/deploy
+          sccache --show-stats || true
 
-          echo "=== find receipt.so ==="
-          find target -maxdepth 8 -type f -name 'receipt.so' -print || true
-          ls -la target/deploy || true
           test -f target/deploy/receipt.so
-
-          # Then run tests without rebuilding.
           anchor test --provider.cluster localnet --skip-build
 
-      - name: Mobile sanity build (Expo export)
-        run: pnpm --filter @clmm-autopilot/mobile exec expo export --platform web
+      - name: Mobile sanity build (Expo prebuild android)
+        run: |
+          cd apps/mobile
+          pnpm exec expo prebuild --platform android --no-install --non-interactive
