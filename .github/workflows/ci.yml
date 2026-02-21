@@ -141,4 +141,4 @@ jobs:
           anchor test --provider.cluster localnet --skip-build
 
       - name: Mobile sanity build (Expo export)
-        run: pnpm -C apps/mobile export
+        run: pnpm --filter @clmm-autopilot/mobile exec expo export --platform web
