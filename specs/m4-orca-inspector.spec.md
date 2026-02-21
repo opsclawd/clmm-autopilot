@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build a read-only position inspector for Orca Whirlpools that returns a stable snapshot used by policy + UI.
+Build a read-only position inspector for Orca Whirlpools that returns a stable snapshot used by policy + transaction builder.
 
 ## Scope
 
@@ -10,14 +10,18 @@ Build a read-only position inspector for Orca Whirlpools that returns a stable s
 
 - `packages/solana` implements:
   - `loadPositionSnapshot(connection, positionPubkey) -> Snapshot`
+- Position identifier contract:
+  - `positionPubkey` is the Orca **position account address** (not the NFT mint)
 - Snapshot includes:
   - whirlpool address
+  - position account address
   - current tick index
   - lower/upper ticks
   - tick spacing
   - liquidity
   - token mints + decimals
-  - best-effort “remove preview” amounts (if available via SDK quote)
+  - all addresses required by M5 builder (whirlpool, position, token vaults, tick arrays, token programs)
+  - best-effort remove preview: if SDK quote succeeds, return preview; else return `null` + reasonCode
 
 ### Out of scope
 
@@ -28,6 +32,8 @@ Build a read-only position inspector for Orca Whirlpools that returns a stable s
 ## Constraints
 
 - Must fetch tick arrays required to interpret the position.
+- Tick-array lookup must be deterministic using Orca PDA derivation / canonical SDK derivation helpers (no ad-hoc guessing).
+- Tick-array account fetches may be cached in-memory by account pubkey + slot, with explicit invalidation on slot change.
 - Must fail safely:
   - return typed error codes from canonical taxonomy in `SPEC.md`; never throw raw SDK errors upward unhandled
 - Must not use float UI price for “in-range” logic; tick-only.
@@ -38,7 +44,6 @@ Build a read-only position inspector for Orca Whirlpools that returns a stable s
 - Integration tests:
   - fixture-based tests (preferred) OR local validator with seeded accounts
   - validates that snapshot fields are populated and stable
-- `apps/web` and `apps/mobile` can display snapshot fields (minimal)
 
 ## Acceptance criteria (pass/fail)
 
@@ -46,7 +51,8 @@ Pass only if:
 
 1. Snapshot function works against at least one real devnet position OR a deterministic fixture.
 2. `inRange` computed by tick-only comparisons.
-3. Errors are normalized and reason-coded.
+3. Snapshot includes all addresses required by M5 tx composition.
+4. Errors are normalized and reason-coded.
 
 ## Definition of Done
 

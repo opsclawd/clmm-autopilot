@@ -9,14 +9,17 @@ Harden execution reliability in fast markets and common RPC failure modes withou
 ### In scope
 
 - Quote freshness and rebuild logic:
-  - if tick/price moved beyond threshold since quote, rebuild tx
+  - quote freshness threshold: 20s (or 8 slots, whichever is stricter)
+  - if quote older than threshold, rebuild tx
+  - rebuild threshold for movement: crossed bound OR moved by `>= tickSpacing * 1` since quote snapshot
 - Blockhash management:
   - refresh on user delay; rebuild message before send if needed
+  - if user delay exceeds quote freshness threshold, force full rebuild before allowing sign
 - Idempotency checks:
   - check for existing receipt before building tx (using canonical epoch definition from `SPEC.md`)
 - Bounded retries:
-  - RPC fetch retry (bounded, backoff)
-  - quote retry (bounded)
+  - RPC fetch retry (max 3 attempts; backoff 250ms, 750ms, 2000ms)
+  - quote retry (max 3 attempts; same backoff)
   - no infinite resend; no adaptive slippage widening
 - Observability:
   - structured logs with reason codes

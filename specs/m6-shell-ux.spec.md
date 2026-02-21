@@ -31,6 +31,10 @@ Ship the user flow on both web and mobile: monitor position, confirm trigger rea
 
 - Shared UI state model (typed) that consumes snapshot + policy decision
 - UI error mapping uses canonical taxonomy from `SPEC.md`
+- UI must display:
+  - current tick, lower/upper ticks
+  - decision + debounce progress + cooldown remaining
+  - slippage cap, expected minOut, quote age
 - “Execute” path:
   - fetch snapshot
   - compute decision
@@ -47,8 +51,9 @@ Ship the user flow on both web and mobile: monitor position, confirm trigger rea
 Pass only if:
 
 1. End-to-end devnet runbook succeeds on both web and mobile.
-2. UI blocks execution if decision is `HOLD` unless user explicitly forces (force requires extra confirmation UI step).
+2. UI hard-blocks execution when decision is `HOLD` (no force path in Phase 1).
 3. Receipt is observable post-tx (fetch and display receipt fields).
+4. UI exposes copy actions for receipt PDA and tx signature.
 
 ## Definition of Done
 
