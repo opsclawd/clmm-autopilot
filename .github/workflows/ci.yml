@@ -29,10 +29,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22.22.0
-          cache: pnpm
 
       - name: Configure pnpm store path
-        run: pnpm config set store-dir ~/.pnpm-store
+        run: |
+          pnpm config set store-dir ~/.pnpm-store
+          mkdir -p ~/.pnpm-store
 
       - name: Cache pnpm store
         uses: actions/cache@v4
