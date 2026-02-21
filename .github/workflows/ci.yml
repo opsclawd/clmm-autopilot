@@ -168,6 +168,8 @@ jobs:
           grep -Eq "^[[:space:]]*receipt[[:space:]]*=[[:space:]]*\"$PROGRAM_ID\"[[:space:]]*$" Anchor.toml
 
       - name: anchor build + test (localnet)
+        env:
+          RUSTC_WRAPPER: sccache
         run: |
           set -euo pipefail
 
@@ -176,6 +178,7 @@ jobs:
 
           mkdir -p target/deploy
           cargo build-sbf --manifest-path programs/receipt/Cargo.toml --sbf-out-dir target/deploy
+          sccache --show-stats || true
 
           test -f target/deploy/receipt.so
           anchor test --provider.cluster localnet --skip-build
