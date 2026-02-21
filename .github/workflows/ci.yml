@@ -117,7 +117,8 @@ jobs:
 
       - name: anchor test
         run: |
-          anchor test
+          # Force localnet so Anchor builds + deploys locally and produces target/deploy artifacts.
+          anchor test --provider.cluster localnet
           ls -la target/deploy || true
           test -f target/deploy/receipt.so
 
