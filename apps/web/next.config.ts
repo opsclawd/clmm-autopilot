@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  transpilePackages: ["@clmm-autopilot/core", "@clmm-autopilot/solana"],
 };
 
 export default nextConfig;
