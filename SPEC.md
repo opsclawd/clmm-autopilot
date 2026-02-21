@@ -2,6 +2,8 @@
 
 This document is **LOCKED for Phase 1 scope**. Any change requires updating this spec + CI gates/tests in the same PR.
 
+Repository architecture boundaries are defined in `docs/architecture.md` and are normative.
+
 ## Product definition
 
 A Solana CLMM “Stop-Loss Autopilot” MVP that protects a SOL/USDC Orca Whirlpools concentrated liquidity position with a **bidirectional out-of-range exit policy**.
@@ -81,6 +83,19 @@ Reset:
 
 This policy is intended to debounce wick moves and is the baseline for Phase 1.
 
+### Sampling source definition (authoritative)
+
+Signal used for debounce and range-break detection: Whirlpool current tick from on-chain pool state.
+
+- The system reads the Whirlpool pool account and derives `currentTickIndex` (tick index).
+- Range comparison is performed strictly in tick space:
+  - `below` means `currentTickIndex < lowerTickIndex`
+  - `above` means `currentTickIndex > upperTickIndex`
+  - `inRange` means `lowerTickIndex <= currentTickIndex <= upperTickIndex`
+- The debounce sampler records a time-series of `(slot, unixTs, currentTickIndex)` samples at the configured interval.
+- Price floats (e.g., UI price) are not used for trigger decisions.
+- If `currentTickIndex` cannot be fetched or decoded reliably, the policy returns `HOLD` and surfaces a `DATA_UNAVAILABLE` reason (no trigger on missing data).
+
 ## Slippage + safety (LOCKED)
 
 ### Hard caps
@@ -114,58 +129,180 @@ Before prompting the user to sign:
 - **Send retries:** constrained, max **1** retry only if the failure is clearly transient (e.g., blockhash not found).
 - **Never loop on failure.** If the send fails after the retry policy, stop and notify.
 
-## Milestones (M0–M6)
+## Milestones
 
-Each milestone has a Definition of Done (DoD) that must be met before starting the next milestone.
+### M0 — Repo scaffold + deterministic gates (DONE)
 
-### M0 — Repo + spec + gates (this PR)
+Goal: Establish a reproducible monorepo with web + mobile shells, shared packages, Anchor workspace, and CI gates that prevent drift.
 
-DoD:
+Deliverables
 
-- `SPEC.md`, `AGENT.md`, `docs/architecture.md` exist and match this scope
-- CI gates exist and run on PRs
+- Monorepo layout exists:
+  - `apps/web` (Next.js)
+  - `apps/mobile` (Expo RN)
+  - `packages/core` (pure TS, no Solana deps)
+  - `packages/solana` (Solana integration package; may be stubbed)
+  - `programs/receipt` (Anchor program scaffold)
+  - `docs/architecture.md`, `AGENT.md`, `SPEC.md`
+- Toolchain pinned in-repo (Node, pnpm, Solana/Agave, Anchor, Rust toolchain)
+- Root scripts exist for lint/typecheck/test (even if tests are initially minimal)
+- CI runs (and passes):
+  - install with pinned pnpm
+  - lint + typecheck + test
+  - install Solana CLI + Anchor
+  - build SBF and run anchor test
+  - mobile sanity step (Expo prebuild/export equivalent) without secrets
 
-### M1 — Monorepo foundations
+Definition of Done
 
-DoD:
+- Fresh clone passes:
+  - `pnpm i --frozen-lockfile`
+  - `pnpm -r lint`
+  - `pnpm -r typecheck`
+  - `pnpm -r test`
+  - `anchor test`
+  - mobile sanity build step
+- CI passes with the above gates.
 
-- `packages/core`, `packages/solana`, `apps/web`, `apps/mobile` boundaries in place
-- `pnpm -r test`, `pnpm -r lint`, `pnpm -r typecheck` pass locally
+---
 
-### M2 — Receipt program skeleton
+### M1 — Foundations: boundaries enforced + real test harness + mobile wallet signing smoke test
 
-DoD:
+Goal: Turn scaffolding into a stable base where shared logic is testable, platform boundaries are enforced, and mobile signing works.
 
-- Anchor program builds and `anchor test` passes
-- Receipt account + PDA derivation defined
-- Invariant: one receipt per (position_mint, authority, epoch) enforced by program tests
+Deliverables
 
-### M3 — Transaction builder (dry-run)
+- `packages/core`
+  - real unit test harness (Vitest/Jest) with at least one meaningful test suite
+  - zero Solana SDK imports enforced (lint rule / dependency rule / CI check)
+- `packages/solana`
+  - RPC client wrapper + typed config + “build unsigned tx” placeholder API (no Orca logic yet)
+  - integration test harness wired (can use local validator or mocked RPC fixtures)
+- `apps/mobile`
+  - Mobile Wallet Adapter (MWA) integrated
+  - “sign message” or “sign & send a noop tx” smoke path on devnet/test validator
+- `apps/web`
+  - wallet connect + minimal dev console page that can call shared packages
 
-DoD:
+Definition of Done
 
-- `packages/solana` builds the **single atomic transaction** (remove+collect+swap+receipt)
-- Simulation-first flow implemented
-- Unit tests for instruction assembly and parameter validation
+- `packages/core` contains non-trivial unit tests and they run in CI.
+- A boundary gate exists that fails CI if `packages/core` imports Solana SDKs.
+- Mobile app can sign via MWA in a reproducible dev flow (documented runbook).
+- No Orca/Whirlpool integration yet.
 
-### M4 — Monitoring + debounce
+---
 
-DoD:
+### M2 — Receipt program implementation (Anchor) + invariant tests
 
-- Monitoring loop with the Debounce Policy implemented
-- Deterministic tests for debounce triggers and cooldown behavior
+Goal: Implement the minimal on-chain execution receipt to prevent duplicate execution per epoch and provide auditability.
 
-### M5 — Web UI (Phase 1)
+Deliverables
 
-DoD:
+- Anchor program `receipt` implements:
+  - `record_execution(epoch, direction, position_mint, tx_sig_hash)`
+  - PDA keyed by `(position_mint, authority, epoch)`
+  - stored fields: authority, position_mint, epoch, direction, tx_sig_hash, timestamp/slot
+- Anchor tests:
+  - first call creates receipt
+  - second call same `(position_mint, authority, epoch)` fails deterministically
+  - different epoch succeeds
+  - invalid authority rejected
+- TS client helpers generated and usable from `packages/solana`
 
-- Position selection + alerting
-- One-click execution that prompts user signature
-- Notifications on success/failure
+Definition of Done
 
-### M6 — Mobile UI (Phase 1)
+- `anchor test` proves invariants (no “happy path only”).
+- Receipt ix can be composed into a transaction by the TS layer.
 
-DoD:
+---
 
-- Same functional surface as Web (alerts + one-click execution)
-- Expo app can be built/exported in CI sanity step
+### M3 — Policy engine (pure TS): range state machine + debounce + cooldown
+
+Goal: Build the stop-loss trigger decision logic in `packages/core` with exhaustive unit tests.
+
+Deliverables
+
+- State machine outputs: `HOLD | TRIGGER_DOWN | TRIGGER_UP`
+- Debounce rules implemented exactly as specified (sampling source defined below)
+- Cooldown + reentry handling
+- Unit tests cover wick reentry, sustained break, cooldown behavior
+
+Definition of Done
+
+- All policy behavior is deterministic and fully covered by tests.
+- No RPC or SDK usage in `packages/core`.
+
+---
+
+### M4 — Orca Whirlpool position inspector (read-only)
+
+Goal: Reliably load a Whirlpool position and compute “in-range” vs “out-of-range” plus removal preview.
+
+Deliverables
+
+- `packages/solana` can fetch:
+  - position state, whirlpool state, ticks/tick arrays needed
+  - current tick + lower/upper ticks + tick spacing
+  - token mints + decimals
+  - removal preview / expected amounts (best-effort; no execution)
+- Integration tests against fixtures or local validator.
+
+Definition of Done
+
+- Snapshot function returns a stable typed object used by web/mobile shells.
+
+---
+
+### M5 — One-click execution builder: remove + collect + swap + receipt (unsigned)
+
+Goal: Build the exact transaction that a user signs: close position + convert exposure + write receipt, with strict guards.
+
+Deliverables
+
+- Unsigned transaction builder that:
+  - remove liquidity + collect fees
+  - swap remaining exposure into target side (downside SOL→USDC, upside USDC→SOL)
+  - appends `record_execution` ix in same transaction
+  - enforces simulation gate, slippage cap, fee buffer, compute budget
+  - limited retries only for fetch/quote refresh, not blind resend loops
+
+Definition of Done
+
+- Deterministic failure modes (tight slippage aborts, stale quote aborts).
+- Integration tests cover tx composition and guardrails.
+
+---
+
+### M6 — Shell UX: monitor + alert + execute (web + mobile) + notifications stub
+
+Goal: Expose the workflow to users: monitor, confirm trigger, execute with signature.
+
+Deliverables
+
+- Web dev console: connect wallet, input position, display state, execute button
+- Mobile UI: same flow, store-grade minimal UX
+- Notification stub (log + pluggable adapter), no background auto-exec
+
+Definition of Done
+
+- End-to-end devnet runbook: user can execute a triggered exit with receipt recorded.
+
+---
+
+### M7 — Reliability hardening (minimum viable)
+
+Goal: Survive fast markets and common RPC failure modes without unsafe behavior.
+
+Deliverables
+
+- blockhash refresh + rebuild-on-change logic
+- quote freshness rules + rebuild tx if price moved materially
+- idempotency checks via receipt before building tx
+- bounded retries + explicit failure states
+- operational telemetry hooks (structured logs)
+
+Definition of Done
+
+- Documented failure modes and deterministic safeguards.
+- No “auto widen slippage” behavior in Phase 1.
