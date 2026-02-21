@@ -126,20 +126,16 @@ jobs:
 
       - name: Setup Solana keypair (CI)
         run: |
+          set -euo pipefail
           mkdir -p "$HOME/.config/solana"
-          if [ ! -f "$HOME/.config/solana/id.json" ]; then
-            solana-keygen new --no-bip39-passphrase -s -o "$HOME/.config/solana/id.json"
-          fi
+          solana-keygen new --no-bip39-passphrase -s -o "$HOME/.config/solana/id.json"
           solana-keygen pubkey "$HOME/.config/solana/id.json"
 
-      - name: Prepare deterministic program keypair
-        run: |
-          mkdir -p target/deploy
-          cp keys/localnet/receipt-keypair.json target/deploy/receipt-keypair.json
-
-      - name: Verify program ID consistency (fail-fast)
+      - name: Use deterministic program keypair + verify IDs (fail-fast)
         run: |
           set -euo pipefail
+          mkdir -p target/deploy
+          cp keys/localnet/receipt-keypair.json target/deploy/receipt-keypair.json
           PROGRAM_ID=$(solana-keygen pubkey target/deploy/receipt-keypair.json)
           grep -q "declare_id!(\"$PROGRAM_ID\")" programs/receipt/src/lib.rs
           grep -q "receipt = \"$PROGRAM_ID\"" Anchor.toml
