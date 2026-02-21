@@ -2,6 +2,8 @@
 
 This document is **LOCKED for Phase 1 scope**. Any change requires updating this spec + CI gates/tests in the same PR.
 
+Repository architecture boundaries are defined in `docs/architecture.md` and are normative.
+
 ## Product definition
 
 A Solana CLMM “Stop-Loss Autopilot” MVP that protects a SOL/USDC Orca Whirlpools concentrated liquidity position with a **bidirectional out-of-range exit policy**.
