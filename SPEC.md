@@ -116,58 +116,112 @@ Before prompting the user to sign:
 - **Send retries:** constrained, max **1** retry only if the failure is clearly transient (e.g., blockhash not found).
 - **Never loop on failure.** If the send fails after the retry policy, stop and notify.
 
-## Milestones (M0–M6)
+## Milestones
 
-Each milestone has a Definition of Done (DoD) that must be met before starting the next milestone.
+### M0 — Repo scaffold + deterministic gates (DONE)
 
-### M0 — Repo + spec + gates (this PR)
+Goal: Establish a reproducible monorepo with web + mobile shells, shared packages, Anchor workspace, and CI gates that prevent drift.
 
-DoD:
+Deliverables
 
-- `SPEC.md`, `AGENT.md`, `docs/architecture.md` exist and match this scope
-- CI gates exist and run on PRs
+- Monorepo layout exists:
+  - `apps/web` (Next.js)
+  - `apps/mobile` (Expo RN)
+  - `packages/core` (pure TS, no Solana deps)
+  - `packages/solana` (Solana integration package; may be stubbed)
+  - `programs/receipt` (Anchor program scaffold)
+  - `docs/architecture.md`, `AGENT.md`, `SPEC.md`
+- Toolchain pinned in-repo (Node, pnpm, Solana/Agave, Anchor, Rust toolchain)
+- Root scripts exist for lint/typecheck/test (even if tests are initially minimal)
+- CI runs (and passes):
+  - install with pinned pnpm
+  - lint + typecheck + test
+  - install Solana CLI + Anchor
+  - build SBF and run anchor test
+  - mobile sanity step (Expo prebuild/export equivalent) without secrets
 
-### M1 — Monorepo foundations
+Definition of Done
 
-DoD:
+- Fresh clone passes:
+  - `pnpm i --frozen-lockfile`
+  - `pnpm -r lint`
+  - `pnpm -r typecheck`
+  - `pnpm -r test`
+  - `anchor test`
+  - mobile sanity build step
+- CI passes with the above gates.
 
-- `packages/core`, `packages/solana`, `apps/web`, `apps/mobile` boundaries in place
-- `pnpm -r test`, `pnpm -r lint`, `pnpm -r typecheck` pass locally
+---
 
-### M2 — Receipt program skeleton
+### M1 — Foundations: boundaries enforced + real test harness + mobile wallet signing smoke test
 
-DoD:
+Goal: Turn scaffolding into a stable base where shared logic is testable, platform boundaries are enforced, and mobile signing works.
 
-- Anchor program builds and `anchor test` passes
-- Receipt account + PDA derivation defined
-- Invariant: one receipt per (position_mint, authority, epoch) enforced by program tests
+Deliverables
 
-### M3 — Transaction builder (dry-run)
+- `packages/core`
+  - real unit test harness (Vitest/Jest) with at least one meaningful test suite
+  - zero Solana SDK imports enforced (lint rule / dependency rule / CI check)
+- `packages/solana`
+  - RPC client wrapper + typed config + “build unsigned tx” placeholder API (no Orca logic yet)
+  - integration test harness wired (can use local validator or mocked RPC fixtures)
+- `apps/mobile`
+  - Mobile Wallet Adapter (MWA) integrated
+  - “sign message” or “sign & send a noop tx” smoke path on devnet/test validator
+- `apps/web`
+  - wallet connect + minimal dev console page that can call shared packages
 
-DoD:
+Definition of Done
 
-- `packages/solana` builds the **single atomic transaction** (remove+collect+swap+receipt)
-- Simulation-first flow implemented
-- Unit tests for instruction assembly and parameter validation
+- `packages/core` contains non-trivial unit tests and they run in CI.
+- A boundary gate exists that fails CI if `packages/core` imports Solana SDKs.
+- Mobile app can sign via MWA in a reproducible dev flow (documented runbook).
+- No Orca/Whirlpool integration yet.
 
-### M4 — Monitoring + debounce
+---
 
-DoD:
+### M2 — Receipt program implementation (Anchor) + invariant tests
 
-- Monitoring loop with the Debounce Policy implemented
-- Deterministic tests for debounce triggers and cooldown behavior
+Goal: Implement the minimal on-chain execution receipt to prevent duplicate execution per epoch and provide auditability.
 
-### M5 — Web UI (Phase 1)
+Deliverables
 
-DoD:
+- Anchor program `receipt` implements:
+  - `record_execution(epoch, direction, position_mint, tx_sig_hash)`
+  - PDA keyed by `(position_mint, authority, epoch)`
+  - stored fields: authority, position_mint, epoch, direction, tx_sig_hash, timestamp/slot
+- Anchor tests:
+  - first call creates receipt
+  - second call same `(position_mint, authority, epoch)` fails deterministically
+  - different epoch succeeds
+  - invalid authority rejected
+- TS client helpers generated and usable from `packages/solana`
 
-- Position selection + alerting
-- One-click execution that prompts user signature
-- Notifications on success/failure
+Definition of Done
 
-### M6 — Mobile UI (Phase 1)
+- `anchor test` proves invariants (no “happy path only”).
+- Receipt ix can be composed into a transaction by the TS layer.
 
-DoD:
+---
 
-- Same functional surface as Web (alerts + one-click execution)
-- Expo app can be built/exported in CI sanity step
+### M3 — Policy engine (pure TS): range state machine + debounce + cooldown
+
+Goal: Build the stop-loss trigger decision logic in `packages/core` with exhaustive unit tests.
+
+Deliverables
+
+- State machine outputs: `HOLD | TRIGGER_DOWN | TRIGGER_UP`
+- Debounce rules implemented exactly as specified (sampling source defined below)
+- Cooldown + reentry handling
+- Unit tests cover wick reentry, sustained break, cooldown behavior
+
+Definition of Done
+
+- All policy behavior is deterministic and fully covered by tests.
+- No RPC or SDK usage in `packages/core`.
+
+---
+
+### M4 — Orca Whirlpool position inspector (read-only)
+
+Goal: Reliably load a Whirlpool position and compute “in-range” vs “out-of-range” plus removal preview.
