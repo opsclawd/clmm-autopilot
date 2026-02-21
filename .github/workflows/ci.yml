@@ -130,7 +130,7 @@ jobs:
 
           # Build SBF artifact explicitly (do not rely on Anchor's implicit build).
           mkdir -p target/deploy
-          cargo build-sbf --manifest-path programs/receipt/Cargo.toml --sbf-out-dir target/deploy -- --release
+          cargo build-sbf --manifest-path programs/receipt/Cargo.toml --sbf-out-dir target/deploy
 
           echo "=== find receipt.so ==="
           find target -maxdepth 8 -type f -name 'receipt.so' -print || true
