@@ -103,9 +103,10 @@ jobs:
 
           curl -fsSLo sbf-sdk.tar.bz2 "$URL_SBF_SDK_TARBALL"
           echo "$SBF_SHA256  sbf-sdk.tar.bz2" | sha256sum -c -
-          tar -xjf sbf-sdk.tar.bz2 -C "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/sbf"
+          tar -xjf sbf-sdk.tar.bz2 -C "$RUNNER_TEMP/sbf"
 
-          STRIP_SH=$(find "$RUNNER_TEMP" -maxdepth 6 -type f -path "*/scripts/strip.sh" -print -quit)
+          STRIP_SH=$(find "$RUNNER_TEMP/sbf" -maxdepth 6 -type f -path "*/scripts/strip.sh" -print -quit)
           if [ -z "$STRIP_SH" ]; then
             echo "Could not locate scripts/strip.sh in extracted sbf-sdk" >&2
             exit 1
