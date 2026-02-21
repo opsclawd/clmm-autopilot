@@ -101,26 +101,25 @@ jobs:
           fi
           solana-keygen pubkey "$HOME/.config/solana/id.json"
 
-      - name: anchor build
+      - name: Generate program keypair (CI) + patch IDs
         run: |
           set -euo pipefail
-          echo "PATH=$PATH"
-          which solana
-          solana --version
-          which cargo-build-sbf
-          cargo build-sbf --version || true
+          mkdir -p target/deploy
+          solana-keygen new --no-bip39-passphrase -s -o target/deploy/receipt-keypair.json
+          PROGRAM_ID=$(solana-keygen pubkey target/deploy/receipt-keypair.json)
+          echo "PROGRAM_ID=$PROGRAM_ID"
 
-          anchor build --arch sbf
+          # Patch program declare_id! to match the generated keypair (CI-local only).
+          sed -i -E "s/^declare_id!\(\"[A-Za-z0-9]{32,44}\"\);/declare_id!(\"$PROGRAM_ID\");/" programs/receipt/src/lib.rs
 
-          echo "=== search for receipt.so ==="
-          find target -maxdepth 5 -type f -name 'receipt.so' -print || true
-
-          echo "=== target/deploy listing ==="
-          ls -la target/deploy
-          test -f target/deploy/receipt.so
+          # Patch Anchor.toml program IDs (CI-local only).
+          sed -i -E "s/^(receipt\s*=\s*)\"[A-Za-z0-9]{32,44}\"/\1\"$PROGRAM_ID\"/" Anchor.toml
 
       - name: anchor test
-        run: anchor test
+        run: |
+          anchor test
+          ls -la target/deploy || true
+          test -f target/deploy/receipt.so
 
       - name: Mobile sanity build (Expo export)
         run: pnpm -C apps/mobile export
