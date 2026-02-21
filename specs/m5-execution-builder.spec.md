@@ -23,6 +23,8 @@ Build the unsigned “one-click execute” transaction that closes the position,
   - fee buffer enforced (abort if expected fees insufficient)
   - simulate required; abort on simulation error
   - bounded retries for quote refresh only (no blind resend loops)
+  - errors normalized to canonical taxonomy from `SPEC.md`
+- Receipt idempotency semantics reference canonical epoch definition from `SPEC.md`.
 
 ### Out of scope
 

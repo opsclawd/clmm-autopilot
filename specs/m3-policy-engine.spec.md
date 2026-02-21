@@ -10,12 +10,14 @@ Implement the stop-loss trigger decision logic as a pure TS state machine in `pa
 
 - `packages/core` exports:
   - `evaluateRangeBreak(samples, bounds, config) -> decision`
+  - decision includes `reasonCode` + debug payload (`samplesUsed`, `threshold`, `cooldownRemainingMs`)
 - Decisions:
   - `HOLD`
   - `TRIGGER_DOWN`
   - `TRIGGER_UP`
-- Debounce logic:
-  - consecutive out-of-range sample count OR time-in-state window (as defined in SPEC)
+- Debounce logic (single authoritative rule):
+  - consecutive out-of-range sample count using SPEC cadence/threshold (primary rule)
+  - optional time-window values must be derived from `requiredConsecutive * cadenceMs` (not a separate trigger rule)
 - Cooldown logic:
   - suppress retriggers for configured cooldown after a trigger
 
@@ -28,6 +30,11 @@ Implement the stop-loss trigger decision logic as a pure TS state machine in `pa
 ## Sampling source
 
 Must match SPEC: current tick samples `(slot, unixTs, currentTickIndex)` compared to lower/upper ticks strictly.
+
+Handling requirements:
+- Missing/undecodable tick data returns `HOLD` with `DATA_UNAVAILABLE`.
+- Non-monotonic slot/timestamp or sampling gaps must be handled deterministically.
+- Duplicate samples must not produce duplicate trigger outputs.
 
 ## Required deliverables
 

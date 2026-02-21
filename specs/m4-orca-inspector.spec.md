@@ -29,7 +29,7 @@ Build a read-only position inspector for Orca Whirlpools that returns a stable s
 
 - Must fetch tick arrays required to interpret the position.
 - Must fail safely:
-  - return typed error codes; never throw raw SDK errors upward unhandled
+  - return typed error codes from canonical taxonomy in `SPEC.md`; never throw raw SDK errors upward unhandled
 - Must not use float UI price for “in-range” logic; tick-only.
 
 ## Required deliverables

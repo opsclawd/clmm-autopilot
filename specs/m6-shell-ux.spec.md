@@ -30,6 +30,7 @@ Ship the user flow on both web and mobile: monitor position, confirm trigger rea
 ## Required deliverables
 
 - Shared UI state model (typed) that consumes snapshot + policy decision
+- UI error mapping uses canonical taxonomy from `SPEC.md`
 - “Execute” path:
   - fetch snapshot
   - compute decision

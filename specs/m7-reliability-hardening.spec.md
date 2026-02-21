@@ -13,14 +13,14 @@ Harden execution reliability in fast markets and common RPC failure modes withou
 - Blockhash management:
   - refresh on user delay; rebuild message before send if needed
 - Idempotency checks:
-  - check for existing receipt before building tx
+  - check for existing receipt before building tx (using canonical epoch definition from `SPEC.md`)
 - Bounded retries:
   - RPC fetch retry (bounded, backoff)
   - quote retry (bounded)
   - no infinite resend; no adaptive slippage widening
 - Observability:
   - structured logs with reason codes
-  - error normalization surfaced to UI
+  - error normalization surfaced to UI using canonical taxonomy from `SPEC.md`
 
 ### Out of scope
 

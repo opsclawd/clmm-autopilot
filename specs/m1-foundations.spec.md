@@ -13,7 +13,7 @@ Convert scaffolding into a stable base with enforced package boundaries, a real 
   - Enforced constraint: no Solana SDK / RPC / web3 imports
 - `packages/solana`
   - Typed config + RPC client wrapper (read-only utilities)
-  - Placeholder API surface for future tx building (no Orca logic yet)
+  - Error normalization layer using canonical error taxonomy
   - Integration test harness wired (fixtures or local validator)
 - `apps/mobile`
   - MWA integrated
@@ -39,10 +39,14 @@ Hard rule:
 
 CI must fail if violated.
 
+Additional dependency direction rule:
+- `packages/core` must not depend on `packages/solana`.
+
 ## Required deliverables
 
-- Boundary gate:
+- Boundary gates:
   - ESLint rule, dep-cruiser, or TS path restriction that fails CI on forbidden imports in `packages/core`
+  - Dependency-direction gate that fails CI if `packages/core` imports or depends on `packages/solana`
 - Tests:
   - `packages/core` has at least 10 meaningful assertions across ≥2 test cases
 - Mobile runbook:
