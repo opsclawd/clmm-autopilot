@@ -61,6 +61,9 @@ jobs:
       - name: pnpm -r lint
         run: pnpm -r lint
 
+      - name: Boundary gate (packages/core purity + dependency direction)
+        run: pnpm --filter @clmm-autopilot/core lint
+
       - name: Setup Rust (for Anchor)
         uses: dtolnay/rust-toolchain@stable
         with:

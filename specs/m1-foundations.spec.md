@@ -53,7 +53,7 @@ Additional dependency direction rule:
   - `docs/runbooks/mobile-mwa.md` with exact commands to run on Android emulator/device
 - Root scripts:
   - `pnpm -r test` runs core tests
-  - `pnpm --filter mobile <smoke>` runs without secrets in dev mode (CI can skip interactive signing)
+  - `pnpm --filter @clmm-autopilot/mobile smoke:mwa` runs mobile smoke in dev mode (CI can skip interactive signing)
 
 ## Acceptance criteria (pass/fail)
 
