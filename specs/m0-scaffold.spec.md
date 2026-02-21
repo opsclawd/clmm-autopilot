@@ -54,3 +54,25 @@ Implementation must comply with `docs/architecture.md`.
   - `rust-toolchain.toml`
   - `Anchor.toml`
 - `.github/workflows/ci.yml` enforcing gates
+
+## Acceptance criteria (pass/fail)
+
+Pass only if all of the following are true:
+
+1. Fresh clone:
+   - `pnpm i --frozen-lockfile` succeeds
+2. Workspace quality gates:
+   - `pnpm -r lint` succeeds
+   - `pnpm -r typecheck` succeeds
+   - `pnpm -r test` succeeds
+3. Anchor:
+   - `anchor test` succeeds (SBF build included)
+4. Mobile sanity:
+   - `pnpm --filter mobile <expo sanity command>` succeeds
+5. CI:
+   - runs steps 1–4 and passes on the milestone branch.
+
+## Definition of Done
+
+- All acceptance criteria pass locally and in CI.
+- No additional features beyond scaffold/gates are implemented.

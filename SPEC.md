@@ -83,6 +83,19 @@ Reset:
 
 This policy is intended to debounce wick moves and is the baseline for Phase 1.
 
+### Sampling source definition (authoritative)
+
+Signal used for debounce and range-break detection: Whirlpool current tick from on-chain pool state.
+
+- The system reads the Whirlpool pool account and derives `currentTickIndex` (tick index).
+- Range comparison is performed strictly in tick space:
+  - `below` means `currentTickIndex < lowerTickIndex`
+  - `above` means `currentTickIndex > upperTickIndex`
+  - `inRange` means `lowerTickIndex <= currentTickIndex <= upperTickIndex`
+- The debounce sampler records a time-series of `(slot, unixTs, currentTickIndex)` samples at the configured interval.
+- Price floats (e.g., UI price) are not used for trigger decisions.
+- If `currentTickIndex` cannot be fetched or decoded reliably, the policy returns `HOLD` and surfaces a `DATA_UNAVAILABLE` reason (no trigger on missing data).
+
 ## Slippage + safety (LOCKED)
 
 ### Hard caps
