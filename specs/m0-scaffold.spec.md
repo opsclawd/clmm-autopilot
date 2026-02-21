@@ -54,6 +54,8 @@ Implementation must comply with `docs/architecture.md`.
   - `rust-toolchain.toml`
   - `Anchor.toml`
 - `.github/workflows/ci.yml` enforcing gates
+- Toolchain lock validation script that asserts committed pins match CI/runtime expectations
+- Convention gate placeholder for tick-only range logic (no float-price trigger logic)
 
 ## Acceptance criteria (pass/fail)
 

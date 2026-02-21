@@ -47,6 +47,27 @@ Phase 1 requires that the **user signs every execution**.
 - **Web:** Next.js app
 - **Mobile:** **Expo React Native + MWA** (mobile-first requirement; not “Phase 2”)
 
+## Cross-cutting canonical definitions (LOCKED)
+
+- **Epoch (Phase 1 canonical):** `unixDays = floor(unixTs / 86400)` (UTC day bucket).
+  - `epoch` used in receipts and idempotency checks MUST use this definition.
+- **Direction encoding (canonical):** `u8`
+  - `0 = DOWN`
+  - `1 = UP`
+  - TS and on-chain representations must keep this exact mapping.
+- **Canonical error taxonomy (shared across core/solana/UI):**
+  - `DATA_UNAVAILABLE`
+  - `RPC_TRANSIENT`
+  - `RPC_PERMANENT`
+  - `INVALID_POSITION`
+  - `NOT_SOL_USDC`
+  - `ALREADY_EXECUTED_THIS_EPOCH`
+  - `QUOTE_STALE`
+  - `SIMULATION_FAILED`
+  - `SLIPPAGE_EXCEEDED`
+  - `INSUFFICIENT_FEE_BUFFER`
+  - `BLOCKHASH_EXPIRED`
+
 ## Receipt program invariant (LOCKED)
 
 The receipt program must enforce:
