@@ -9,7 +9,7 @@
 
 ```bash
 pnpm install
-pnpm --filter @clmm-autopilot/mobile start
+pnpm --filter @clmm-autopilot/mobile smoke:mwa
 ```
 
 Then launch Android:
@@ -25,7 +25,7 @@ pnpm --filter @clmm-autopilot/mobile android
 3. Approve wallet authorization + message signing.
 4. Verify the app displays:
    - wallet public key
-   - signature (base64)
+   - signature (base58)
 
 ## Notes
 

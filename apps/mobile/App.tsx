@@ -23,7 +23,7 @@ export default function App() {
             try {
               const result = await runMwaSignMessageSmoke();
               setPublicKey(result.publicKey);
-              setSignature(result.signatureHex);
+              setSignature(result.signatureBase58);
             } catch (e) {
               setError(e instanceof Error ? e.message : String(e));
             } finally {
@@ -38,7 +38,7 @@ export default function App() {
         </View>
 
         <View style={{ gap: 6 }}>
-          <Text style={{ fontWeight: '600' }}>Signature (hex)</Text>
+          <Text style={{ fontWeight: '600' }}>Signature (base58)</Text>
           <Text selectable>{signature || '—'}</Text>
         </View>
 

@@ -12,6 +12,10 @@ describe('readonly rpc wrapper (deterministic)', () => {
     expect(typeof rpc.getSlot).toBe('function');
     expect(typeof rpc.getLatestBlockhash).toBe('function');
     expect(typeof rpc.getAccountInfoExists).toBe('function');
+    expect(typeof rpc.getMultipleAccountsInfoExists).toBe('function');
+    expect(typeof rpc.getSignaturesForAddress).toBe('function');
+    expect(typeof rpc.getTransaction).toBe('function');
+    expect(typeof rpc.getBlockTime).toBe('function');
   });
 
   it.skipIf(process.env.RUN_DEVNET_TESTS !== '1')('optional devnet smoke', async () => {

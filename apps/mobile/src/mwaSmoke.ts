@@ -1,6 +1,8 @@
+import bs58 from 'bs58';
+
 export type MwaSmokeResult = {
   publicKey: string;
-  signatureHex: string;
+  signatureBase58: string;
 };
 
 export async function runMwaSignMessageSmoke(): Promise<MwaSmokeResult> {
@@ -20,13 +22,11 @@ export async function runMwaSignMessageSmoke(): Promise<MwaSmokeResult> {
     });
 
     const sigBytes: Uint8Array = signed.signedPayloads[0];
-    const signatureHex = Array.from(sigBytes)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
+    const signatureBase58 = bs58.encode(sigBytes);
 
     return {
       publicKey: account.address,
-      signatureHex,
+      signatureBase58,
     } satisfies MwaSmokeResult;
   });
 }
