@@ -28,7 +28,7 @@ Execution must enforce:
 ## Tech stack
 
 - App: **Next.js (latest)** (see `./apps/web`)
-- On-chain: Anchor receipt program (to be added)
+- On-chain: Anchor receipt program (`./programs/receipt`)
 
 ## Tooling (pinned — do not float)
 
@@ -47,9 +47,7 @@ pnpm install
 pnpm dev
 ```
 
-### Solana / Anchor (next phase)
-
-This repo currently includes only the pinned tooling config + the Next.js scaffold.
+### Solana / Anchor
 
 Preflight + test commands:
 
