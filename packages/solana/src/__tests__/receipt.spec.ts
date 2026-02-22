@@ -21,5 +21,6 @@ describe('receipt helpers', () => {
     expect(ix.keys[0].pubkey.toBase58()).toBe(authority.toBase58());
     expect(ix.keys[0].isSigner).toBe(true);
     expect(ix.data.length).toBe(8 + 4 + 1 + 32 + 32);
+    expect(Array.from(ix.data.subarray(0, 8))).toEqual([231, 245, 144, 129, 178, 195, 89, 160]);
   });
 });

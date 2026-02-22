@@ -24,7 +24,8 @@ function u32Le(value: number): Buffer {
   return b;
 }
 
-const RECORD_EXECUTION_DISCRIMINATOR = Buffer.from([15, 145, 122, 33, 211, 42, 58, 95]);
+// Anchor discriminator for `record_execution` (must match target/idl/receipt.json)
+const RECORD_EXECUTION_DISCRIMINATOR = Buffer.from([231, 245, 144, 129, 178, 195, 89, 160]);
 
 export function buildRecordExecutionIx(params: {
   authority: PublicKey;
