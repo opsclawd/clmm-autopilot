@@ -5,11 +5,12 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "test": "echo \"(core) no tests yet\"",
-    "lint": "echo \"(core) lint handled at repo root\"",
+    "test": "vitest run",
+    "lint": "node ../../scripts/check-core-boundaries.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
   }
 }
