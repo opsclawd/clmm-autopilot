@@ -28,7 +28,7 @@ Execution must enforce:
 ## Tech stack
 
 - App: **Next.js (latest)** (see `./apps/web`)
-- On-chain: Anchor receipt program (to be added)
+- On-chain: Anchor receipt program (`./programs/receipt`)
 
 ## Tooling (pinned — do not float)
 
@@ -47,18 +47,20 @@ pnpm install
 pnpm dev
 ```
 
-### Solana / Anchor (next phase)
+### Solana / Anchor
 
-This repo currently includes only the pinned tooling config + the Next.js scaffold.
-
-Planned commands once the Anchor program is added:
+Preflight + test commands:
 
 ```bash
-solana --version   # should be 2.3.0
-anchor --version   # should be 0.32.1
+pnpm check:anchor-tooling
+solana --version             # should include 2.3.0
+solana-test-validator --version  # should include 2.3.0
+anchor --version             # should include 0.32.1
 anchor build
 anchor test
 ```
+
+If `anchor test` fails with missing binaries, install Solana CLI/Agave and ensure both `solana` and `solana-test-validator` are on your PATH.
 
 ## Repo layout
 
