@@ -51,14 +51,18 @@ pnpm dev
 
 This repo currently includes only the pinned tooling config + the Next.js scaffold.
 
-Planned commands once the Anchor program is added:
+Preflight + test commands:
 
 ```bash
-solana --version   # should be 2.3.0
-anchor --version   # should be 0.32.1
+pnpm check:anchor-tooling
+solana --version             # should include 2.3.0
+solana-test-validator --version  # should include 2.3.0
+anchor --version             # should include 0.32.1
 anchor build
 anchor test
 ```
+
+If `anchor test` fails with missing binaries, install Solana CLI/Agave and ensure both `solana` and `solana-test-validator` are on your PATH.
 
 ## Repo layout
 
