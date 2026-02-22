@@ -110,6 +110,31 @@ describe('policy engine', () => {
     expect(a).toEqual(b);
   });
 
+  it('sampling gaps larger than cadence break consecutive streaks', () => {
+    const decision = evaluateRangeBreak(
+      [s(1, 1_000, 95), s(2, 1_005, 94), s(3, 1_010, 93)],
+      bounds,
+      baseConfig,
+    );
+
+    expect(decision.action).toBe('HOLD');
+    expect(decision.reasonCode).toBe('DEBOUNCE_NOT_MET');
+  });
+
+  it('non-monotonic latest sample relative to last state does not trigger', () => {
+    const decision = evaluateRangeBreak(
+      [s(1, 1_000, 95), s(2, 1_001, 94), s(3, 1_002, 93)],
+      bounds,
+      {
+        ...baseConfig,
+        lastEvaluatedSample: s(5, 1_010, 150),
+      },
+    );
+
+    expect(decision.action).toBe('HOLD');
+    expect(decision.reasonCode).toBe('NON_MONOTONIC_SAMPLE');
+  });
+
   it('invariants: deterministic + never both triggers', () => {
     const input = [s(1, 1_000, 205), s(2, 1_001, 206), s(3, 1_002, 207)];
     const a = evaluateRangeBreak(input, bounds, baseConfig);

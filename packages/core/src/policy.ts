@@ -85,17 +85,30 @@ function classify(sample: Sample, bounds: Bounds): Side {
   return 'IN_RANGE';
 }
 
-function trailingConsecutive(classified: readonly Side[], side: Exclude<Side, 'IN_RANGE'>): number {
+function trailingConsecutiveWithinCadence(
+  samples: readonly Sample[],
+  classified: readonly Side[],
+  side: Exclude<Side, 'IN_RANGE'>,
+  cadenceMs: number,
+): number {
   let streak = 0;
   for (let i = classified.length - 1; i >= 0; i -= 1) {
     if (classified[i] !== side) break;
+
+    if (i < classified.length - 1) {
+      const newer = samples[i + 1];
+      const older = samples[i];
+      const gapMs = (newer.unixTs - older.unixTs) * 1000;
+      if (gapMs > cadenceMs) break;
+    }
+
     streak += 1;
   }
   return streak;
 }
 
 function cooldownRemainingMs(lastTriggerUnixTs: number | undefined, latestUnixTs: number, cooldownMs: number): number {
-  if (!lastTriggerUnixTs) return 0;
+  if (lastTriggerUnixTs == null) return 0;
   const elapsedMs = (latestUnixTs - lastTriggerUnixTs) * 1000;
   return Math.max(0, cooldownMs - elapsedMs);
 }
@@ -111,7 +124,7 @@ export function evaluateRangeBreak(
   config: Config,
 ): Decision {
   const canonical = canonicalize(samples);
-  const threshold = config.requiredConsecutive;
+  const threshold = config.requiredConsecutive * config.cadenceMs;
 
   if (canonical.length === 0) {
     return {
@@ -174,7 +187,7 @@ export function evaluateRangeBreak(
     };
   }
 
-  const streak = trailingConsecutive(classified, latestClass);
+  const streak = trailingConsecutiveWithinCadence(canonical, classified, latestClass, config.cadenceMs);
   if (streak < config.requiredConsecutive) {
     return {
       action: 'HOLD',
