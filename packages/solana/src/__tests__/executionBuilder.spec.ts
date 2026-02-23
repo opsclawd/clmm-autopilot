@@ -18,6 +18,7 @@ function ix(seed: number): TransactionInstruction {
 const baseSnapshot = {
   whirlpool: pk(10),
   position: pk(11),
+  positionMint: pk(111),
   currentTickIndex: 100,
   lowerTickIndex: 50,
   upperTickIndex: 150,
@@ -58,7 +59,7 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     removeLiquidityIx: ix(31),
     collectFeesIx: ix(32),
     jupiterSwapIx: ix(33),
-    buildWsolLifecycleIxs: () => [ix(23), ix(24)],
+    buildWsolLifecycleIxs: () => ({ preSwap: [ix(23)], postSwap: [ix(24)] }),
     quote,
     maxSlippageBps: 50,
     quoteFreshnessMs: 2_000,
@@ -91,10 +92,10 @@ describe('buildExitTransaction', () => {
     expect(msg.instructions[2].programId.toBase58()).toBe(pk(21).toBase58());
     expect(msg.instructions[3].programId.toBase58()).toBe(pk(22).toBase58());
     expect(msg.instructions[4].programId.toBase58()).toBe(pk(23).toBase58());
-    expect(msg.instructions[5].programId.toBase58()).toBe(pk(24).toBase58());
-    expect(msg.instructions[6].programId.toBase58()).toBe(pk(31).toBase58());
-    expect(msg.instructions[7].programId.toBase58()).toBe(pk(32).toBase58());
-    expect(msg.instructions[8].programId.toBase58()).toBe(pk(33).toBase58());
+    expect(msg.instructions[5].programId.toBase58()).toBe(pk(31).toBase58());
+    expect(msg.instructions[6].programId.toBase58()).toBe(pk(32).toBase58());
+    expect(msg.instructions[7].programId.toBase58()).toBe(pk(33).toBase58());
+    expect(msg.instructions[8].programId.toBase58()).toBe(pk(24).toBase58());
 
     const finalIx = msg.instructions[msg.instructions.length - 1];
     expect(finalIx.data.length).toBe(77);

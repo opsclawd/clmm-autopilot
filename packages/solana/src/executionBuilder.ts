@@ -30,7 +30,10 @@ export type BuildExitConfig = {
   removeLiquidityIx: TransactionInstruction;
   collectFeesIx: TransactionInstruction;
   jupiterSwapIx: TransactionInstruction;
-  buildWsolLifecycleIxs?: (direction: ExitDirection) => TransactionInstruction[];
+  buildWsolLifecycleIxs?: (direction: ExitDirection) => {
+    preSwap: TransactionInstruction[];
+    postSwap: TransactionInstruction[];
+  };
   quote: ExitQuote;
   maxSlippageBps: number;
   quoteFreshnessMs: number;
@@ -152,7 +155,7 @@ export async function buildExitTransaction(
 
   const receiptIx = buildRecordExecutionIx({
     authority: config.authority,
-    positionMint: refreshed.snapshot.position,
+    positionMint: refreshed.snapshot.positionMint,
     epoch: canonicalEpoch(config.nowUnixMs()),
     direction: direction === 'DOWN' ? 0 : 1,
     txSigHash: config.txSigHash,
@@ -161,10 +164,11 @@ export async function buildExitTransaction(
   const instructions: TransactionInstruction[] = [
     ...buildComputeBudgetIxs(config),
     ...(config.conditionalAtaIxs ?? []),
-    ...(wsolRequired ? maybeWsolLifecycle : []),
+    ...(wsolRequired ? maybeWsolLifecycle.preSwap : []),
     config.removeLiquidityIx,
     config.collectFeesIx,
     config.jupiterSwapIx,
+    ...(wsolRequired ? maybeWsolLifecycle.postSwap : []),
     receiptIx,
   ];
 
