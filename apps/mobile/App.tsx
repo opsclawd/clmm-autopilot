@@ -12,7 +12,7 @@ import {
   type PositionSnapshot,
 } from '@clmm-autopilot/solana';
 import { Buffer } from 'buffer';
-import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import { runMwaSignAndSendVersionedTransaction, runMwaSignMessageSmoke } from './src/mwaSmoke';
 
 const errorMap: Record<CanonicalErrorCode, string> = {
@@ -34,7 +34,9 @@ export default function App() {
   const [positionAddress, setPositionAddress] = useState('');
   const [snapshot, setSnapshot] = useState<PositionSnapshot | null>(null);
   const [receiptPda, setReceiptPda] = useState('');
+  const [receiptFields, setReceiptFields] = useState('');
   const [signature, setSignature] = useState('');
+  const [txSigHashHex, setTxSigHashHex] = useState('0000000000000000000000000000000000000000000000000000000000000000');
   const [error, setError] = useState('');
 
   const shellState = useMemo(() => {
@@ -89,6 +91,15 @@ export default function App() {
           autoCorrect={false}
         />
 
+        <TextInput
+          placeholder="txSigHash hex (64 chars)"
+          value={txSigHashHex}
+          onChangeText={setTxSigHashHex}
+          style={{ borderWidth: 1, borderColor: '#ddd', borderRadius: 8, padding: 10, fontFamily: 'monospace' }}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+
         <Button
           title="Fetch snapshot + decision"
           onPress={async () => {
@@ -135,6 +146,9 @@ export default function App() {
                   const inputMint = snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintA : snapshot.tokenMintB;
                   const outputMint = inputMint.equals(snapshot.tokenMintA) ? snapshot.tokenMintB : snapshot.tokenMintA;
 
+                  const txSigHashBytes = Buffer.from(txSigHashHex, 'hex');
+                  if (txSigHashBytes.length !== 32) throw new Error('txSigHash must be 64-char hex');
+
                   const message = (await buildExitTransaction(snapshot, shellState.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN', {
                     authority,
                     payer: authority,
@@ -142,12 +156,12 @@ export default function App() {
                     computeUnitLimit: 600000,
                     computeUnitPriceMicroLamports: 10000,
                     conditionalAtaIxs: [],
-                    removeLiquidityIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([1]) }),
-                    collectFeesIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([2]) }),
-                    jupiterSwapIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([3]) }),
+                    removeLiquidityIx: SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 }),
+                    collectFeesIx: SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 }),
+                    jupiterSwapIx: SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 }),
                     buildWsolLifecycleIxs: () => ({
-                      preSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([4]) })],
-                      postSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([5]) })],
+                      preSwap: [SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 })],
+                      postSwap: [SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 })],
                     }),
                     quote: {
                       inputMint,
@@ -174,7 +188,7 @@ export default function App() {
                     estimatedRentLamports: 2_039_280,
                     estimatedAtaCreateLamports: 0,
                     feeBufferLamports: 10_000,
-                    txSigHash: new Uint8Array(32).fill(9),
+                    txSigHash: txSigHashBytes,
                     returnVersioned: true,
                     simulate: async (msg: TransactionMessage) => {
                       const simTx = new VersionedTransaction(msg.compileToV0Message([]));
@@ -188,6 +202,9 @@ export default function App() {
 
                   const receiptAccount = await fetchReceiptByPda(connection, receipt);
                   if (!receiptAccount) throw new Error('Receipt account not found after send');
+                  setReceiptFields(
+                    `authority=${receiptAccount.authority.toBase58()} epoch=${receiptAccount.epoch} direction=${receiptAccount.direction} slot=${receiptAccount.slot.toString()}`,
+                  );
                 } catch (e) {
                   const c = e as { code?: CanonicalErrorCode };
                   setError(c.code ? `${errorMap[c.code]} (${c.code})` : String(e));
@@ -205,6 +222,8 @@ export default function App() {
           <Text>tx signature</Text>
           <Text selectable>{signature || '—'}</Text>
           <Button title="Copy tx signature" disabled={!signature} onPress={() => Clipboard.setStringAsync(signature)} />
+          <Text>receipt fields</Text>
+          <Text selectable>{receiptFields || '—'}</Text>
         </View>
 
         {error ? <Text style={{ color: 'red' }}>{error}</Text> : null}
