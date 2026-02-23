@@ -4,3 +4,4 @@ export * from './errors';
 export * from './rpc';
 export * from './receipt';
 export * from './orcaInspector';
+export * from './executionBuilder';
