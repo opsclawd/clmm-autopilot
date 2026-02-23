@@ -13,6 +13,7 @@ import {
   type PositionSnapshot,
 } from '@clmm-autopilot/solana';
 import { Buffer } from 'buffer';
+import { sha256 } from '@noble/hashes/sha256';
 import { Connection, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 
 type SolanaProvider = {
@@ -46,7 +47,7 @@ export default function Home() {
   const [receiptPda, setReceiptPda] = useState<string>('');
   const [receiptFields, setReceiptFields] = useState<string>('');
   const [txSignature, setTxSignature] = useState<string>('');
-  const [txSigHashHex, setTxSigHashHex] = useState<string>('0000000000000000000000000000000000000000000000000000000000000000');
+  const [txSigHashHex, setTxSigHashHex] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   const shellState = useMemo(() => {
@@ -108,12 +109,6 @@ export default function Home() {
           onChange={(e) => setPositionAddress(e.target.value)}
           placeholder="Orca position account"
         />
-        <input
-          className="border rounded px-3 py-2 w-full font-mono text-xs"
-          value={txSigHashHex}
-          onChange={(e) => setTxSigHashHex(e.target.value)}
-          placeholder="txSigHash hex (64 chars)"
-        />
         <button
           className="rounded bg-blue-600 text-white px-3 py-2"
           onClick={async () => {
@@ -166,8 +161,7 @@ export default function Home() {
                   : snapshot.tokenMintB;
                 const outputMint = inputMint.equals(snapshot.tokenMintA) ? snapshot.tokenMintB : snapshot.tokenMintA;
 
-                const txSigHashBytes = Buffer.from(txSigHashHex, 'hex');
-                if (txSigHashBytes.length !== 32) throw new Error('txSigHash must be 64-char hex');
+                const txSigHashBytes = new Uint8Array(32);
 
                 const message = (await buildExitTransaction(
                   snapshot,
@@ -225,11 +219,13 @@ export default function Home() {
                 if (!provider) throw new Error('No injected Solana wallet found');
                 const sent = await provider.signAndSendTransaction(message);
                 setTxSignature(sent.signature);
+                const sigHash = sha256(new TextEncoder().encode(sent.signature));
+                setTxSigHashHex(Buffer.from(sigHash).toString('hex'));
 
                 const receiptAccount = await fetchReceiptByPda(connection, receipt);
                 if (!receiptAccount) throw new Error('Receipt account not found after send');
                 setReceiptFields(
-                  `authority=${receiptAccount.authority.toBase58()} epoch=${receiptAccount.epoch} direction=${receiptAccount.direction} slot=${receiptAccount.slot.toString()}`,
+                  `authority=${receiptAccount.authority.toBase58()} positionMint=${receiptAccount.positionMint.toBase58()} epoch=${receiptAccount.epoch} direction=${receiptAccount.direction} txSigHash=${Buffer.from(receiptAccount.txSigHash).toString('hex')} slot=${receiptAccount.slot.toString()} unixTs=${receiptAccount.unixTs.toString()} bump=${receiptAccount.bump}`,
                 );
                 notification.notify({ level: 'info', message: 'Execution sent', context: { signature: sent.signature } });
               } catch (e) {
@@ -249,6 +245,7 @@ export default function Home() {
         <button className="underline" disabled={!receiptPda} onClick={() => navigator.clipboard.writeText(receiptPda)}>Copy receipt PDA</button>
         <div>tx signature: <span className="font-mono">{txSignature || '—'}</span></div>
         <button className="underline" disabled={!txSignature} onClick={() => navigator.clipboard.writeText(txSignature)}>Copy tx signature</button>
+        <div>txSigHash (sha256(signature)): <span className="font-mono">{txSigHashHex || '—'}</span></div>
         <div>receipt fields: <span className="font-mono">{receiptFields || '—'}</span></div>
       </section>
 
