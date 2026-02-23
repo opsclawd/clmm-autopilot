@@ -12,6 +12,7 @@ import {
   type PositionSnapshot,
 } from '@clmm-autopilot/solana';
 import { Buffer } from 'buffer';
+import { sha256 } from '@noble/hashes/sha256';
 import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import { runMwaSignAndSendVersionedTransaction, runMwaSignMessageSmoke } from './src/mwaSmoke';
 
@@ -36,7 +37,7 @@ export default function App() {
   const [receiptPda, setReceiptPda] = useState('');
   const [receiptFields, setReceiptFields] = useState('');
   const [signature, setSignature] = useState('');
-  const [txSigHashHex, setTxSigHashHex] = useState('0000000000000000000000000000000000000000000000000000000000000000');
+  const [txSigHashHex, setTxSigHashHex] = useState('');
   const [error, setError] = useState('');
 
   const shellState = useMemo(() => {
@@ -91,14 +92,6 @@ export default function App() {
           autoCorrect={false}
         />
 
-        <TextInput
-          placeholder="txSigHash hex (64 chars)"
-          value={txSigHashHex}
-          onChangeText={setTxSigHashHex}
-          style={{ borderWidth: 1, borderColor: '#ddd', borderRadius: 8, padding: 10, fontFamily: 'monospace' }}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
 
         <Button
           title="Fetch snapshot + decision"
@@ -146,8 +139,7 @@ export default function App() {
                   const inputMint = snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintA : snapshot.tokenMintB;
                   const outputMint = inputMint.equals(snapshot.tokenMintA) ? snapshot.tokenMintB : snapshot.tokenMintA;
 
-                  const txSigHashBytes = Buffer.from(txSigHashHex, 'hex');
-                  if (txSigHashBytes.length !== 32) throw new Error('txSigHash must be 64-char hex');
+                  const txSigHashBytes = new Uint8Array(32);
 
                   const message = (await buildExitTransaction(snapshot, shellState.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN', {
                     authority,
@@ -199,11 +191,13 @@ export default function App() {
 
                   const sent = await runMwaSignAndSendVersionedTransaction(message);
                   setSignature(sent.signature);
+                  const sigHash = sha256(new TextEncoder().encode(sent.signature));
+                  setTxSigHashHex(Buffer.from(sigHash).toString('hex'));
 
                   const receiptAccount = await fetchReceiptByPda(connection, receipt);
                   if (!receiptAccount) throw new Error('Receipt account not found after send');
                   setReceiptFields(
-                    `authority=${receiptAccount.authority.toBase58()} epoch=${receiptAccount.epoch} direction=${receiptAccount.direction} slot=${receiptAccount.slot.toString()}`,
+                    `authority=${receiptAccount.authority.toBase58()} positionMint=${receiptAccount.positionMint.toBase58()} epoch=${receiptAccount.epoch} direction=${receiptAccount.direction} txSigHash=${Buffer.from(receiptAccount.txSigHash).toString('hex')} slot=${receiptAccount.slot.toString()} unixTs=${receiptAccount.unixTs.toString()} bump=${receiptAccount.bump}`,
                   );
                 } catch (e) {
                   const c = e as { code?: CanonicalErrorCode };
@@ -222,6 +216,8 @@ export default function App() {
           <Text>tx signature</Text>
           <Text selectable>{signature || '—'}</Text>
           <Button title="Copy tx signature" disabled={!signature} onPress={() => Clipboard.setStringAsync(signature)} />
+          <Text>txSigHash (sha256(signature))</Text>
+          <Text selectable>{txSigHashHex || '—'}</Text>
           <Text>receipt fields</Text>
           <Text selectable>{receiptFields || '—'}</Text>
         </View>
