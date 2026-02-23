@@ -6,13 +6,14 @@ import { buildShellUiState, evaluateRangeBreak } from '@clmm-autopilot/core';
 import {
   buildExitTransaction,
   deriveReceiptPda,
+  fetchReceiptByPda,
   loadPositionSnapshot,
   type CanonicalErrorCode,
   type PositionSnapshot,
 } from '@clmm-autopilot/solana';
 import { Buffer } from 'buffer';
-import { Connection, Keypair, PublicKey, TransactionInstruction } from '@solana/web3.js';
-import { runMwaSignMessageSmoke } from './src/mwaSmoke';
+import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
+import { runMwaSignAndSendVersionedTransaction, runMwaSignMessageSmoke } from './src/mwaSmoke';
 
 const errorMap: Record<CanonicalErrorCode, string> = {
   DATA_UNAVAILABLE: 'Data unavailable.',
@@ -129,10 +130,15 @@ export default function App() {
                   const [receipt] = deriveReceiptPda({ authority, positionMint: snapshot.positionMint, epoch });
                   setReceiptPda(receipt.toBase58());
 
-                  await buildExitTransaction(snapshot, shellState.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN', {
+                  const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+                  const latest = await connection.getLatestBlockhash();
+                  const inputMint = snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintA : snapshot.tokenMintB;
+                  const outputMint = inputMint.equals(snapshot.tokenMintA) ? snapshot.tokenMintB : snapshot.tokenMintA;
+
+                  const message = (await buildExitTransaction(snapshot, shellState.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN', {
                     authority,
                     payer: authority,
-                    recentBlockhash: 'EETubP5AKH2uP8WqzU7xYfPqBrM6oTnP3v8igJE6wz7A',
+                    recentBlockhash: latest.blockhash,
                     computeUnitLimit: 600000,
                     computeUnitPriceMicroLamports: 10000,
                     conditionalAtaIxs: [],
@@ -144,8 +150,8 @@ export default function App() {
                       postSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([5]) })],
                     }),
                     quote: {
-                      inputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintA : snapshot.tokenMintB,
-                      outputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintB : snapshot.tokenMintA,
+                      inputMint,
+                      outputMint,
                       slippageBps: 50,
                       quotedAtUnixMs: now,
                     },
@@ -156,8 +162,8 @@ export default function App() {
                     rebuildSnapshotAndQuote: async () => ({
                       snapshot,
                       quote: {
-                        inputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintA : snapshot.tokenMintB,
-                        outputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintB : snapshot.tokenMintA,
+                        inputMint,
+                        outputMint,
                         slippageBps: 50,
                         quotedAtUnixMs: now,
                       },
@@ -169,11 +175,19 @@ export default function App() {
                     estimatedAtaCreateLamports: 0,
                     feeBufferLamports: 10_000,
                     txSigHash: new Uint8Array(32).fill(9),
-                    simulate: async () => ({ err: null, accountsResolved: true }),
-                  });
+                    returnVersioned: true,
+                    simulate: async (msg: TransactionMessage) => {
+                      const simTx = new VersionedTransaction(msg.compileToV0Message([]));
+                      const sim = await connection.simulateTransaction(simTx);
+                      return { err: sim.value.err, accountsResolved: true };
+                    },
+                  })) as VersionedTransaction;
 
-                  const signed = await runMwaSignMessageSmoke();
-                  setSignature(signed.signatureBase58);
+                  const sent = await runMwaSignAndSendVersionedTransaction(message);
+                  setSignature(sent.signature);
+
+                  const receiptAccount = await fetchReceiptByPda(connection, receipt);
+                  if (!receiptAccount) throw new Error('Receipt account not found after send');
                 } catch (e) {
                   const c = e as { code?: CanonicalErrorCode };
                   setError(c.code ? `${errorMap[c.code]} (${c.code})` : String(e));

@@ -17,7 +17,10 @@
      - slippage cap + expected minOut + quote age
    - If decision is `HOLD`, **Execute** remains blocked.
    - If decision is trigger, click **Execute**.
-   - Verify confirmation shows:
+   - Wallet prompt must appear; approve sign+send.
+   - Verify tx signature is returned from wallet send.
+   - Verify receipt account is fetched after send (flow fails if receipt is not found).
+   - Confirmation shows:
      - receipt PDA
      - tx signature
    - Click copy actions for both receipt PDA and tx signature.
@@ -33,6 +36,8 @@
    - Validate same status fields as web (ticks/decision/debounce/cooldown/slippage/minOut/quote age)
    - `HOLD` blocks **Execute**.
    - Trigger decision allows **Execute**.
+   - MWA prompt must appear; approve sign+send transaction.
+   - Verify tx signature returned from send and receipt fetch succeeds.
    - After execute, verify receipt PDA + tx signature and copy actions.
 
 ## Notes

@@ -6,13 +6,21 @@ import {
   buildExitTransaction,
   createConsoleNotificationAdapter,
   deriveReceiptPda,
+  fetchReceiptByPda,
   loadSolanaConfig,
   loadPositionSnapshot,
   type CanonicalErrorCode,
   type PositionSnapshot,
 } from '@clmm-autopilot/solana';
 import { Buffer } from 'buffer';
-import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
+
+type SolanaProvider = {
+  isPhantom?: boolean;
+  publicKey?: { toBase58: () => string };
+  connect: () => Promise<void>;
+  signAndSendTransaction: (tx: VersionedTransaction) => Promise<{ signature: string }>;
+};
 
 const errorMap: Record<CanonicalErrorCode, string> = {
   DATA_UNAVAILABLE: 'Data unavailable. Check position and RPC availability.',
@@ -72,7 +80,19 @@ export default function Home() {
       <section className="space-y-2">
         <button
           className="rounded bg-black text-white px-3 py-2"
-          onClick={() => setWallet(Keypair.generate().publicKey.toBase58())}
+          onClick={async () => {
+            setError('');
+            try {
+              const provider = (window as unknown as { solana?: SolanaProvider }).solana;
+              if (!provider) throw new Error('No injected Solana wallet found');
+              await provider.connect();
+              const pubkey = provider.publicKey?.toBase58();
+              if (!pubkey) throw new Error('Wallet did not expose public key');
+              setWallet(pubkey);
+            } catch (e) {
+              setError(e instanceof Error ? e.message : String(e));
+            }
+          }}
         >
           {wallet ? 'Wallet Connected' : 'Connect Wallet'}
         </button>
@@ -131,51 +151,73 @@ export default function Home() {
                 const [receipt] = deriveReceiptPda({ authority, positionMint: snapshot.positionMint, epoch });
                 setReceiptPda(receipt.toBase58());
 
-                const message = await buildExitTransaction(snapshot, shellState?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN', {
-                  authority,
-                  payer: authority,
-                  recentBlockhash: 'EETubP5AKH2uP8WqzU7xYfPqBrM6oTnP3v8igJE6wz7A',
-                  computeUnitLimit: 600000,
-                  computeUnitPriceMicroLamports: 10000,
-                  conditionalAtaIxs: [],
-                  removeLiquidityIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([1]) }),
-                  collectFeesIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([2]) }),
-                  jupiterSwapIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([3]) }),
-                  buildWsolLifecycleIxs: () => ({
-                    preSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([4]) })],
-                    postSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([5]) })],
-                  }),
-                  quote: {
-                    inputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintA : snapshot.tokenMintB,
-                    outputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintB : snapshot.tokenMintA,
-                    slippageBps: 50,
-                    quotedAtUnixMs: now,
-                  },
-                  maxSlippageBps: 50,
-                  quoteFreshnessMs: 2_000,
-                  maxRebuildAttempts: 3,
-                  nowUnixMs: () => now,
-                  rebuildSnapshotAndQuote: async () => ({
-                    snapshot,
+                const connection = new Connection(config.rpcUrl, config.commitment);
+                const latest = await connection.getLatestBlockhash();
+                const inputMint = snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112'))
+                  ? snapshot.tokenMintA
+                  : snapshot.tokenMintB;
+                const outputMint = inputMint.equals(snapshot.tokenMintA) ? snapshot.tokenMintB : snapshot.tokenMintA;
+
+                const message = (await buildExitTransaction(
+                  snapshot,
+                  shellState?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN',
+                  {
+                    authority,
+                    payer: authority,
+                    recentBlockhash: latest.blockhash,
+                    computeUnitLimit: 600000,
+                    computeUnitPriceMicroLamports: 10000,
+                    conditionalAtaIxs: [],
+                    removeLiquidityIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([1]) }),
+                    collectFeesIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([2]) }),
+                    jupiterSwapIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([3]) }),
+                    buildWsolLifecycleIxs: () => ({
+                      preSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([4]) })],
+                      postSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([5]) })],
+                    }),
                     quote: {
-                      inputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintA : snapshot.tokenMintB,
-                      outputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintB : snapshot.tokenMintA,
+                      inputMint,
+                      outputMint,
                       slippageBps: 50,
                       quotedAtUnixMs: now,
                     },
-                  }),
-                  availableLamports: 5_000_000,
-                  estimatedNetworkFeeLamports: 20_000,
-                  estimatedPriorityFeeLamports: 10_000,
-                  estimatedRentLamports: 2_039_280,
-                  estimatedAtaCreateLamports: 0,
-                  feeBufferLamports: 10_000,
-                  txSigHash: new Uint8Array(32).fill(9),
-                  simulate: async () => ({ err: null, accountsResolved: true }),
-                });
+                    maxSlippageBps: 50,
+                    quoteFreshnessMs: 2_000,
+                    maxRebuildAttempts: 3,
+                    nowUnixMs: () => now,
+                    rebuildSnapshotAndQuote: async () => ({
+                      snapshot,
+                      quote: {
+                        inputMint,
+                        outputMint,
+                        slippageBps: 50,
+                        quotedAtUnixMs: now,
+                      },
+                    }),
+                    availableLamports: 5_000_000,
+                    estimatedNetworkFeeLamports: 20_000,
+                    estimatedPriorityFeeLamports: 10_000,
+                    estimatedRentLamports: 2_039_280,
+                    estimatedAtaCreateLamports: 0,
+                    feeBufferLamports: 10_000,
+                    txSigHash: new Uint8Array(32).fill(9),
+                    returnVersioned: true,
+                    simulate: async (msg: TransactionMessage) => {
+                      const simTx = new VersionedTransaction(msg.compileToV0Message([]));
+                      const sim = await connection.simulateTransaction(simTx);
+                      return { err: sim.value.err, accountsResolved: true };
+                    },
+                  },
+                )) as VersionedTransaction;
 
-                setTxSignature(`mock-${(message as TransactionMessage).instructions.length}-${now}`);
-                notification.notify({ level: 'info', message: 'Execution prepared and simulated' });
+                const provider = (window as unknown as { solana?: SolanaProvider }).solana;
+                if (!provider) throw new Error('No injected Solana wallet found');
+                const sent = await provider.signAndSendTransaction(message);
+                setTxSignature(sent.signature);
+
+                const receiptAccount = await fetchReceiptByPda(connection, receipt);
+                if (!receiptAccount) throw new Error('Receipt account not found after send');
+                notification.notify({ level: 'info', message: 'Execution sent', context: { signature: sent.signature } });
               } catch (e) {
                 const c = e as { code?: CanonicalErrorCode };
                 setError(c.code ? `${errorMap[c.code]} (${c.code})` : String(e));
