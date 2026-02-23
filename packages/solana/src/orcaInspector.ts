@@ -24,6 +24,7 @@ export type RemovePreview = {
 export type PositionSnapshot = {
   whirlpool: PublicKey;
   position: PublicKey;
+  positionMint: PublicKey;
   currentTickIndex: number;
   lowerTickIndex: number;
   upperTickIndex: number;
@@ -253,6 +254,7 @@ export async function loadPositionSnapshot(
     return {
       whirlpool: position.whirlpool,
       position: positionPubkey,
+      positionMint: position.positionMint,
       currentTickIndex: whirlpool.currentTickIndex,
       lowerTickIndex: position.lowerTickIndex,
       upperTickIndex: position.upperTickIndex,

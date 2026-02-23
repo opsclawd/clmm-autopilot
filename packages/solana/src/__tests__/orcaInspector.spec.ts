@@ -112,6 +112,7 @@ describe('loadPositionSnapshot', () => {
 
     expect(snapshot.position.toBase58()).toBe(position.toBase58());
     expect(snapshot.whirlpool.toBase58()).toBe(whirlpool.toBase58());
+    expect(snapshot.positionMint.toBase58()).toBe(positionMint.toBase58());
     expect(snapshot.currentTickIndex).toBe(150);
     expect(snapshot.lowerTickIndex).toBe(120);
     expect(snapshot.upperTickIndex).toBe(200);
