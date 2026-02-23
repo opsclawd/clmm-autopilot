@@ -105,7 +105,7 @@ export default function Home() {
                   decision: res.refresh?.decision,
                   quote: res.refresh?.quote,
                   execution: res.execution,
-                  lastError: res.errorCode ? `${res.errorCode}: ${res.errorMessage ?? ''}` : undefined,
+                  lastError: res.status === 'ERROR' && res.errorCode ? `${res.errorCode}: ${res.errorMessage ?? ''}` : undefined,
                 }),
               );
             } catch (e) {

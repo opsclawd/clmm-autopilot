@@ -81,7 +81,7 @@ export default function App() {
                 decision: result.refresh?.decision,
                 quote: result.refresh?.quote,
                 execution: result.execution,
-                lastError: result.errorCode ? `${result.errorCode}: ${result.errorMessage ?? ''}` : undefined,
+                lastError: result.status === 'ERROR' && result.errorCode ? `${result.errorCode}: ${result.errorMessage ?? ''}` : undefined,
               }),
             );
           }}

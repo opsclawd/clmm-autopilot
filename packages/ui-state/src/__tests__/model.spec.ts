@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildUiModel, mapErrorToUi } from '../index';
 
 describe('ui-state', () => {
-  it('blocks execute on HOLD', () => {
+  it('blocks execute on HOLD without forcing an error banner', () => {
     const model = buildUiModel({
       decision: {
         decision: 'HOLD',
@@ -13,6 +13,7 @@ describe('ui-state', () => {
       },
     });
     expect(model.canExecute).toBe(false);
+    expect(model.lastError).toBeUndefined();
   });
 
   it('enables execute on TRIGGER and keeps debounce/cooldown fields', () => {
