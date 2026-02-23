@@ -13,7 +13,7 @@ import {
   type PositionSnapshot,
 } from '@clmm-autopilot/solana';
 import { Buffer } from 'buffer';
-import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
+import { Connection, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 
 type SolanaProvider = {
   isPhantom?: boolean;
@@ -44,7 +44,9 @@ export default function Home() {
   const [quoteAgeMs, setQuoteAgeMs] = useState<number>(0);
   const [expectedMinOut, setExpectedMinOut] = useState<string>('0');
   const [receiptPda, setReceiptPda] = useState<string>('');
+  const [receiptFields, setReceiptFields] = useState<string>('');
   const [txSignature, setTxSignature] = useState<string>('');
+  const [txSigHashHex, setTxSigHashHex] = useState<string>('0000000000000000000000000000000000000000000000000000000000000000');
   const [error, setError] = useState<string>('');
 
   const shellState = useMemo(() => {
@@ -106,6 +108,12 @@ export default function Home() {
           onChange={(e) => setPositionAddress(e.target.value)}
           placeholder="Orca position account"
         />
+        <input
+          className="border rounded px-3 py-2 w-full font-mono text-xs"
+          value={txSigHashHex}
+          onChange={(e) => setTxSigHashHex(e.target.value)}
+          placeholder="txSigHash hex (64 chars)"
+        />
         <button
           className="rounded bg-blue-600 text-white px-3 py-2"
           onClick={async () => {
@@ -158,6 +166,9 @@ export default function Home() {
                   : snapshot.tokenMintB;
                 const outputMint = inputMint.equals(snapshot.tokenMintA) ? snapshot.tokenMintB : snapshot.tokenMintA;
 
+                const txSigHashBytes = Buffer.from(txSigHashHex, 'hex');
+                if (txSigHashBytes.length !== 32) throw new Error('txSigHash must be 64-char hex');
+
                 const message = (await buildExitTransaction(
                   snapshot,
                   shellState?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN',
@@ -168,12 +179,12 @@ export default function Home() {
                     computeUnitLimit: 600000,
                     computeUnitPriceMicroLamports: 10000,
                     conditionalAtaIxs: [],
-                    removeLiquidityIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([1]) }),
-                    collectFeesIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([2]) }),
-                    jupiterSwapIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([3]) }),
+                    removeLiquidityIx: SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 }),
+                    collectFeesIx: SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 }),
+                    jupiterSwapIx: SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 }),
                     buildWsolLifecycleIxs: () => ({
-                      preSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([4]) })],
-                      postSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([5]) })],
+                      preSwap: [SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 })],
+                      postSwap: [SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 })],
                     }),
                     quote: {
                       inputMint,
@@ -200,7 +211,7 @@ export default function Home() {
                     estimatedRentLamports: 2_039_280,
                     estimatedAtaCreateLamports: 0,
                     feeBufferLamports: 10_000,
-                    txSigHash: new Uint8Array(32).fill(9),
+                    txSigHash: txSigHashBytes,
                     returnVersioned: true,
                     simulate: async (msg: TransactionMessage) => {
                       const simTx = new VersionedTransaction(msg.compileToV0Message([]));
@@ -217,6 +228,9 @@ export default function Home() {
 
                 const receiptAccount = await fetchReceiptByPda(connection, receipt);
                 if (!receiptAccount) throw new Error('Receipt account not found after send');
+                setReceiptFields(
+                  `authority=${receiptAccount.authority.toBase58()} epoch=${receiptAccount.epoch} direction=${receiptAccount.direction} slot=${receiptAccount.slot.toString()}`,
+                );
                 notification.notify({ level: 'info', message: 'Execution sent', context: { signature: sent.signature } });
               } catch (e) {
                 const c = e as { code?: CanonicalErrorCode };
@@ -235,6 +249,7 @@ export default function Home() {
         <button className="underline" disabled={!receiptPda} onClick={() => navigator.clipboard.writeText(receiptPda)}>Copy receipt PDA</button>
         <div>tx signature: <span className="font-mono">{txSignature || '—'}</span></div>
         <button className="underline" disabled={!txSignature} onClick={() => navigator.clipboard.writeText(txSignature)}>Copy tx signature</button>
+        <div>receipt fields: <span className="font-mono">{receiptFields || '—'}</span></div>
       </section>
 
       {error ? <div className="text-red-700 text-sm">{error}</div> : null}
