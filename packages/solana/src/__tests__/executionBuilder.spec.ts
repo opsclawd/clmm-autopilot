@@ -86,14 +86,15 @@ describe('buildExitTransaction', () => {
     const msg = result as TransactionMessage;
     const order = msg.instructions.map((i) => i.programId.toBase58());
 
-    // compute budget x2, ata x2, wsol pre, remove, collect, swap, receipt(final)
-    expect(order.length).toBe(9);
+    // compute budget x2, ata x2, full wsol lifecycle x2, remove, collect, swap, receipt(final)
+    expect(order.length).toBe(10);
     expect(msg.instructions[2].programId.toBase58()).toBe(pk(21).toBase58());
     expect(msg.instructions[3].programId.toBase58()).toBe(pk(22).toBase58());
     expect(msg.instructions[4].programId.toBase58()).toBe(pk(23).toBase58());
-    expect(msg.instructions[5].programId.toBase58()).toBe(pk(31).toBase58());
-    expect(msg.instructions[6].programId.toBase58()).toBe(pk(32).toBase58());
-    expect(msg.instructions[7].programId.toBase58()).toBe(pk(33).toBase58());
+    expect(msg.instructions[5].programId.toBase58()).toBe(pk(24).toBase58());
+    expect(msg.instructions[6].programId.toBase58()).toBe(pk(31).toBase58());
+    expect(msg.instructions[7].programId.toBase58()).toBe(pk(32).toBase58());
+    expect(msg.instructions[8].programId.toBase58()).toBe(pk(33).toBase58());
 
     const finalIx = msg.instructions[msg.instructions.length - 1];
     expect(finalIx.data.length).toBe(77);

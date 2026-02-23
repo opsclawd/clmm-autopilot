@@ -10,7 +10,6 @@ import type { PositionSnapshot } from './orcaInspector';
 import type { CanonicalErrorCode } from './types';
 
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
-const USDC_DEVNET_MINT = new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
 
 export type ExitDirection = 'DOWN' | 'UP';
 
@@ -25,8 +24,8 @@ export type BuildExitConfig = {
   authority: PublicKey;
   payer: PublicKey;
   recentBlockhash: string;
-  computeUnitLimit?: number;
-  computeUnitPriceMicroLamports?: number;
+  computeUnitLimit: number;
+  computeUnitPriceMicroLamports: number;
   conditionalAtaIxs?: TransactionInstruction[];
   removeLiquidityIx: TransactionInstruction;
   collectFeesIx: TransactionInstruction;
@@ -64,16 +63,18 @@ function canonicalEpoch(unixMs: number): number {
   return Math.floor(unixMs / 1000 / 86400);
 }
 
-function assertQuoteDirection(direction: ExitDirection, quote: ExitQuote): void {
+function assertQuoteDirection(direction: ExitDirection, quote: ExitQuote, snapshot: PositionSnapshot): void {
+  const nonSolMint = snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA;
+
   if (direction === 'DOWN') {
-    if (!quote.inputMint.equals(SOL_MINT) || !quote.outputMint.equals(USDC_DEVNET_MINT)) {
-      fail('NOT_SOL_USDC', 'DOWN direction must route SOL->USDC', false);
+    if (!quote.inputMint.equals(SOL_MINT) || !quote.outputMint.equals(nonSolMint)) {
+      fail('NOT_SOL_USDC', 'DOWN direction must route SOL->USDC-side mint from snapshot', false);
     }
     return;
   }
 
-  if (!quote.inputMint.equals(USDC_DEVNET_MINT) || !quote.outputMint.equals(SOL_MINT)) {
-    fail('NOT_SOL_USDC', 'UP direction must route USDC->SOL', false);
+  if (!quote.inputMint.equals(nonSolMint) || !quote.outputMint.equals(SOL_MINT)) {
+    fail('NOT_SOL_USDC', 'UP direction must route USDC-side mint from snapshot->SOL', false);
   }
 }
 
@@ -89,17 +90,11 @@ function enforceFeeBuffer(cfg: BuildExitConfig): void {
   }
 }
 
-function maybeBuildComputeBudgetIxs(cfg: BuildExitConfig): TransactionInstruction[] {
-  const ixs: TransactionInstruction[] = [];
-  if (cfg.computeUnitLimit != null) {
-    ixs.push(ComputeBudgetProgram.setComputeUnitLimit({ units: cfg.computeUnitLimit }));
-  }
-  if (cfg.computeUnitPriceMicroLamports != null) {
-    ixs.push(
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: cfg.computeUnitPriceMicroLamports }),
-    );
-  }
-  return ixs;
+function buildComputeBudgetIxs(cfg: BuildExitConfig): TransactionInstruction[] {
+  return [
+    ComputeBudgetProgram.setComputeUnitLimit({ units: cfg.computeUnitLimit }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: cfg.computeUnitPriceMicroLamports }),
+  ];
 }
 
 async function resolveFreshSnapshotAndQuote(
@@ -141,7 +136,7 @@ export async function buildExitTransaction(
   }
 
   const refreshed = await resolveFreshSnapshotAndQuote(snapshot, config);
-  assertQuoteDirection(direction, refreshed.quote);
+  assertQuoteDirection(direction, refreshed.quote, refreshed.snapshot);
 
   if (refreshed.quote.slippageBps > config.maxSlippageBps) {
     fail('SLIPPAGE_EXCEEDED', 'Quote slippage exceeds configured cap', false);
@@ -153,6 +148,7 @@ export async function buildExitTransaction(
     fail('DATA_UNAVAILABLE', 'WSOL lifecycle builder is required for SOL-side swap handling', false);
   }
   const maybeWsolLifecycle = config.buildWsolLifecycleIxs(direction);
+  const wsolRequired = refreshed.quote.inputMint.equals(SOL_MINT) || refreshed.quote.outputMint.equals(SOL_MINT);
 
   const receiptIx = buildRecordExecutionIx({
     authority: config.authority,
@@ -163,15 +159,14 @@ export async function buildExitTransaction(
   });
 
   const instructions: TransactionInstruction[] = [
-    ...maybeBuildComputeBudgetIxs(config),
+    ...buildComputeBudgetIxs(config),
     ...(config.conditionalAtaIxs ?? []),
-    refreshed.quote.inputMint.equals(SOL_MINT) ? maybeWsolLifecycle[0] : undefined,
+    ...(wsolRequired ? maybeWsolLifecycle : []),
     config.removeLiquidityIx,
     config.collectFeesIx,
     config.jupiterSwapIx,
-    refreshed.quote.outputMint.equals(SOL_MINT) ? maybeWsolLifecycle.at(-1) : undefined,
     receiptIx,
-  ].filter((ix): ix is TransactionInstruction => Boolean(ix));
+  ];
 
   const message = new TransactionMessage({
     payerKey: config.payer,
