@@ -5,5 +5,4 @@ export * from './rpc';
 export * from './receipt';
 export * from './orcaInspector';
 export * from './executionBuilder';
-export * from './notifications';
 export * from './executeOnce';

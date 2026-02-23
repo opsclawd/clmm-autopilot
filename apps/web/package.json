@@ -15,6 +15,7 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "@clmm-autopilot/core": "workspace:*",
+    "@clmm-autopilot/notifications": "workspace:*",
     "@clmm-autopilot/solana": "workspace:*",
     "@clmm-autopilot/ui-state": "workspace:*"
   },

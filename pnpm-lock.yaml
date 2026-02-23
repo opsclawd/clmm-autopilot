@@ -29,6 +29,9 @@ importers:
 
   apps/mobile:
     dependencies:
+      '@clmm-autopilot/notifications':
+        specifier: workspace:*
+        version: link:../../packages/notifications
       '@clmm-autopilot/solana':
         specifier: workspace:*
         version: link:../../packages/solana
@@ -81,6 +84,9 @@ importers:
       '@clmm-autopilot/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@clmm-autopilot/notifications':
+        specifier: workspace:*
+        version: link:../../packages/notifications
       '@clmm-autopilot/solana':
         specifier: workspace:*
         version: link:../../packages/solana
@@ -131,11 +137,23 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@20.19.33)(jiti@2.6.1)(lightningcss@1.31.1)(terser@5.46.0)(yaml@2.8.2)
 
+  packages/notifications:
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@20.19.33)(jiti@2.6.1)(lightningcss@1.31.1)(terser@5.46.0)(yaml@2.8.2)
+
   packages/solana:
     dependencies:
       '@clmm-autopilot/core':
         specifier: workspace:*
         version: link:../core
+      '@clmm-autopilot/notifications':
+        specifier: workspace:*
+        version: link:../notifications
       '@clmm-autopilot/ui-state':
         specifier: workspace:*
         version: link:../ui-state
