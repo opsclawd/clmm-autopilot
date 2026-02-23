@@ -3,51 +3,62 @@ import {
   PublicKey,
   TransactionMessage,
   VersionedTransaction,
+  type AddressLookupTableAccount,
   type TransactionInstruction,
 } from '@solana/web3.js';
-import { buildRecordExecutionIx } from './receipt';
+import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { buildCreateAtaIdempotentIx, SOL_MINT } from './ata';
+import { fetchJupiterSwapIxs, type JupiterQuote, type JupiterSwapIxs } from './jupiter';
 import type { PositionSnapshot } from './orcaInspector';
+import { buildOrcaExitIxs, type OrcaExitIxs } from './orcaExitBuilder';
+import { buildRecordExecutionIx } from './receipt';
 import type { CanonicalErrorCode } from './types';
-
-const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
+import { buildWsolLifecycleIxs, type WsolLifecycle } from './wsol';
 
 export type ExitDirection = 'DOWN' | 'UP';
 
-export type ExitQuote = {
-  inputMint: PublicKey;
-  outputMint: PublicKey;
-  slippageBps: number;
-  quotedAtUnixMs: number;
+// Phase-1 canonical quote type used by the execution builder.
+export type ExitQuote = Pick<JupiterQuote, 'inputMint' | 'outputMint' | 'inAmount' | 'outAmount' | 'slippageBps' | 'quotedAtUnixMs'> & {
+  raw?: JupiterQuote['raw'];
 };
 
 export type BuildExitConfig = {
   authority: PublicKey;
   payer: PublicKey;
   recentBlockhash: string;
+
   computeUnitLimit: number;
   computeUnitPriceMicroLamports: number;
-  conditionalAtaIxs?: TransactionInstruction[];
-  removeLiquidityIx: TransactionInstruction;
-  collectFeesIx: TransactionInstruction;
-  jupiterSwapIx: TransactionInstruction;
-  buildWsolLifecycleIxs?: (direction: ExitDirection) => {
-    preSwap: TransactionInstruction[];
-    postSwap: TransactionInstruction[];
-  };
+
+  // Quote + guardrails.
   quote: ExitQuote;
   maxSlippageBps: number;
   quoteFreshnessMs: number;
   maxRebuildAttempts: number;
   nowUnixMs: () => number;
   rebuildSnapshotAndQuote?: () => Promise<{ snapshot: PositionSnapshot; quote: ExitQuote }>;
+
+  // Cost guardrails.
   availableLamports: number;
   estimatedNetworkFeeLamports: number;
   estimatedPriorityFeeLamports: number;
   estimatedRentLamports: number;
   estimatedAtaCreateLamports: number;
   feeBufferLamports: number;
+
+  // Receipt.
   attestationHash: Uint8Array;
-  simulate: (message: TransactionMessage) => Promise<{ err: unknown | null; accountsResolved: boolean }>;
+
+  // Builder deps (override in tests). Defaults construct real Orca/Jupiter/WSOL modules.
+  buildOrcaExitIxs?: (args: { snapshot: PositionSnapshot; authority: PublicKey; payer: PublicKey }) => OrcaExitIxs;
+  buildJupiterSwapIxs?: (args: { quote: ExitQuote; authority: PublicKey }) => Promise<JupiterSwapIxs>;
+  buildWsolLifecycleIxs?: (args: { quote: ExitQuote; authority: PublicKey; payer: PublicKey }) => WsolLifecycle;
+
+  lookupTableAccounts?: AddressLookupTableAccount[];
+
+  // Mandatory simulation gate.
+  simulate: (tx: VersionedTransaction) => Promise<{ err: unknown | null; accountsResolved: boolean }>;
+
   returnVersioned?: boolean;
 };
 
@@ -129,6 +140,12 @@ async function resolveFreshSnapshotAndQuote(
   return { snapshot: currentSnapshot, quote: currentQuote };
 }
 
+function tokenProgramForMint(mint: PublicKey, snapshot: PositionSnapshot): PublicKey {
+  if (mint.equals(snapshot.tokenMintA)) return snapshot.tokenProgramA;
+  if (mint.equals(snapshot.tokenMintB)) return snapshot.tokenProgramB;
+  return TOKEN_PROGRAM_ID;
+}
+
 export async function buildExitTransaction(
   snapshot: PositionSnapshot,
   direction: ExitDirection,
@@ -147,11 +164,53 @@ export async function buildExitTransaction(
 
   enforceFeeBuffer(config);
 
-  if (!config.buildWsolLifecycleIxs) {
-    fail('DATA_UNAVAILABLE', 'WSOL lifecycle builder is required for SOL-side swap handling', false);
-  }
-  const maybeWsolLifecycle = config.buildWsolLifecycleIxs(direction);
+  const buildOrca = config.buildOrcaExitIxs ?? buildOrcaExitIxs;
+  const orca = buildOrca({ snapshot: refreshed.snapshot, authority: config.authority, payer: config.payer });
+
+  const buildJup =
+    config.buildJupiterSwapIxs ??
+    (async ({ quote, authority }: { quote: ExitQuote; authority: PublicKey }) => {
+      if (!quote.raw) throw new Error('quote.raw required for default Jupiter swap builder');
+      return fetchJupiterSwapIxs({ quote: quote as JupiterQuote, userPublicKey: authority, wrapAndUnwrapSol: false });
+    });
+  const jup = await buildJup({ quote: refreshed.quote, authority: config.authority });
+
+  const buildWsol =
+    config.buildWsolLifecycleIxs ??
+    (({ quote, authority, payer }: { quote: ExitQuote; authority: PublicKey; payer: PublicKey }) =>
+      buildWsolLifecycleIxs({
+        authority,
+        payer,
+        inputMint: quote.inputMint,
+        outputMint: quote.outputMint,
+        wrapLamports: quote.inputMint.equals(SOL_MINT) ? quote.inAmount : undefined,
+      }));
+
+  const wsolLifecycle = buildWsol({ quote: refreshed.quote, authority: config.authority, payer: config.payer });
   const wsolRequired = refreshed.quote.inputMint.equals(SOL_MINT) || refreshed.quote.outputMint.equals(SOL_MINT);
+
+  // Ensure Jupiter input/output ATAs exist (idempotent). If the mint is the pool mint, we use the pool's token program.
+  const jupiterAtaIxs: TransactionInstruction[] = [];
+  if (!refreshed.quote.inputMint.equals(SOL_MINT)) {
+    jupiterAtaIxs.push(
+      buildCreateAtaIdempotentIx({
+        payer: config.payer,
+        owner: config.authority,
+        mint: refreshed.quote.inputMint,
+        tokenProgramId: tokenProgramForMint(refreshed.quote.inputMint, refreshed.snapshot),
+      }).ix,
+    );
+  }
+  if (!refreshed.quote.outputMint.equals(SOL_MINT)) {
+    jupiterAtaIxs.push(
+      buildCreateAtaIdempotentIx({
+        payer: config.payer,
+        owner: config.authority,
+        mint: refreshed.quote.outputMint,
+        tokenProgramId: tokenProgramForMint(refreshed.quote.outputMint, refreshed.snapshot),
+      }).ix,
+    );
+  }
 
   const receiptIx = buildRecordExecutionIx({
     authority: config.authority,
@@ -163,12 +222,13 @@ export async function buildExitTransaction(
 
   const instructions: TransactionInstruction[] = [
     ...buildComputeBudgetIxs(config),
-    ...(config.conditionalAtaIxs ?? []),
-    ...(wsolRequired ? maybeWsolLifecycle.preSwap : []),
-    config.removeLiquidityIx,
-    config.collectFeesIx,
-    config.jupiterSwapIx,
-    ...(wsolRequired ? maybeWsolLifecycle.postSwap : []),
+    ...orca.conditionalAtaIxs,
+    ...jupiterAtaIxs,
+    ...(wsolRequired ? wsolLifecycle.preSwap : []),
+    orca.removeLiquidityIx,
+    orca.collectFeesIx,
+    ...jup.instructions,
+    ...(wsolRequired ? wsolLifecycle.postSwap : []),
     receiptIx,
   ];
 
@@ -178,14 +238,14 @@ export async function buildExitTransaction(
     instructions,
   });
 
-  const simulation = await config.simulate(message);
+  const v0 = message.compileToV0Message(config.lookupTableAccounts ?? []);
+  const tx = new VersionedTransaction(v0);
+
+  const simulation = await config.simulate(tx);
   if (simulation.err !== null || !simulation.accountsResolved) {
     fail('SIMULATION_FAILED', 'simulate-then-send gate failed', false);
   }
 
-  if (config.returnVersioned) {
-    return new VersionedTransaction(message.compileToV0Message([]));
-  }
-
+  if (config.returnVersioned) return tx;
   return message;
 }

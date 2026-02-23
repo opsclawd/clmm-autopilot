@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PublicKey, SystemProgram, VersionedTransaction } from '@solana/web3.js';
+import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 
 const { buildExitTransactionMock } = vi.hoisted(() => ({
   buildExitTransactionMock: vi.fn(async () => ({}) as VersionedTransaction),
@@ -49,7 +49,7 @@ vi.mock('../receipt', async (importOriginal) => {
 import { executeOnce } from '../executeOnce';
 
 describe('executeOnce', () => {
-  it('returns canonical hold-block error when decision is HOLD', async () => {
+  it('returns HOLD when decision is HOLD', async () => {
     buildExitTransactionMock.mockClear();
     const authority = new PublicKey(new Uint8Array(32).fill(20));
     const connection = {
@@ -58,6 +58,7 @@ describe('executeOnce', () => {
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
       getAccountInfo: vi.fn(async () => null),
       getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
     } as any;
 
     const res = await executeOnce({
@@ -68,16 +69,15 @@ describe('executeOnce', () => {
       quote: {
         inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
         outputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
         slippageBps: 10,
         quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
       },
       slippageBpsCap: 50,
       expectedMinOut: '0',
       quoteAgeMs: 0,
-      removeLiquidityIx: SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 }),
-      collectFeesIx: SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 }),
-      swapIx: SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 }),
-      wsolLifecycleIxs: { preSwap: [], postSwap: [] },
       attestationHash: new Uint8Array(32),
       signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
     });
@@ -96,6 +96,7 @@ describe('executeOnce', () => {
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
       getAccountInfo: vi.fn(async () => null),
       getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
     } as any;
 
     const res = await executeOnce({
@@ -110,16 +111,15 @@ describe('executeOnce', () => {
       quote: {
         inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
         outputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
         slippageBps: 10,
         quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
       },
       slippageBpsCap: 50,
       expectedMinOut: '0',
       quoteAgeMs: 0,
-      removeLiquidityIx: SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 }),
-      collectFeesIx: SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 }),
-      swapIx: SystemProgram.transfer({ fromPubkey: authority, toPubkey: authority, lamports: 0 }),
-      wsolLifecycleIxs: { preSwap: [], postSwap: [] },
       attestationHash: new Uint8Array(32),
       signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
       checkExistingReceipt: async () => true,
@@ -150,8 +150,11 @@ describe('executeOnce', () => {
         quote: {
           inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
           outputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+          inAmount: BigInt(1),
+          outAmount: BigInt(1),
           slippageBps: 10,
           quotedAtUnixMs: Date.now(),
+          raw: { inAmount: '1', outAmount: '1' },
         },
       }),
       sleep: vi.fn(async () => {}),
