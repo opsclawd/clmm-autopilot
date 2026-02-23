@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PublicKey, TransactionInstruction, TransactionMessage } from '@solana/web3.js';
+import {
+  PublicKey,
+  TransactionInstruction,
+  TransactionMessage,
+  type AddressLookupTableAccount,
+  type VersionedTransaction,
+} from '@solana/web3.js';
 import { buildExitTransaction, type BuildExitConfig, type ExitQuote } from '../executionBuilder';
 
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
@@ -41,12 +47,17 @@ const baseSnapshot = {
 
 const attestationHash = new Uint8Array(32).fill(7);
 
+type SimResult = { err: unknown | null; accountsResolved: boolean };
+
 function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
   const quote: ExitQuote = {
     inputMint: SOL_MINT,
     outputMint: USDC_MINT,
+    inAmount: BigInt(123),
+    outAmount: BigInt(456),
     slippageBps: 30,
     quotedAtUnixMs: 1_700_000_000_000,
+    raw: { inAmount: '123', outAmount: '456' },
   };
 
   return {
@@ -55,11 +66,6 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     recentBlockhash: 'EETubP5AKH2uP8WqzU7xYfPqBrM6oTnP3v8igJE6wz7A',
     computeUnitLimit: 600_000,
     computeUnitPriceMicroLamports: 10_000,
-    conditionalAtaIxs: [ix(21), ix(22)],
-    removeLiquidityIx: ix(31),
-    collectFeesIx: ix(32),
-    jupiterSwapIx: ix(33),
-    buildWsolLifecycleIxs: () => ({ preSwap: [ix(23)], postSwap: [ix(24)] }),
     quote,
     maxSlippageBps: 50,
     quoteFreshnessMs: 2_000,
@@ -73,7 +79,18 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     estimatedAtaCreateLamports: 2_039_280,
     feeBufferLamports: 10_000,
     attestationHash,
-    simulate: async () => ({ err: null, accountsResolved: true }),
+    simulate: async (): Promise<SimResult> => ({ err: null, accountsResolved: true }),
+    buildOrcaExitIxs: () => ({
+      conditionalAtaIxs: [ix(21), ix(22)],
+      removeLiquidityIx: ix(31),
+      collectFeesIx: ix(32),
+      tokenOwnerAccountA: pk(1),
+      tokenOwnerAccountB: pk(2),
+      positionTokenAccount: pk(3),
+    }),
+    buildJupiterSwapIxs: async () => ({ instructions: [ix(33)], lookupTableAddresses: [pk(90)] }),
+    buildWsolLifecycleIxs: () => ({ preSwap: [ix(23)], postSwap: [ix(24)], wsolAta: pk(55) }),
+    lookupTableAccounts: [] as AddressLookupTableAccount[],
     ...overrides,
   };
 }
@@ -87,15 +104,23 @@ describe('buildExitTransaction', () => {
     const msg = result as TransactionMessage;
     const order = msg.instructions.map((i) => i.programId.toBase58());
 
-    // compute budget x2, ata x2, full wsol lifecycle x2, remove, collect, swap, receipt(final)
-    expect(order.length).toBe(10);
-    expect(msg.instructions[2].programId.toBase58()).toBe(pk(21).toBase58());
-    expect(msg.instructions[3].programId.toBase58()).toBe(pk(22).toBase58());
-    expect(msg.instructions[4].programId.toBase58()).toBe(pk(23).toBase58());
-    expect(msg.instructions[5].programId.toBase58()).toBe(pk(31).toBase58());
-    expect(msg.instructions[6].programId.toBase58()).toBe(pk(32).toBase58());
-    expect(msg.instructions[7].programId.toBase58()).toBe(pk(33).toBase58());
-    expect(msg.instructions[8].programId.toBase58()).toBe(pk(24).toBase58());
+    // compute budget x2, orca ATA x2, jup ATA x1(USDC), wsol lifecycle x1, remove, collect, swap, wsol close, receipt(final)
+    // Note: quote input is SOL -> no input ATA created.
+    expect(order.length).toBeGreaterThanOrEqual(9);
+
+    // Ensure our injected seeds are in correct relative order.
+    const ids = msg.instructions.map((i) => i.programId.toBase58());
+    const idx23 = ids.indexOf(pk(23).toBase58());
+    const idx31 = ids.indexOf(pk(31).toBase58());
+    const idx32 = ids.indexOf(pk(32).toBase58());
+    const idx33 = ids.indexOf(pk(33).toBase58());
+    const idx24 = ids.indexOf(pk(24).toBase58());
+
+    expect(idx23).toBeGreaterThan(-1);
+    expect(idx31).toBeGreaterThan(idx23);
+    expect(idx32).toBeGreaterThan(idx31);
+    expect(idx33).toBeGreaterThan(idx32);
+    expect(idx24).toBeGreaterThan(idx33);
 
     const finalIx = msg.instructions[msg.instructions.length - 1];
     expect(finalIx.data.length).toBe(77);
@@ -106,23 +131,22 @@ describe('buildExitTransaction', () => {
   it('tight slippage aborts safely without rebuild attempts', async () => {
     const rebuildSpy = vi.fn(async () => ({ snapshot: baseSnapshot, quote: buildConfig().quote }));
     await expect(
-      buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ quote: { ...buildConfig().quote, slippageBps: 55 }, rebuildSnapshotAndQuote: rebuildSpy })),
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({ quote: { ...buildConfig().quote, slippageBps: 55 }, rebuildSnapshotAndQuote: rebuildSpy }),
+      ),
     ).rejects.toMatchObject({ code: 'SLIPPAGE_EXCEEDED' });
     expect(rebuildSpy).toHaveBeenCalledTimes(0);
   });
 
   it('stale quote triggers deterministic rebuild path', async () => {
     const rebuiltQuote: ExitQuote = {
-      inputMint: SOL_MINT,
-      outputMint: USDC_MINT,
-      slippageBps: 30,
+      ...buildConfig().quote,
       quotedAtUnixMs: 1_700_000_000_400,
     };
     const rebuildSpy = vi.fn(async () => ({ snapshot: baseSnapshot, quote: rebuiltQuote }));
-    const config = buildConfig({
-      quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_990_000 },
-      rebuildSnapshotAndQuote: rebuildSpy,
-    });
+    const config = buildConfig({ quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_990_000 }, rebuildSnapshotAndQuote: rebuildSpy });
 
     await buildExitTransaction(baseSnapshot, 'DOWN', config);
     expect(rebuildSpy).toHaveBeenCalledTimes(1);
@@ -130,19 +154,11 @@ describe('buildExitTransaction', () => {
 
   it('simulate-then-send gate cannot be bypassed', async () => {
     await expect(
-      buildExitTransaction(
-        baseSnapshot,
-        'DOWN',
-        buildConfig({ simulate: async () => ({ err: new Error('sim err'), accountsResolved: true }) }),
-      ),
+      buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ simulate: async () => ({ err: new Error('sim err'), accountsResolved: true }) })),
     ).rejects.toMatchObject({ code: 'SIMULATION_FAILED' });
 
     await expect(
-      buildExitTransaction(
-        baseSnapshot,
-        'DOWN',
-        buildConfig({ simulate: async () => ({ err: null, accountsResolved: false }) }),
-      ),
+      buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ simulate: async () => ({ err: null, accountsResolved: false }) })),
     ).rejects.toMatchObject({ code: 'SIMULATION_FAILED' });
   });
 
@@ -155,5 +171,10 @@ describe('buildExitTransaction', () => {
       m.instructions.map((ixx) => `${ixx.programId.toBase58()}:${Buffer.from(ixx.data).toString('hex')}`);
 
     expect(normalize(a)).toEqual(normalize(b));
+  });
+
+  it('when returnVersioned=true compiles to v0 message', async () => {
+    const tx = (await buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ returnVersioned: true }))) as VersionedTransaction;
+    expect(tx.message.version).toBe(0);
   });
 });

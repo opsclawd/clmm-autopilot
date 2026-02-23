@@ -1,6 +1,7 @@
 import { evaluateRangeBreak, type Sample } from '@clmm-autopilot/core';
-import { Connection, PublicKey, VersionedTransaction, type TransactionInstruction } from '@solana/web3.js';
+import { Connection, PublicKey, VersionedTransaction, type AddressLookupTableAccount } from '@solana/web3.js';
 import { buildExitTransaction, type ExitDirection, type ExitQuote } from './executionBuilder';
+import { fetchJupiterSwapIxs } from './jupiter';
 import { normalizeSolanaError } from './errors';
 import { loadPositionSnapshot } from './orcaInspector';
 import { deriveReceiptPda, fetchReceiptByPda } from './receipt';
@@ -62,7 +63,11 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
       threshold: decision.debug.threshold,
       cooldownRemainingMs: decision.debug.cooldownRemainingMs,
     },
-    quote: { slippageBpsCap: params.slippageBpsCap, expectedMinOut: params.expectedMinOut, quoteAgeMs: params.quoteAgeMs },
+    quote: {
+      slippageBpsCap: params.slippageBpsCap,
+      expectedMinOut: params.expectedMinOut,
+      quoteAgeMs: params.quoteAgeMs,
+    },
   };
 }
 
@@ -70,13 +75,19 @@ export type ExecuteOnceParams = RefreshParams & {
   authority: PublicKey;
   quote: ExitQuote;
   quoteContext?: { quotedAtSlot?: number; quoteTickIndex?: number };
-  removeLiquidityIx: TransactionInstruction;
-  collectFeesIx: TransactionInstruction;
-  swapIx: TransactionInstruction;
-  wsolLifecycleIxs: { preSwap: TransactionInstruction[]; postSwap: TransactionInstruction[] };
+  // Receipt attestation hash (sha256 over canonical bytes) provided by app.
   attestationHash: Uint8Array;
+
   signAndSend: (tx: VersionedTransaction) => Promise<string>;
-  rebuildSnapshotAndQuote?: () => Promise<{ snapshot: Awaited<ReturnType<typeof loadPositionSnapshot>>; quote: ExitQuote; quoteContext?: { quotedAtSlot?: number; quoteTickIndex?: number } }>;
+
+  // Optional dependency injection for deterministic tests.
+  buildJupiterSwapIxs?: typeof fetchJupiterSwapIxs;
+
+  rebuildSnapshotAndQuote?: () => Promise<{
+    snapshot: Awaited<ReturnType<typeof loadPositionSnapshot>>;
+    quote: ExitQuote;
+    quoteContext?: { quotedAtSlot?: number; quoteTickIndex?: number };
+  }>;
   sleep?: (ms: number) => Promise<void>;
   nowUnixMs?: () => number;
   checkExistingReceipt?: (receiptPda: PublicKey) => Promise<boolean>;
@@ -103,6 +114,15 @@ export type ExecuteOnceResult = {
   simSummary?: string;
 };
 
+async function loadLookupTables(connection: Connection, addresses: PublicKey[]): Promise<AddressLookupTableAccount[]> {
+  const out: AddressLookupTableAccount[] = [];
+  for (const addr of addresses) {
+    const res = await connection.getAddressLookupTable(addr);
+    if (res.value) out.push(res.value);
+  }
+  return out;
+}
+
 export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnceResult> {
   const sleep = params.sleep ?? (async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
@@ -121,14 +141,23 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, 3);
 
     const rebuildCheck = shouldRebuild(
-      { quotedAtUnixMs: quote.quotedAtUnixMs, quotedAtSlot: quoteContext?.quotedAtSlot, quoteTickIndex: quoteContext?.quoteTickIndex },
+      {
+        quotedAtUnixMs: quote.quotedAtUnixMs,
+        quotedAtSlot: quoteContext?.quotedAtSlot,
+        quoteTickIndex: quoteContext?.quoteTickIndex,
+      },
       snapshot,
       { nowUnixMs: nowUnixMs(), latestSlot, quoteFreshnessMs: 20_000, maxSlotDrift: 8 },
     );
 
     if (rebuildCheck.rebuild) {
       if (!params.rebuildSnapshotAndQuote) {
-        return { status: 'ERROR', refresh: refreshed, errorCode: 'QUOTE_STALE', errorMessage: `Rebuild required: ${rebuildCheck.reasonCode}` };
+        return {
+          status: 'ERROR',
+          refresh: refreshed,
+          errorCode: 'QUOTE_STALE',
+          errorMessage: `Rebuild required: ${rebuildCheck.reasonCode}`,
+        };
       }
       const rebuilt = await withBoundedRetry(() => params.rebuildSnapshotAndQuote!(), sleep, 3);
       snapshot = rebuilt.snapshot;
@@ -143,24 +172,28 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       ? await params.checkExistingReceipt(receiptPda)
       : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, 3));
     if (existingReceipt) {
-      return { status: 'ERROR', refresh: refreshed, errorCode: 'ALREADY_EXECUTED_THIS_EPOCH', errorMessage: 'Execution receipt already exists for canonical epoch' };
+      return {
+        status: 'ERROR',
+        refresh: refreshed,
+        errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+        errorMessage: 'Execution receipt already exists for canonical epoch',
+      };
     }
 
     const fetchedAtUnixMs = nowUnixMs();
     let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, 3);
 
-    const buildMessage = async (recentBlockhash: string) =>
-      buildExitTransaction(snapshot, refreshed.decision.decision === 'TRIGGER_UP' ? 'UP' : ('DOWN' as ExitDirection), {
+    const buildTx = async (recentBlockhash: string) => {
+      const buildSwapIxs = params.buildJupiterSwapIxs ?? fetchJupiterSwapIxs;
+      const swap = await buildSwapIxs({ quote: quote as any, userPublicKey: params.authority, wrapAndUnwrapSol: false });
+      const lookupTableAccounts = await loadLookupTables(params.connection, swap.lookupTableAddresses);
+
+      return buildExitTransaction(snapshot, refreshed.decision.decision === 'TRIGGER_UP' ? 'UP' : ('DOWN' as ExitDirection), {
         authority: params.authority,
         payer: params.authority,
         recentBlockhash,
         computeUnitLimit: 600000,
         computeUnitPriceMicroLamports: 10000,
-        conditionalAtaIxs: [],
-        removeLiquidityIx: params.removeLiquidityIx,
-        collectFeesIx: params.collectFeesIx,
-        jupiterSwapIx: params.swapIx,
-        buildWsolLifecycleIxs: () => params.wsolLifecycleIxs,
         quote,
         maxSlippageBps: params.slippageBpsCap,
         quoteFreshnessMs: 20_000,
@@ -180,14 +213,19 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         estimatedAtaCreateLamports: 0,
         feeBufferLamports: 10_000_000,
         attestationHash: params.attestationHash,
+        lookupTableAccounts,
         returnVersioned: true,
-        simulate: async (message) => {
-          const sim = await params.connection.simulateTransaction(new VersionedTransaction(message.compileToV0Message([])));
+        // Phase-1: simulate must succeed before prompting wallet.
+        simulate: async (tx) => {
+          const sim = await params.connection.simulateTransaction(tx);
           return { err: sim.value.err, accountsResolved: true };
         },
+        // Provide cached Jupiter swap so ordering is stable.
+        buildJupiterSwapIxs: async () => swap,
       });
+    };
 
-    let msg = await buildMessage(latestBlockhash.blockhash);
+    let msg = (await buildTx(latestBlockhash.blockhash)) as VersionedTransaction;
     const simSummary = 'Simulation passed';
     await params.onSimulationComplete?.(simSummary);
 
@@ -199,11 +237,14 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         nowUnixMs: nowUnixMs(),
         quoteFreshnessMs: 20_000,
         rebuildMessage: async () => {
-          msg = await buildMessage((await params.connection.getLatestBlockhash()).blockhash);
+          msg = (await buildTx((await params.connection.getLatestBlockhash()).blockhash)) as VersionedTransaction;
         },
       });
-      latestBlockhash = { blockhash: refreshedBlockhash.blockhash, lastValidBlockHeight: refreshedBlockhash.lastValidBlockHeight };
-      sig = await params.signAndSend(msg as VersionedTransaction);
+      latestBlockhash = {
+        blockhash: refreshedBlockhash.blockhash,
+        lastValidBlockHeight: refreshedBlockhash.lastValidBlockHeight,
+      };
+      sig = await params.signAndSend(msg);
     } catch (sendError) {
       const normalized = normalizeSolanaError(sendError);
       if (normalized.code !== 'BLOCKHASH_EXPIRED') throw normalized;
@@ -214,14 +255,24 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         quoteFreshnessMs: 20_000,
         sendError,
         rebuildMessage: async () => {
-          msg = await buildMessage((await params.connection.getLatestBlockhash()).blockhash);
+          msg = (await buildTx((await params.connection.getLatestBlockhash()).blockhash)) as VersionedTransaction;
         },
       });
-      latestBlockhash = { blockhash: refreshedBlockhash.blockhash, lastValidBlockHeight: refreshedBlockhash.lastValidBlockHeight };
-      sig = await params.signAndSend(msg as VersionedTransaction);
+      latestBlockhash = {
+        blockhash: refreshedBlockhash.blockhash,
+        lastValidBlockHeight: refreshedBlockhash.lastValidBlockHeight,
+      };
+      sig = await params.signAndSend(msg);
     }
 
-    await params.connection.confirmTransaction({ signature: sig, blockhash: latestBlockhash.blockhash, lastValidBlockHeight: latestBlockhash.lastValidBlockHeight }, 'confirmed');
+    await params.connection.confirmTransaction(
+      {
+        signature: sig,
+        blockhash: latestBlockhash.blockhash,
+        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+      },
+      'confirmed',
+    );
 
     let receipt = null;
     for (let i = 0; i < 6; i += 1) {
