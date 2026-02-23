@@ -1,0 +1,99 @@
+import type { PositionSnapshot } from './orcaInspector';
+import { normalizeSolanaError } from './errors';
+
+export const RETRY_BACKOFF_MS = [250, 750, 2000] as const;
+
+export type ReliabilityQuote = {
+  quotedAtUnixMs: number;
+  quotedAtSlot?: number;
+  quoteTickIndex?: number;
+};
+
+export type ShouldRebuildConfig = {
+  nowUnixMs: number;
+  latestSlot?: number;
+  quoteFreshnessMs?: number;
+  maxSlotDrift?: number;
+};
+
+export function shouldRebuild(
+  quote: ReliabilityQuote,
+  latestSnapshot: Pick<PositionSnapshot, 'currentTickIndex' | 'lowerTickIndex' | 'upperTickIndex' | 'tickSpacing'>,
+  config: ShouldRebuildConfig,
+): { rebuild: boolean; reasonCode?: 'QUOTE_STALE' | 'BOUND_CROSSED' | 'TICK_MOVED' } {
+  const quoteFreshnessMs = config.quoteFreshnessMs ?? 20_000;
+  const maxSlotDrift = config.maxSlotDrift ?? 8;
+
+  const staleByTime = config.nowUnixMs - quote.quotedAtUnixMs > quoteFreshnessMs;
+  const staleBySlot =
+    typeof quote.quotedAtSlot === 'number' && typeof config.latestSlot === 'number'
+      ? config.latestSlot - quote.quotedAtSlot > maxSlotDrift
+      : false;
+
+  if (staleByTime || staleBySlot) {
+    return { rebuild: true, reasonCode: 'QUOTE_STALE' };
+  }
+
+  const crossedBound =
+    latestSnapshot.currentTickIndex < latestSnapshot.lowerTickIndex ||
+    latestSnapshot.currentTickIndex > latestSnapshot.upperTickIndex;
+  if (crossedBound) {
+    return { rebuild: true, reasonCode: 'BOUND_CROSSED' };
+  }
+
+  if (typeof quote.quoteTickIndex === 'number') {
+    const moved = Math.abs(latestSnapshot.currentTickIndex - quote.quoteTickIndex);
+    if (moved >= latestSnapshot.tickSpacing * 1) {
+      return { rebuild: true, reasonCode: 'TICK_MOVED' };
+    }
+  }
+
+  return { rebuild: false };
+}
+
+export async function withBoundedRetry<T>(
+  fn: () => Promise<T>,
+  sleep: (ms: number) => Promise<void>,
+  maxAttempts = 3,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      const normalized = normalizeSolanaError(error);
+      lastError = normalized;
+      if (!normalized.retryable || attempt === maxAttempts) {
+        throw normalized;
+      }
+      await sleep(RETRY_BACKOFF_MS[attempt - 1] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]);
+    }
+  }
+  throw lastError;
+}
+
+export async function refreshBlockhashIfNeeded(params: {
+  getLatestBlockhash: () => Promise<{ blockhash: string; lastValidBlockHeight: number }>;
+  current: { blockhash: string; lastValidBlockHeight: number; fetchedAtUnixMs: number };
+  nowUnixMs: number;
+  quoteFreshnessMs?: number;
+  sendError?: unknown;
+  rebuildMessage: () => Promise<void>;
+}): Promise<{ blockhash: string; lastValidBlockHeight: number; rebuilt: boolean }> {
+  const quoteFreshnessMs = params.quoteFreshnessMs ?? 20_000;
+  const userDelayMs = params.nowUnixMs - params.current.fetchedAtUnixMs;
+
+  const normalized = params.sendError ? normalizeSolanaError(params.sendError) : null;
+  const requiresRebuild = userDelayMs > quoteFreshnessMs || normalized?.code === 'BLOCKHASH_EXPIRED';
+  if (!requiresRebuild) {
+    return {
+      blockhash: params.current.blockhash,
+      lastValidBlockHeight: params.current.lastValidBlockHeight,
+      rebuilt: false,
+    };
+  }
+
+  await params.rebuildMessage();
+  const refreshed = await params.getLatestBlockhash();
+  return { ...refreshed, rebuilt: true };
+}

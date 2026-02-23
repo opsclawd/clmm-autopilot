@@ -11,8 +11,10 @@ import {
 } from '@clmm-autopilot/ui-state';
 import { Connection, PublicKey, VersionedTransaction, type TransactionInstruction } from '@solana/web3.js';
 import { buildExitTransaction, type ExitDirection, type ExitQuote } from './executionBuilder';
+import { normalizeSolanaError } from './errors';
 import { loadPositionSnapshot } from './orcaInspector';
 import { deriveReceiptPda, fetchReceiptByPda } from './receipt';
+import { refreshBlockhashIfNeeded, shouldRebuild, withBoundedRetry } from './reliability';
 import type { CanonicalErrorCode } from './types';
 
 export type RefreshParams = {
@@ -78,6 +80,10 @@ export type ExecuteOnceParams = RefreshParams & {
   wsolLifecycleIxs: { preSwap: TransactionInstruction[]; postSwap: TransactionInstruction[] };
   attestationHash: Uint8Array;
   signAndSend: (tx: VersionedTransaction) => Promise<string>;
+  rebuildSnapshotAndQuote?: () => Promise<{ snapshot: Awaited<ReturnType<typeof loadPositionSnapshot>>; quote: ExitQuote }>;
+  sleep?: (ms: number) => Promise<void>;
+  nowUnixMs?: () => number;
+  checkExistingReceipt?: (receiptPda: PublicKey) => Promise<boolean>;
   onSimulationComplete?: (summary: string) => Promise<void> | void;
   notifications?: NotificationsAdapter;
 };
@@ -91,8 +97,11 @@ export type ExecuteOnceResult = {
 };
 
 export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnceResult> {
+  const sleep = params.sleep ?? (async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
+
   try {
-    const refreshed = await refreshPositionDecision(params);
+    const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, 3);
     params.notifications?.notify('snapshot fetched', { position: params.position.toBase58() });
     params.notifications?.notify('decision computed', {
       decision: refreshed.decision.decision,
@@ -101,28 +110,53 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
 
     if (refreshed.decision.decision === 'HOLD') {
       return {
-        ui: buildUiModel({
-          ...refreshed.ui,
-          lastError: 'DATA_UNAVAILABLE: Execution blocked while decision is HOLD',
-        }),
+        ui: buildUiModel({ ...refreshed.ui, lastError: 'DATA_UNAVAILABLE: Execution blocked while decision is HOLD' }),
         errorCode: 'DATA_UNAVAILABLE',
       };
     }
 
-    const snapshot = await loadPositionSnapshot(params.connection, params.position);
-    const now = Date.now();
-    const epoch = Math.floor(now / 1000 / 86400);
-    const [receiptPda] = deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch });
+    let snapshot = await withBoundedRetry(() => loadPositionSnapshot(params.connection, params.position), sleep, 3);
+    let quote = params.quote;
 
-    const latestBlockhash = await params.connection.getLatestBlockhash();
-
-    const msg = await buildExitTransaction(
-      snapshot,
-      refreshed.decision.decision === 'TRIGGER_UP' ? 'UP' : ('DOWN' as ExitDirection),
+    const rebuildCheck = shouldRebuild(
       {
+        quotedAtUnixMs: quote.quotedAtUnixMs,
+        quotedAtSlot: params.samples.at(-1)?.slot,
+        quoteTickIndex: params.samples.at(-1)?.currentTickIndex,
+      },
+      snapshot,
+      { nowUnixMs: nowUnixMs(), latestSlot: params.samples.at(-1)?.slot, quoteFreshnessMs: 20_000, maxSlotDrift: 8 },
+    );
+
+    if (rebuildCheck.rebuild) {
+      if (!params.rebuildSnapshotAndQuote) {
+        const err = { code: 'QUOTE_STALE', message: `Rebuild required: ${rebuildCheck.reasonCode}`, retryable: false };
+        throw err;
+      }
+      const rebuilt = await withBoundedRetry(() => params.rebuildSnapshotAndQuote!(), sleep, 3);
+      snapshot = rebuilt.snapshot;
+      quote = rebuilt.quote;
+      params.notifications?.notify('quote rebuilt', { reasonCode: rebuildCheck.reasonCode ?? 'QUOTE_STALE' });
+    }
+
+    const epoch = Math.floor(nowUnixMs() / 1000 / 86400);
+    const [receiptPda] = deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch });
+    const existingReceipt = params.checkExistingReceipt
+      ? await params.checkExistingReceipt(receiptPda)
+      : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, 3));
+    if (existingReceipt) {
+      const err = { code: 'ALREADY_EXECUTED_THIS_EPOCH', message: 'Execution receipt already exists for canonical epoch', retryable: false };
+      throw err;
+    }
+
+    const fetchedAtUnixMs = nowUnixMs();
+    let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, 3);
+
+    const buildMessage = async (recentBlockhash: string) =>
+      buildExitTransaction(snapshot, refreshed.decision.decision === 'TRIGGER_UP' ? 'UP' : ('DOWN' as ExitDirection), {
         authority: params.authority,
         payer: params.authority,
-        recentBlockhash: latestBlockhash.blockhash,
+        recentBlockhash,
         computeUnitLimit: 600000,
         computeUnitPriceMicroLamports: 10000,
         conditionalAtaIxs: [],
@@ -130,12 +164,12 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         collectFeesIx: params.collectFeesIx,
         jupiterSwapIx: params.swapIx,
         buildWsolLifecycleIxs: () => params.wsolLifecycleIxs,
-        quote: params.quote,
+        quote,
         maxSlippageBps: params.slippageBpsCap,
-        quoteFreshnessMs: 2000,
+        quoteFreshnessMs: 20_000,
         maxRebuildAttempts: 3,
-        nowUnixMs: () => now,
-        rebuildSnapshotAndQuote: async () => ({ snapshot, quote: params.quote }),
+        nowUnixMs,
+        rebuildSnapshotAndQuote: async () => ({ snapshot, quote }),
         availableLamports: 50_000_000,
         estimatedNetworkFeeLamports: 20_000,
         estimatedPriorityFeeLamports: 10_000,
@@ -148,15 +182,45 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           const sim = await params.connection.simulateTransaction(new VersionedTransaction(message.compileToV0Message([])));
           return { err: sim.value.err, accountsResolved: true };
         },
-      },
-    );
+      });
 
+    let msg = await buildMessage(latestBlockhash.blockhash);
     const simSummary = 'Simulation passed';
-    params.notifications?.notify('transaction simulated', { summary: simSummary });
+    params.notifications?.notify('transaction simulated', { reasonCode: 'SIMULATION_OK', summary: simSummary });
     await params.onSimulationComplete?.(simSummary);
 
-    const sig = await params.signAndSend(msg as VersionedTransaction);
-    params.notifications?.notify('transaction sent', { signature: sig });
+    let sig: string;
+    try {
+      const refreshedBlockhash = await refreshBlockhashIfNeeded({
+        getLatestBlockhash: () => params.connection.getLatestBlockhash(),
+        current: { ...latestBlockhash, fetchedAtUnixMs },
+        nowUnixMs: nowUnixMs(),
+        quoteFreshnessMs: 20_000,
+        rebuildMessage: async () => {
+          msg = await buildMessage((await params.connection.getLatestBlockhash()).blockhash);
+        },
+      });
+      latestBlockhash = { blockhash: refreshedBlockhash.blockhash, lastValidBlockHeight: refreshedBlockhash.lastValidBlockHeight };
+      sig = await params.signAndSend(msg as VersionedTransaction);
+    } catch (sendError) {
+      const normalized = normalizeSolanaError(sendError);
+      if (normalized.code !== 'BLOCKHASH_EXPIRED') throw normalized;
+
+      const refreshedBlockhash = await refreshBlockhashIfNeeded({
+        getLatestBlockhash: () => params.connection.getLatestBlockhash(),
+        current: { ...latestBlockhash, fetchedAtUnixMs },
+        nowUnixMs: nowUnixMs(),
+        quoteFreshnessMs: 20_000,
+        sendError,
+        rebuildMessage: async () => {
+          msg = await buildMessage((await params.connection.getLatestBlockhash()).blockhash);
+        },
+      });
+      latestBlockhash = { blockhash: refreshedBlockhash.blockhash, lastValidBlockHeight: refreshedBlockhash.lastValidBlockHeight };
+      sig = await params.signAndSend(msg as VersionedTransaction);
+    }
+
+    params.notifications?.notify('transaction sent', { reasonCode: 'TX_SENT', signature: sig });
 
     await params.connection.confirmTransaction(
       {
@@ -171,9 +235,13 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     for (let i = 0; i < 6; i += 1) {
       receipt = await fetchReceiptByPda(params.connection, receiptPda);
       if (receipt) break;
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await sleep(500);
     }
-    params.notifications?.notify('receipt fetched', { receiptPda: receiptPda.toBase58(), found: Boolean(receipt) });
+    params.notifications?.notify('receipt fetched', {
+      reasonCode: receipt ? 'RECEIPT_FOUND' : 'DATA_UNAVAILABLE',
+      receiptPda: receiptPda.toBase58(),
+      found: Boolean(receipt),
+    });
 
     const exec: UiExecution = {
       unsignedTxBuilt: true,
@@ -188,22 +256,14 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     };
 
     return {
-      ui: buildUiModel({
-        snapshot: refreshed.snapshot,
-        decision: refreshed.decision,
-        quote: refreshed.quote,
-        execution: exec,
-      }),
+      ui: buildUiModel({ snapshot: refreshed.snapshot, decision: refreshed.decision, quote: refreshed.quote, execution: exec }),
       simSummary,
       txSignature: sig,
       receiptPda: receiptPda.toBase58(),
     };
   } catch (error) {
-    params.notifications?.notifyError(error);
+    params.notifications?.notifyError(error, { reasonCode: 'ERROR' });
     const mapped = mapErrorToUi(error);
-    return {
-      ui: buildUiModel({ lastError: `${mapped.code}: ${mapped.message}` }),
-      errorCode: mapped.code,
-    };
+    return { ui: buildUiModel({ lastError: `${mapped.code}: ${mapped.message}` }), errorCode: mapped.code };
   }
 }
