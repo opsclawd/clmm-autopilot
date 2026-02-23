@@ -5,5 +5,6 @@ export * from './rpc';
 export * from './receipt';
 export * from './orcaInspector';
 export * from './executionBuilder';
+export * from './jupiter';
 export * from './reliability';
 export * from './executeOnce';
