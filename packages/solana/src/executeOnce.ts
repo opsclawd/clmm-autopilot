@@ -85,6 +85,7 @@ export type ExecuteOnceParams = RefreshParams & {
 };
 
 export type ExecuteOnceResult = {
+  status: 'HOLD' | 'EXECUTED' | 'ERROR';
   refresh?: RefreshResult;
   execution?: {
     unsignedTxBuilt: boolean;
@@ -111,7 +112,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     params.logger?.notify?.('snapshot fetched', { position: params.position.toBase58() });
 
     if (refreshed.decision.decision === 'HOLD') {
-      return { refresh: refreshed, errorCode: 'DATA_UNAVAILABLE', errorMessage: 'Execution blocked while decision is HOLD' };
+      return { status: 'HOLD', refresh: refreshed };
     }
 
     let snapshot = await withBoundedRetry(() => loadPositionSnapshot(params.connection, params.position), sleep, 3);
@@ -127,7 +128,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
 
     if (rebuildCheck.rebuild) {
       if (!params.rebuildSnapshotAndQuote) {
-        return { refresh: refreshed, errorCode: 'QUOTE_STALE', errorMessage: `Rebuild required: ${rebuildCheck.reasonCode}` };
+        return { status: 'ERROR', refresh: refreshed, errorCode: 'QUOTE_STALE', errorMessage: `Rebuild required: ${rebuildCheck.reasonCode}` };
       }
       const rebuilt = await withBoundedRetry(() => params.rebuildSnapshotAndQuote!(), sleep, 3);
       snapshot = rebuilt.snapshot;
@@ -142,7 +143,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       ? await params.checkExistingReceipt(receiptPda)
       : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, 3));
     if (existingReceipt) {
-      return { refresh: refreshed, errorCode: 'ALREADY_EXECUTED_THIS_EPOCH', errorMessage: 'Execution receipt already exists for canonical epoch' };
+      return { status: 'ERROR', refresh: refreshed, errorCode: 'ALREADY_EXECUTED_THIS_EPOCH', errorMessage: 'Execution receipt already exists for canonical epoch' };
     }
 
     const fetchedAtUnixMs = nowUnixMs();
@@ -230,6 +231,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     }
 
     return {
+      status: 'EXECUTED',
       refresh: refreshed,
       execution: {
         unsignedTxBuilt: true,
@@ -249,6 +251,6 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   } catch (error) {
     const normalized = normalizeSolanaError(error);
     params.logger?.notifyError?.(error, { reasonCode: normalized.code });
-    return { errorCode: normalized.code, errorMessage: normalized.message };
+    return { status: 'ERROR', errorCode: normalized.code, errorMessage: normalized.message };
   }
 }

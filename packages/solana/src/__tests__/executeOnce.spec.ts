@@ -82,7 +82,8 @@ describe('executeOnce', () => {
       signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
     });
 
-    expect(res.errorCode).toBe('DATA_UNAVAILABLE');
+    expect(res.status).toBe('HOLD');
+    expect(res.errorCode).toBeUndefined();
     expect(res.refresh?.decision.decision).toBe('HOLD');
   });
 
@@ -157,6 +158,7 @@ describe('executeOnce', () => {
       nowUnixMs: () => 10_000,
     });
 
+    expect(res.status).toBe('ERROR');
     expect(res.errorCode).toBe('ALREADY_EXECUTED_THIS_EPOCH');
     expect(buildExitTransactionMock).not.toHaveBeenCalled();
   });
