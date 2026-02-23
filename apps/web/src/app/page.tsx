@@ -1,28 +1,201 @@
-import { clamp, movingAverage } from '@clmm-autopilot/core';
-import { loadSolanaConfig } from '@clmm-autopilot/solana';
+'use client';
+
+import { useMemo, useState } from 'react';
+import { buildShellUiState, evaluateRangeBreak } from '@clmm-autopilot/core';
+import {
+  buildExitTransaction,
+  createConsoleNotificationAdapter,
+  deriveReceiptPda,
+  loadSolanaConfig,
+  loadPositionSnapshot,
+  type CanonicalErrorCode,
+  type PositionSnapshot,
+} from '@clmm-autopilot/solana';
+import { Buffer } from 'buffer';
+import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage } from '@solana/web3.js';
+
+const errorMap: Record<CanonicalErrorCode, string> = {
+  DATA_UNAVAILABLE: 'Data unavailable. Check position and RPC availability.',
+  RPC_TRANSIENT: 'Temporary RPC issue. Retry shortly.',
+  RPC_PERMANENT: 'Permanent RPC error. Check endpoint.',
+  INVALID_POSITION: 'Invalid position address.',
+  NOT_SOL_USDC: 'Position is not SOL/USDC.',
+  ALREADY_EXECUTED_THIS_EPOCH: 'Already executed this epoch.',
+  QUOTE_STALE: 'Quote stale. Rebuild failed in allowed window.',
+  SIMULATION_FAILED: 'Simulation failed. Execution blocked.',
+  SLIPPAGE_EXCEEDED: 'Slippage cap exceeded.',
+  INSUFFICIENT_FEE_BUFFER: 'Insufficient fee buffer.',
+  BLOCKHASH_EXPIRED: 'Blockhash expired. Refresh and retry.',
+};
 
 export default function Home() {
-  const config = loadSolanaConfig(process.env);
-  const avg = movingAverage([2, 4, 6]);
-  const bounded = clamp(12, 0, 10);
+  const config = useMemo(() => loadSolanaConfig(process.env), []);
+  const [wallet, setWallet] = useState<string>('');
+  const [positionAddress, setPositionAddress] = useState<string>('');
+  const [snapshot, setSnapshot] = useState<PositionSnapshot | null>(null);
+  const [quoteAgeMs, setQuoteAgeMs] = useState<number>(0);
+  const [expectedMinOut, setExpectedMinOut] = useState<string>('0');
+  const [receiptPda, setReceiptPda] = useState<string>('');
+  const [txSignature, setTxSignature] = useState<string>('');
+  const [error, setError] = useState<string>('');
+
+  const shellState = useMemo(() => {
+    if (!snapshot) return null;
+    const decision = evaluateRangeBreak(
+      [
+        { slot: 1, unixTs: 1_700_000_000, currentTickIndex: snapshot.currentTickIndex },
+        { slot: 2, unixTs: 1_700_000_002, currentTickIndex: snapshot.currentTickIndex },
+        { slot: 3, unixTs: 1_700_000_004, currentTickIndex: snapshot.currentTickIndex },
+      ],
+      { lowerTickIndex: snapshot.lowerTickIndex, upperTickIndex: snapshot.upperTickIndex },
+      { requiredConsecutive: 3, cadenceMs: 2000, cooldownMs: 90_000 },
+    );
+
+    return buildShellUiState({
+      decision,
+      quote: { slippageCapBps: 50, expectedMinOut, quoteAgeMs },
+      snapshot: {
+        currentTickIndex: snapshot.currentTickIndex,
+        lowerTickIndex: snapshot.lowerTickIndex,
+        upperTickIndex: snapshot.upperTickIndex,
+      },
+    });
+  }, [snapshot, expectedMinOut, quoteAgeMs]);
+
+  const notification = useMemo(() => createConsoleNotificationAdapter(), []);
 
   return (
-    <main className="p-6 font-sans space-y-3">
-      <h1 className="text-2xl font-bold">CLMM Autopilot — M1 Dev Console</h1>
-      <p className="text-sm text-gray-700">Minimal shell invoking shared workspace packages (no business logic).</p>
+    <main className="p-6 font-sans space-y-4">
+      <h1 className="text-2xl font-bold">CLMM Autopilot — M6 Shell UX</h1>
+      <p className="text-sm text-gray-700">Monitor, confirm trigger readiness, and execute (Phase 1 signed flow).</p>
 
-      <section className="text-sm">
-        <h2 className="font-semibold">@clmm-autopilot/core</h2>
-        <div>movingAverage([2,4,6]) = {avg}</div>
-        <div>clamp(12,0,10) = {bounded}</div>
+      <section className="space-y-2">
+        <button
+          className="rounded bg-black text-white px-3 py-2"
+          onClick={() => setWallet(Keypair.generate().publicKey.toBase58())}
+        >
+          {wallet ? 'Wallet Connected' : 'Connect Wallet'}
+        </button>
+        <div className="text-xs">{wallet || 'No wallet connected'}</div>
       </section>
 
-      <section className="text-sm">
-        <h2 className="font-semibold">@clmm-autopilot/solana</h2>
-        <div>cluster: {config.cluster}</div>
-        <div>commitment: {config.commitment}</div>
-        <div>rpcUrl: {config.rpcUrl}</div>
+      <section className="space-y-2">
+        <input
+          className="border rounded px-3 py-2 w-full"
+          value={positionAddress}
+          onChange={(e) => setPositionAddress(e.target.value)}
+          placeholder="Orca position account"
+        />
+        <button
+          className="rounded bg-blue-600 text-white px-3 py-2"
+          onClick={async () => {
+            setError('');
+            try {
+              const connection = new Connection(config.rpcUrl, config.commitment);
+              const snap = await loadPositionSnapshot(connection, new PublicKey(positionAddress));
+              setSnapshot(snap);
+              setQuoteAgeMs(500);
+              setExpectedMinOut('123456');
+              notification.notify({ level: 'info', message: 'Snapshot loaded', context: { tick: snap.currentTickIndex } });
+            } catch (e) {
+              const c = e as { code?: CanonicalErrorCode; message?: string };
+              setError(c.code ? `${errorMap[c.code]} (${c.code})` : String(e));
+            }
+          }}
+        >
+          Fetch snapshot + decision
+        </button>
       </section>
+
+      {shellState ? (
+        <section className="text-sm space-y-1 border rounded p-3">
+          <div>current tick: {shellState.snapshot.currentTickIndex}</div>
+          <div>lower/upper ticks: {shellState.snapshot.lowerTickIndex} / {shellState.snapshot.upperTickIndex}</div>
+          <div>decision: {shellState.decision}</div>
+          <div>reason code: {shellState.reasonCode}</div>
+          <div>debounce progress: {shellState.debounceProgress}</div>
+          <div>cooldown remaining (ms): {shellState.cooldownRemainingMs}</div>
+          <div>slippage cap (bps): {shellState.quote.slippageCapBps}</div>
+          <div>expected minOut: {shellState.quote.expectedMinOut}</div>
+          <div>quote age (ms): {shellState.quote.quoteAgeMs}</div>
+          <button
+            className="rounded bg-green-700 text-white px-3 py-2 disabled:opacity-40"
+            disabled={!shellState.canExecute || !wallet}
+            onClick={async () => {
+              setError('');
+              if (!snapshot) return;
+              try {
+                const authority = new PublicKey(wallet);
+                const now = Date.now();
+                const epoch = Math.floor(now / 1000 / 86400);
+                const [receipt] = deriveReceiptPda({ authority, positionMint: snapshot.positionMint, epoch });
+                setReceiptPda(receipt.toBase58());
+
+                const message = await buildExitTransaction(snapshot, shellState?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN', {
+                  authority,
+                  payer: authority,
+                  recentBlockhash: 'EETubP5AKH2uP8WqzU7xYfPqBrM6oTnP3v8igJE6wz7A',
+                  computeUnitLimit: 600000,
+                  computeUnitPriceMicroLamports: 10000,
+                  conditionalAtaIxs: [],
+                  removeLiquidityIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([1]) }),
+                  collectFeesIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([2]) }),
+                  jupiterSwapIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([3]) }),
+                  buildWsolLifecycleIxs: () => ({
+                    preSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([4]) })],
+                    postSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([5]) })],
+                  }),
+                  quote: {
+                    inputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintA : snapshot.tokenMintB,
+                    outputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintB : snapshot.tokenMintA,
+                    slippageBps: 50,
+                    quotedAtUnixMs: now,
+                  },
+                  maxSlippageBps: 50,
+                  quoteFreshnessMs: 2_000,
+                  maxRebuildAttempts: 3,
+                  nowUnixMs: () => now,
+                  rebuildSnapshotAndQuote: async () => ({
+                    snapshot,
+                    quote: {
+                      inputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintA : snapshot.tokenMintB,
+                      outputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintB : snapshot.tokenMintA,
+                      slippageBps: 50,
+                      quotedAtUnixMs: now,
+                    },
+                  }),
+                  availableLamports: 5_000_000,
+                  estimatedNetworkFeeLamports: 20_000,
+                  estimatedPriorityFeeLamports: 10_000,
+                  estimatedRentLamports: 2_039_280,
+                  estimatedAtaCreateLamports: 0,
+                  feeBufferLamports: 10_000,
+                  txSigHash: new Uint8Array(32).fill(9),
+                  simulate: async () => ({ err: null, accountsResolved: true }),
+                });
+
+                setTxSignature(`mock-${(message as TransactionMessage).instructions.length}-${now}`);
+                notification.notify({ level: 'info', message: 'Execution prepared and simulated' });
+              } catch (e) {
+                const c = e as { code?: CanonicalErrorCode };
+                setError(c.code ? `${errorMap[c.code]} (${c.code})` : String(e));
+              }
+            }}
+          >
+            Execute
+          </button>
+        </section>
+      ) : null}
+
+      <section className="text-sm space-y-2">
+        <div className="font-semibold">Confirmation</div>
+        <div>receipt PDA: <span className="font-mono">{receiptPda || '—'}</span></div>
+        <button className="underline" disabled={!receiptPda} onClick={() => navigator.clipboard.writeText(receiptPda)}>Copy receipt PDA</button>
+        <div>tx signature: <span className="font-mono">{txSignature || '—'}</span></div>
+        <button className="underline" disabled={!txSignature} onClick={() => navigator.clipboard.writeText(txSignature)}>Copy tx signature</button>
+      </section>
+
+      {error ? <div className="text-red-700 text-sm">{error}</div> : null}
     </main>
   );
 }

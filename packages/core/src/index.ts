@@ -1,6 +1,7 @@
 export type NonEmptyArray<T> = [T, ...T[]];
 
 export * from './policy';
+export * from './shellUx';
 
 export function clamp(value: number, min: number, max: number): number {
   if (min > max) throw new Error('min must be <= max');

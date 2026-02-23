@@ -1,53 +1,199 @@
 import { StatusBar } from 'expo-status-bar';
-import { useState } from 'react';
-import { Button, SafeAreaView, ScrollView, Text, View } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
+import { useMemo, useState } from 'react';
+import { Button, SafeAreaView, ScrollView, Text, TextInput, View } from 'react-native';
+import { buildShellUiState, evaluateRangeBreak } from '@clmm-autopilot/core';
+import {
+  buildExitTransaction,
+  deriveReceiptPda,
+  loadPositionSnapshot,
+  type CanonicalErrorCode,
+  type PositionSnapshot,
+} from '@clmm-autopilot/solana';
+import { Buffer } from 'buffer';
+import { Connection, Keypair, PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { runMwaSignMessageSmoke } from './src/mwaSmoke';
 
+const errorMap: Record<CanonicalErrorCode, string> = {
+  DATA_UNAVAILABLE: 'Data unavailable.',
+  RPC_TRANSIENT: 'RPC transient.',
+  RPC_PERMANENT: 'RPC permanent failure.',
+  INVALID_POSITION: 'Invalid position.',
+  NOT_SOL_USDC: 'Not SOL/USDC.',
+  ALREADY_EXECUTED_THIS_EPOCH: 'Already executed this epoch.',
+  QUOTE_STALE: 'Quote stale.',
+  SIMULATION_FAILED: 'Simulation failed.',
+  SLIPPAGE_EXCEEDED: 'Slippage exceeded.',
+  INSUFFICIENT_FEE_BUFFER: 'Insufficient fee buffer.',
+  BLOCKHASH_EXPIRED: 'Blockhash expired.',
+};
+
 export default function App() {
-  const [publicKey, setPublicKey] = useState<string>('');
-  const [signature, setSignature] = useState<string>('');
-  const [error, setError] = useState<string>('');
-  const [busy, setBusy] = useState(false);
+  const [wallet, setWallet] = useState<string>('');
+  const [positionAddress, setPositionAddress] = useState('');
+  const [snapshot, setSnapshot] = useState<PositionSnapshot | null>(null);
+  const [receiptPda, setReceiptPda] = useState('');
+  const [signature, setSignature] = useState('');
+  const [error, setError] = useState('');
+
+  const shellState = useMemo(() => {
+    if (!snapshot) return null;
+    const decision = evaluateRangeBreak(
+      [
+        { slot: 1, unixTs: 1_700_000_000, currentTickIndex: snapshot.currentTickIndex },
+        { slot: 2, unixTs: 1_700_000_002, currentTickIndex: snapshot.currentTickIndex },
+        { slot: 3, unixTs: 1_700_000_004, currentTickIndex: snapshot.currentTickIndex },
+      ],
+      { lowerTickIndex: snapshot.lowerTickIndex, upperTickIndex: snapshot.upperTickIndex },
+      { requiredConsecutive: 3, cadenceMs: 2000, cooldownMs: 90_000 },
+    );
+
+    return buildShellUiState({
+      decision,
+      quote: { slippageCapBps: 50, expectedMinOut: '123456', quoteAgeMs: 500 },
+      snapshot: {
+        currentTickIndex: snapshot.currentTickIndex,
+        lowerTickIndex: snapshot.lowerTickIndex,
+        upperTickIndex: snapshot.upperTickIndex,
+      },
+    });
+  }, [snapshot]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
       <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
-        <Text style={{ fontSize: 24, fontWeight: '700' }}>M1 MWA Smoke</Text>
-        <Text>Connect wallet and sign message on devnet.</Text>
+        <Text style={{ fontSize: 22, fontWeight: '700' }}>M6 Mobile Shell UX</Text>
+        <Text>Monitor, confirm trigger readiness, execute (user signed flow).</Text>
+
         <Button
-          title={busy ? 'Signing…' : 'Run MWA sign-message smoke'}
-          disabled={busy}
+          title={wallet ? 'Wallet Connected' : 'Connect Wallet (MWA)'}
           onPress={async () => {
-            setBusy(true);
             setError('');
             try {
               const result = await runMwaSignMessageSmoke();
-              setPublicKey(result.publicKey);
-              setSignature(result.signatureBase58);
+              setWallet(result.publicKey);
             } catch (e) {
               setError(e instanceof Error ? e.message : String(e));
-            } finally {
-              setBusy(false);
+            }
+          }}
+        />
+        <Text selectable>{wallet || 'No wallet connected'}</Text>
+
+        <TextInput
+          placeholder="Orca position account"
+          value={positionAddress}
+          onChangeText={setPositionAddress}
+          style={{ borderWidth: 1, borderColor: '#ddd', borderRadius: 8, padding: 10 }}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+
+        <Button
+          title="Fetch snapshot + decision"
+          onPress={async () => {
+            setError('');
+            try {
+              const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+              const snap = await loadPositionSnapshot(connection, new PublicKey(positionAddress));
+              setSnapshot(snap);
+            } catch (e) {
+              const c = e as { code?: CanonicalErrorCode };
+              setError(c.code ? `${errorMap[c.code]} (${c.code})` : String(e));
             }
           }}
         />
 
-        <View style={{ gap: 6 }}>
-          <Text style={{ fontWeight: '600' }}>Public key</Text>
-          <Text selectable>{publicKey || '—'}</Text>
-        </View>
-
-        <View style={{ gap: 6 }}>
-          <Text style={{ fontWeight: '600' }}>Signature (base58)</Text>
-          <Text selectable>{signature || '—'}</Text>
-        </View>
-
-        {error ? (
+        {shellState ? (
           <View style={{ gap: 6 }}>
-            <Text style={{ fontWeight: '600', color: 'red' }}>Error</Text>
-            <Text selectable style={{ color: 'red' }}>{error}</Text>
+            <Text>current tick: {shellState.snapshot.currentTickIndex}</Text>
+            <Text>lower/upper: {shellState.snapshot.lowerTickIndex} / {shellState.snapshot.upperTickIndex}</Text>
+            <Text>decision: {shellState.decision}</Text>
+            <Text>reason: {shellState.reasonCode}</Text>
+            <Text>debounce: {shellState.debounceProgress}</Text>
+            <Text>cooldown ms: {shellState.cooldownRemainingMs}</Text>
+            <Text>slippage cap bps: {shellState.quote.slippageCapBps}</Text>
+            <Text>expected minOut: {shellState.quote.expectedMinOut}</Text>
+            <Text>quote age ms: {shellState.quote.quoteAgeMs}</Text>
+
+            <Button
+              title="Execute"
+              disabled={!shellState.canExecute || !wallet}
+              onPress={async () => {
+                setError('');
+                if (!snapshot) return;
+
+                try {
+                  const authority = new PublicKey(wallet);
+                  const now = Date.now();
+                  const epoch = Math.floor(now / 1000 / 86400);
+                  const [receipt] = deriveReceiptPda({ authority, positionMint: snapshot.positionMint, epoch });
+                  setReceiptPda(receipt.toBase58());
+
+                  await buildExitTransaction(snapshot, shellState.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN', {
+                    authority,
+                    payer: authority,
+                    recentBlockhash: 'EETubP5AKH2uP8WqzU7xYfPqBrM6oTnP3v8igJE6wz7A',
+                    computeUnitLimit: 600000,
+                    computeUnitPriceMicroLamports: 10000,
+                    conditionalAtaIxs: [],
+                    removeLiquidityIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([1]) }),
+                    collectFeesIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([2]) }),
+                    jupiterSwapIx: new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([3]) }),
+                    buildWsolLifecycleIxs: () => ({
+                      preSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([4]) })],
+                      postSwap: [new TransactionInstruction({ programId: Keypair.generate().publicKey, keys: [], data: Buffer.from([5]) })],
+                    }),
+                    quote: {
+                      inputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintA : snapshot.tokenMintB,
+                      outputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintB : snapshot.tokenMintA,
+                      slippageBps: 50,
+                      quotedAtUnixMs: now,
+                    },
+                    maxSlippageBps: 50,
+                    quoteFreshnessMs: 2000,
+                    maxRebuildAttempts: 3,
+                    nowUnixMs: () => now,
+                    rebuildSnapshotAndQuote: async () => ({
+                      snapshot,
+                      quote: {
+                        inputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintA : snapshot.tokenMintB,
+                        outputMint: snapshot.tokenMintA.equals(new PublicKey('So11111111111111111111111111111111111111112')) ? snapshot.tokenMintB : snapshot.tokenMintA,
+                        slippageBps: 50,
+                        quotedAtUnixMs: now,
+                      },
+                    }),
+                    availableLamports: 5_000_000,
+                    estimatedNetworkFeeLamports: 20_000,
+                    estimatedPriorityFeeLamports: 10_000,
+                    estimatedRentLamports: 2_039_280,
+                    estimatedAtaCreateLamports: 0,
+                    feeBufferLamports: 10_000,
+                    txSigHash: new Uint8Array(32).fill(9),
+                    simulate: async () => ({ err: null, accountsResolved: true }),
+                  });
+
+                  const signed = await runMwaSignMessageSmoke();
+                  setSignature(signed.signatureBase58);
+                } catch (e) {
+                  const c = e as { code?: CanonicalErrorCode };
+                  setError(c.code ? `${errorMap[c.code]} (${c.code})` : String(e));
+                }
+              }}
+            />
           </View>
         ) : null}
+
+        <View style={{ gap: 6 }}>
+          <Text>receipt PDA</Text>
+          <Text selectable>{receiptPda || '—'}</Text>
+          <Button title="Copy receipt PDA" disabled={!receiptPda} onPress={() => Clipboard.setStringAsync(receiptPda)} />
+
+          <Text>tx signature</Text>
+          <Text selectable>{signature || '—'}</Text>
+          <Button title="Copy tx signature" disabled={!signature} onPress={() => Clipboard.setStringAsync(signature)} />
+        </View>
+
+        {error ? <Text style={{ color: 'red' }}>{error}</Text> : null}
       </ScrollView>
       <StatusBar style="auto" />
     </SafeAreaView>
