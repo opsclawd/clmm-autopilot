@@ -47,7 +47,7 @@ export default function Home() {
   const [receiptPda, setReceiptPda] = useState<string>('');
   const [receiptFields, setReceiptFields] = useState<string>('');
   const [txSignature, setTxSignature] = useState<string>('');
-  const [txSigHashHex, setTxSigHashHex] = useState<string>('');
+  const [attestationHashHex, setAttestationHashHex] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   const shellState = useMemo(() => {
@@ -161,7 +161,7 @@ export default function Home() {
                   : snapshot.tokenMintB;
                 const outputMint = inputMint.equals(snapshot.tokenMintA) ? snapshot.tokenMintB : snapshot.tokenMintA;
 
-                const txSigHashBytes = new Uint8Array(32);
+                const attestationHashBytes = new Uint8Array(32);
 
                 const message = (await buildExitTransaction(
                   snapshot,
@@ -205,7 +205,7 @@ export default function Home() {
                     estimatedRentLamports: 2_039_280,
                     estimatedAtaCreateLamports: 0,
                     feeBufferLamports: 10_000,
-                    txSigHash: txSigHashBytes,
+                    attestationHash: attestationHashBytes,
                     returnVersioned: true,
                     simulate: async (msg: TransactionMessage) => {
                       const simTx = new VersionedTransaction(msg.compileToV0Message([]));
@@ -220,12 +220,12 @@ export default function Home() {
                 const sent = await provider.signAndSendTransaction(message);
                 setTxSignature(sent.signature);
                 const sigHash = sha256(new TextEncoder().encode(sent.signature));
-                setTxSigHashHex(Buffer.from(sigHash).toString('hex'));
+                setAttestationHashHex(Buffer.from(sigHash).toString('hex'));
 
                 const receiptAccount = await fetchReceiptByPda(connection, receipt);
                 if (!receiptAccount) throw new Error('Receipt account not found after send');
                 setReceiptFields(
-                  `authority=${receiptAccount.authority.toBase58()} positionMint=${receiptAccount.positionMint.toBase58()} epoch=${receiptAccount.epoch} direction=${receiptAccount.direction} txSigHash=${Buffer.from(receiptAccount.txSigHash).toString('hex')} slot=${receiptAccount.slot.toString()} unixTs=${receiptAccount.unixTs.toString()} bump=${receiptAccount.bump}`,
+                  `authority=${receiptAccount.authority.toBase58()} positionMint=${receiptAccount.positionMint.toBase58()} epoch=${receiptAccount.epoch} direction=${receiptAccount.direction} attestationHash=${Buffer.from(receiptAccount.attestationHash).toString('hex')} slot=${receiptAccount.slot.toString()} unixTs=${receiptAccount.unixTs.toString()} bump=${receiptAccount.bump}`,
                 );
                 notification.notify({ level: 'info', message: 'Execution sent', context: { signature: sent.signature } });
               } catch (e) {
@@ -245,7 +245,7 @@ export default function Home() {
         <button className="underline" disabled={!receiptPda} onClick={() => navigator.clipboard.writeText(receiptPda)}>Copy receipt PDA</button>
         <div>tx signature: <span className="font-mono">{txSignature || '—'}</span></div>
         <button className="underline" disabled={!txSignature} onClick={() => navigator.clipboard.writeText(txSignature)}>Copy tx signature</button>
-        <div>txSigHash (sha256(signature)): <span className="font-mono">{txSigHashHex || '—'}</span></div>
+        <div>attestationHash (sha256(attestation_bytes)): <span className="font-mono">{attestationHashHex || '—'}</span></div>
         <div>receipt fields: <span className="font-mono">{receiptFields || '—'}</span></div>
       </section>
 

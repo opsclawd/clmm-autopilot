@@ -39,7 +39,7 @@ export type ReceiptAccount = {
   positionMint: PublicKey;
   epoch: number;
   direction: number;
-  txSigHash: Uint8Array;
+  attestationHash: Uint8Array;
   slot: bigint;
   unixTs: bigint;
   bump: number;
@@ -56,7 +56,7 @@ function decodeReceipt(info: AccountInfo<Buffer>): ReceiptAccount {
     positionMint: new PublicKey(data.subarray(40, 72)),
     epoch: data.readUInt32LE(72),
     direction: data.readUInt8(76),
-    txSigHash: data.subarray(77, 109),
+    attestationHash: data.subarray(77, 109),
     slot: data.readBigUInt64LE(109),
     unixTs: data.readBigInt64LE(117),
     bump: data.readUInt8(125),
