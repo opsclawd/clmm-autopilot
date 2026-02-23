@@ -1,6 +1,7 @@
 import { evaluateRangeBreak, type Sample } from '@clmm-autopilot/core';
 import { Connection, PublicKey, VersionedTransaction, type AddressLookupTableAccount } from '@solana/web3.js';
 import { buildExitTransaction, type ExitDirection, type ExitQuote } from './executionBuilder';
+import { computeExecutionRequirements } from './requirements';
 import { fetchJupiterSwapIxs } from './jupiter';
 import { normalizeSolanaError } from './errors';
 import { loadPositionSnapshot } from './orcaInspector';
@@ -111,6 +112,7 @@ export type ExecuteOnceResult = {
   receiptPda?: string;
   errorCode?: CanonicalErrorCode;
   errorMessage?: string;
+  errorDebug?: unknown;
   simSummary?: string;
 };
 
@@ -180,6 +182,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       };
     }
 
+    const availableLamports = await withBoundedRetry(() => params.connection.getBalance(params.authority), sleep, 3);
+
     const fetchedAtUnixMs = nowUnixMs();
     let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, 3);
 
@@ -206,12 +210,18 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           quoteContext = r.quoteContext;
           return { snapshot: r.snapshot, quote: r.quote };
         },
-        availableLamports: 50_000_000,
-        estimatedNetworkFeeLamports: 20_000,
-        estimatedPriorityFeeLamports: 10_000,
-        estimatedRentLamports: 2_039_280,
-        estimatedAtaCreateLamports: 0,
-        feeBufferLamports: 10_000_000,
+        availableLamports,
+        requirements: await computeExecutionRequirements({
+          connection: params.connection,
+          snapshot,
+          quote,
+          authority: params.authority,
+          payer: params.authority,
+          txFeeLamports: 20_000,
+          computeUnitLimit: 600_000,
+          computeUnitPriceMicroLamports: 10_000,
+          bufferLamports: 10_000_000,
+        }),
         attestationHash: params.attestationHash,
         lookupTableAccounts,
         returnVersioned: true,
@@ -302,6 +312,6 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   } catch (error) {
     const normalized = normalizeSolanaError(error);
     params.logger?.notifyError?.(error, { reasonCode: normalized.code });
-    return { status: 'ERROR', errorCode: normalized.code, errorMessage: normalized.message };
+    return { status: 'ERROR', errorCode: normalized.code, errorMessage: normalized.message, errorDebug: normalized.debug };
   }
 }

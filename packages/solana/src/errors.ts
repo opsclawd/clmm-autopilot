@@ -27,6 +27,7 @@ export function normalizeSolanaError(error: unknown): NormalizedError {
         code: candidate.code,
         message: typeof candidate.message === 'string' ? candidate.message : String(candidate.code),
         retryable: typeof candidate.retryable === 'boolean' ? candidate.retryable : false,
+        debug: 'debug' in candidate ? (candidate as { debug?: unknown }).debug : undefined,
       };
     }
   }

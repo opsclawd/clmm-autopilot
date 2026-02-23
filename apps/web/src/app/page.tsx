@@ -165,7 +165,13 @@ export default function Home() {
                   decision: res.refresh?.decision,
                   quote: res.refresh?.quote,
                   execution: res.execution,
-                  lastError: res.status === 'ERROR' && res.errorCode ? `${res.errorCode}: ${res.errorMessage ?? ''}` : undefined,
+                  lastError:
+                    res.status === 'ERROR' && res.errorCode
+                      ? (() => {
+                          const mapped = mapErrorToUi({ code: res.errorCode, debug: res.errorDebug, message: res.errorMessage });
+                          return `${mapped.code}: ${mapped.message}`;
+                        })()
+                      : undefined,
                 }),
               );
             } catch (e) {
