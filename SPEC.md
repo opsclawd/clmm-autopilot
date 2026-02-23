@@ -221,9 +221,18 @@ Goal: Implement the minimal on-chain execution receipt to prevent duplicate exec
 Deliverables
 
 - Anchor program `receipt` implements:
-  - `record_execution(epoch, direction, position_mint, tx_sig_hash)`
+  - `record_execution(epoch, direction, position_mint, attestation_hash)`
   - PDA keyed by `(position_mint, authority, epoch)`
-  - stored fields: authority, position_mint, epoch, direction, tx_sig_hash, timestamp/slot
+  - stored fields: authority, position_mint, epoch, direction, attestation_hash, timestamp/slot
+  - `attestation_hash = sha256(attestation_bytes)` where `attestation_bytes` are canonical pre-sign execution intent bytes:
+    - authority_pubkey (32)
+    - position_mint (32)
+    - epoch (u32)
+    - direction (u8)
+    - observed_tick (i32)
+    - observed_slot (u64)
+    - observed_unix_ts (i64)
+    - client_nonce (u64)
 - Anchor tests:
   - first call creates receipt
   - second call same `(position_mint, authority, epoch)` fails deterministically
