@@ -1,3 +1,11 @@
+import { BN } from 'bn.js';
+import { Percentage } from '@orca-so/common-sdk';
+import {
+  decreaseLiquidityQuoteByLiquidityWithParams,
+  NO_TOKEN_EXTENSION_CONTEXT,
+  PDAUtil,
+  PriceMath,
+} from '@orca-so/whirlpools-sdk';
 import { PublicKey, type AccountInfo, type Connection } from '@solana/web3.js';
 import { normalizeSolanaError } from './errors';
 import type { CanonicalErrorCode, NormalizedError } from './types';
@@ -64,9 +72,18 @@ type CacheEntry = {
 };
 
 const tickArrayCache = new Map<string, CacheEntry>();
+let cacheSlot: number | null = null;
+let removePreviewQuoteFn = decreaseLiquidityQuoteByLiquidityWithParams;
+
+export function __setRemovePreviewQuoteFnForTests(
+  fn: typeof decreaseLiquidityQuoteByLiquidityWithParams | undefined,
+): void {
+  removePreviewQuoteFn = fn ?? decreaseLiquidityQuoteByLiquidityWithParams;
+}
 
 export function clearTickArrayCache(): void {
   tickArrayCache.clear();
+  cacheSlot = null;
 }
 
 function makeError(code: CanonicalErrorCode, message: string, retryable = false): NormalizedError {
@@ -132,19 +149,13 @@ function tokenProgramForOwner(owner: PublicKey): PublicKey {
   return TOKEN_PROGRAM_V1;
 }
 
-function nearestTickArrayStart(tick: number, tickSpacing: number): number {
-  const ticksPerArray = tickSpacing * 88;
-  const floored = Math.floor(tick / ticksPerArray) * ticksPerArray;
-  return floored;
-}
-
-function deriveTickArrayPda(whirlpool: PublicKey, startTickIndex: number): PublicKey {
-  const seed = Buffer.alloc(4);
-  seed.writeInt32LE(startTickIndex);
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('tick_array'), whirlpool.toBuffer(), seed],
+function deriveTickArrayFromTickIndex(whirlpool: PublicKey, tickIndex: number, tickSpacing: number): PublicKey {
+  return PDAUtil.getTickArrayFromTickIndex(
+    tickIndex,
+    tickSpacing,
+    whirlpool,
     ORCA_WHIRLPOOL_PROGRAM_ID,
-  )[0];
+  ).publicKey;
 }
 
 async function getCachedTickArray(
@@ -152,12 +163,52 @@ async function getCachedTickArray(
   pubkey: PublicKey,
 ): Promise<AccountInfo<Buffer> | null> {
   const slot = await connection.getSlot('confirmed');
+  if (cacheSlot !== slot) {
+    tickArrayCache.clear();
+    cacheSlot = slot;
+  }
+
   const key = pubkey.toBase58();
   const cached = tickArrayCache.get(key);
-  if (cached && cached.slot === slot) return cached.info;
+  if (cached) return cached.info;
+
   const info = await connection.getAccountInfo(pubkey, 'confirmed');
   tickArrayCache.set(key, { slot, info });
   return info;
+}
+
+function computeRemovePreview(
+  position: ParsedPosition,
+  whirlpool: ParsedWhirlpool,
+): { preview: RemovePreview | null; reasonCode: RemovePreviewReasonCode | null } {
+  try {
+    const quote = removePreviewQuoteFn({
+      liquidity: new BN(position.liquidity.toString()),
+      tickCurrentIndex: whirlpool.currentTickIndex,
+      sqrtPrice: PriceMath.tickIndexToSqrtPriceX64(whirlpool.currentTickIndex),
+      tickLowerIndex: position.lowerTickIndex,
+      tickUpperIndex: position.upperTickIndex,
+      tokenExtensionCtx: {
+        currentEpoch: NO_TOKEN_EXTENSION_CONTEXT.currentEpoch,
+        tokenMintWithProgramA: NO_TOKEN_EXTENSION_CONTEXT.tokenMintWithProgramA,
+        tokenMintWithProgramB: NO_TOKEN_EXTENSION_CONTEXT.tokenMintWithProgramB,
+      },
+      slippageTolerance: Percentage.fromFraction(1, 100),
+    });
+
+    return {
+      preview: {
+        tokenAOut: BigInt(quote.tokenEstA.toString()),
+        tokenBOut: BigInt(quote.tokenEstB.toString()),
+      },
+      reasonCode: null,
+    };
+  } catch {
+    return {
+      preview: null,
+      reasonCode: 'QUOTE_UNAVAILABLE',
+    };
+  }
 }
 
 export async function loadPositionSnapshot(
@@ -181,15 +232,23 @@ export async function loadPositionSnapshot(
     const mintA = parseMintMeta(mintAInfo);
     const mintB = parseMintMeta(mintBInfo);
 
-    const lowerStart = nearestTickArrayStart(position.lowerTickIndex, whirlpool.tickSpacing);
-    const upperStart = nearestTickArrayStart(position.upperTickIndex, whirlpool.tickSpacing);
-    const tickArrayLower = deriveTickArrayPda(position.whirlpool, lowerStart);
-    const tickArrayUpper = deriveTickArrayPda(position.whirlpool, upperStart);
+    const tickArrayLower = deriveTickArrayFromTickIndex(
+      position.whirlpool,
+      position.lowerTickIndex,
+      whirlpool.tickSpacing,
+    );
+    const tickArrayUpper = deriveTickArrayFromTickIndex(
+      position.whirlpool,
+      position.upperTickIndex,
+      whirlpool.tickSpacing,
+    );
 
     await Promise.all([
       getCachedTickArray(connection, tickArrayLower),
       getCachedTickArray(connection, tickArrayUpper),
     ]);
+
+    const removePreviewResult = computeRemovePreview(position, whirlpool);
 
     return {
       whirlpool: position.whirlpool,
@@ -212,11 +271,19 @@ export async function loadPositionSnapshot(
       tickArrayUpper,
       tokenProgramA: tokenProgramForOwner(mintA.owner),
       tokenProgramB: tokenProgramForOwner(mintB.owner),
-      removePreview: null,
-      removePreviewReasonCode: 'QUOTE_UNAVAILABLE',
+      removePreview: removePreviewResult.preview,
+      removePreviewReasonCode: removePreviewResult.reasonCode,
     };
   } catch (error) {
-    if (typeof error === 'object' && error && 'code' in error && 'message' in error) throw error;
+    if (
+      typeof error === 'object' &&
+      error &&
+      'code' in error &&
+      'message' in error &&
+      'retryable' in error
+    ) {
+      throw error;
+    }
     throw normalizeSolanaError(error);
   }
 }
