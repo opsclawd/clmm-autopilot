@@ -14,9 +14,9 @@ describe('receipt helpers', () => {
   it('builds record_execution instruction with program id + accounts', () => {
     const authority = new PublicKey('11111111111111111111111111111111');
     const positionMint = new PublicKey('So11111111111111111111111111111111111111112');
-    const txSigHash = new Uint8Array(32);
+    const attestationHash = new Uint8Array(32);
 
-    const ix = buildRecordExecutionIx({ authority, positionMint, epoch: 42, direction: 0, txSigHash });
+    const ix = buildRecordExecutionIx({ authority, positionMint, epoch: 42, direction: 0, attestationHash });
     expect(ix.programId.toBase58()).toBe(RECEIPT_PROGRAM_ID.toBase58());
     expect(ix.keys[0].pubkey.toBase58()).toBe(authority.toBase58());
     expect(ix.keys[0].isSigner).toBe(true);

@@ -28,7 +28,7 @@ describe('receipt', () => {
   });
 
   it('creates receipt once and stores fields', async () => {
-    const txSigHash = randomHash();
+    const attestationHash = randomHash();
     const [receipt] = deriveReceiptPda({
       authority: authorityA.publicKey,
       positionMint,
@@ -37,7 +37,7 @@ describe('receipt', () => {
     });
 
     await program.methods
-      .recordExecution(epoch, 0, positionMint, [...txSigHash])
+      .recordExecution(epoch, 0, positionMint, [...attestationHash])
       .accounts({ authority: authorityA.publicKey, receipt, systemProgram: SystemProgram.programId })
       .signers([authorityA])
       .rpc();
@@ -47,7 +47,7 @@ describe('receipt', () => {
     expect(acc.positionMint.toBase58()).to.eq(positionMint.toBase58());
     expect(acc.epoch).to.eq(epoch);
     expect(acc.direction).to.eq(0);
-    expect(Buffer.from(acc.txSigHash).equals(Buffer.from(txSigHash))).to.eq(true);
+    expect(Buffer.from(acc.attestationHash).equals(Buffer.from(attestationHash))).to.eq(true);
     expect(Number(acc.slot)).to.be.greaterThan(0);
     expect(Number(acc.unixTs)).to.not.eq(0);
   });
@@ -118,9 +118,9 @@ describe('receipt', () => {
     expect(failed).to.eq(true);
   });
 
-  it('data correctness: tx_sig_hash bytes, direction, position_mint, epoch', async () => {
+  it('data correctness: attestation_hash bytes, direction, position_mint, epoch', async () => {
     const checkEpoch = epoch + 3;
-    const txSigHash = randomHash();
+    const attestationHash = randomHash();
     const [receipt] = deriveReceiptPda({
       authority: authorityA.publicKey,
       positionMint,
@@ -129,7 +129,7 @@ describe('receipt', () => {
     });
 
     await program.methods
-      .recordExecution(checkEpoch, 1, positionMint, [...txSigHash])
+      .recordExecution(checkEpoch, 1, positionMint, [...attestationHash])
       .accounts({ authority: authorityA.publicKey, receipt, systemProgram: SystemProgram.programId })
       .signers([authorityA])
       .rpc();
@@ -138,6 +138,6 @@ describe('receipt', () => {
     expect(acc.epoch).to.eq(checkEpoch);
     expect(acc.direction).to.eq(1);
     expect(acc.positionMint.toBase58()).to.eq(positionMint.toBase58());
-    expect(Buffer.from(acc.txSigHash).equals(Buffer.from(txSigHash))).to.eq(true);
+    expect(Buffer.from(acc.attestationHash).equals(Buffer.from(attestationHash))).to.eq(true);
   });
 });

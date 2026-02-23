@@ -11,7 +11,7 @@ pub mod receipt {
         epoch: u32,
         direction: u8,
         position_mint: Pubkey,
-        tx_sig_hash: [u8; 32],
+        attestation_hash: [u8; 32],
     ) -> Result<()> {
         require!(direction == 0 || direction == 1, ReceiptError::InvalidDirection);
 
@@ -23,7 +23,7 @@ pub mod receipt {
         receipt.position_mint = position_mint;
         receipt.epoch = epoch;
         receipt.direction = direction;
-        receipt.tx_sig_hash = tx_sig_hash;
+        receipt.attestation_hash = attestation_hash;
         receipt.slot = now.slot;
         receipt.unix_ts = now.unix_timestamp;
         receipt.bump = ctx.bumps.receipt;
@@ -33,7 +33,7 @@ pub mod receipt {
 }
 
 #[derive(Accounts)]
-#[instruction(epoch: u32, _direction: u8, position_mint: Pubkey, _tx_sig_hash: [u8; 32])]
+#[instruction(epoch: u32, _direction: u8, position_mint: Pubkey, _attestation_hash: [u8; 32])]
 pub struct RecordExecution<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -61,7 +61,7 @@ pub struct Receipt {
     pub position_mint: Pubkey,
     pub epoch: u32,
     pub direction: u8,
-    pub tx_sig_hash: [u8; 32],
+    pub attestation_hash: [u8; 32],
     pub slot: u64,
     pub unix_ts: i64,
     pub bump: u8,
@@ -73,7 +73,7 @@ impl Receipt {
         + 32 // position_mint
         + 4  // epoch
         + 1  // direction
-        + 32 // tx_sig_hash
+        + 32 // attestation_hash
         + 8  // slot
         + 8  // unix_ts
         + 1; // bump

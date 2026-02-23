@@ -39,7 +39,7 @@ const baseSnapshot = {
   removePreviewReasonCode: 'QUOTE_UNAVAILABLE' as const,
 };
 
-const txSigHash = new Uint8Array(32).fill(7);
+const attestationHash = new Uint8Array(32).fill(7);
 
 function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
   const quote: ExitQuote = {
@@ -72,7 +72,7 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     estimatedRentLamports: 2_039_280,
     estimatedAtaCreateLamports: 2_039_280,
     feeBufferLamports: 10_000,
-    txSigHash,
+    attestationHash,
     simulate: async () => ({ err: null, accountsResolved: true }),
     ...overrides,
   };

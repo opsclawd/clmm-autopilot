@@ -32,11 +32,11 @@ export function buildRecordExecutionIx(params: {
   positionMint: PublicKey;
   epoch: number;
   direction: Direction;
-  txSigHash: Uint8Array;
+  attestationHash: Uint8Array;
   programId?: PublicKey;
 }): TransactionInstruction {
-  if (params.txSigHash.length !== 32) {
-    throw new Error('txSigHash must be 32 bytes');
+  if (params.attestationHash.length !== 32) {
+    throw new Error('attestationHash must be 32 bytes');
   }
 
   const programId = params.programId ?? RECEIPT_PROGRAM_ID;
@@ -52,7 +52,7 @@ export function buildRecordExecutionIx(params: {
     u32Le(params.epoch),
     Buffer.from([params.direction]),
     params.positionMint.toBuffer(),
-    Buffer.from(params.txSigHash),
+    Buffer.from(params.attestationHash),
   ]);
 
   const keys: AccountMeta[] = [
