@@ -1,4 +1,5 @@
 import bs58 from 'bs58';
+import { VersionedTransaction } from '@solana/web3.js';
 
 export type MwaSmokeResult = {
   publicKey: string;
@@ -28,5 +29,28 @@ export async function runMwaSignMessageSmoke(): Promise<MwaSmokeResult> {
       publicKey: account.address,
       signatureBase58,
     } satisfies MwaSmokeResult;
+  });
+}
+
+export async function runMwaSignAndSendVersionedTransaction(
+  tx: VersionedTransaction,
+): Promise<{ signature: string }> {
+  const mwa = await import('@solana-mobile/mobile-wallet-adapter-protocol-web3js');
+
+  return mwa.transact(async (wallet: any) => {
+    const auth = await wallet.authorize({
+      chain: 'solana:devnet',
+      identity: { name: 'CLMM Autopilot' },
+    });
+
+    const serialized = tx.serialize();
+    const result = await wallet.signAndSendTransactions({
+      transactions: [serialized],
+      addresses: [auth.accounts[0].address],
+    });
+
+    const firstSig = result.signatures?.[0] ?? result?.signature;
+    const signature = typeof firstSig === 'string' ? firstSig : bs58.encode(firstSig);
+    return { signature };
   });
 }
