@@ -40,7 +40,7 @@ export default function App() {
                 expectedMinOut: 'N/A',
                 quoteAgeMs: 0,
               });
-              setUi(r.ui);
+              setUi(buildUiModel({ snapshot: r.snapshot, decision: r.decision, quote: r.quote }));
             } catch (e) {
               const mapped = mapErrorToUi(e);
               setUi(buildUiModel({ lastError: `${mapped.code}: ${mapped.message}` }));
@@ -73,9 +73,17 @@ export default function App() {
               attestationHash: new Uint8Array(32),
               onSimulationComplete: (s) => setSimSummary(`${s} — ready for wallet prompt`),
               signAndSend: async (tx: VersionedTransaction) => (await runMwaSignAndSendVersionedTransaction(tx)).signature,
-              notifications,
+              logger: notifications,
             });
-            setUi(result.ui);
+            setUi(
+              buildUiModel({
+                snapshot: result.refresh?.snapshot,
+                decision: result.refresh?.decision,
+                quote: result.refresh?.quote,
+                execution: result.execution,
+                lastError: result.errorCode ? `${result.errorCode}: ${result.errorMessage ?? ''}` : undefined,
+              }),
+            );
           }}
         />
 
