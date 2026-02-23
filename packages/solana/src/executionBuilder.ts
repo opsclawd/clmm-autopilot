@@ -46,7 +46,7 @@ export type BuildExitConfig = {
   estimatedRentLamports: number;
   estimatedAtaCreateLamports: number;
   feeBufferLamports: number;
-  txSigHash: Uint8Array;
+  attestationHash: Uint8Array;
   simulate: (message: TransactionMessage) => Promise<{ err: unknown | null; accountsResolved: boolean }>;
   returnVersioned?: boolean;
 };
@@ -134,8 +134,8 @@ export async function buildExitTransaction(
   direction: ExitDirection,
   config: BuildExitConfig,
 ): Promise<BuildExitResult> {
-  if (config.txSigHash.length !== 32) {
-    fail('DATA_UNAVAILABLE', 'txSigHash must be exactly 32 bytes', false);
+  if (config.attestationHash.length !== 32) {
+    fail('DATA_UNAVAILABLE', 'attestationHash must be exactly 32 bytes', false);
   }
 
   const refreshed = await resolveFreshSnapshotAndQuote(snapshot, config);
@@ -158,7 +158,7 @@ export async function buildExitTransaction(
     positionMint: refreshed.snapshot.positionMint,
     epoch: canonicalEpoch(config.nowUnixMs()),
     direction: direction === 'DOWN' ? 0 : 1,
-    txSigHash: config.txSigHash,
+    attestationHash: config.attestationHash,
   });
 
   const instructions: TransactionInstruction[] = [
