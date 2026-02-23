@@ -17,8 +17,6 @@
   },
   "dependencies": {
     "@clmm-autopilot/core": "workspace:*",
-    "@clmm-autopilot/notifications": "workspace:*",
-    "@clmm-autopilot/ui-state": "workspace:*",
     "@orca-so/common-sdk": "^0.7.0",
     "@orca-so/whirlpools-sdk": "^0.20.0",
     "@solana/web3.js": "^1.98.4",

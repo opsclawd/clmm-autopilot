@@ -83,7 +83,7 @@ describe('executeOnce', () => {
     });
 
     expect(res.errorCode).toBe('DATA_UNAVAILABLE');
-    expect(res.ui.canExecute).toBe(false);
+    expect(res.refresh?.decision.decision).toBe('HOLD');
   });
 
   it('aborts before builder when receipt already exists for canonical epoch', async () => {

@@ -59,7 +59,7 @@ export default function Home() {
                 expectedMinOut: 'N/A',
                 quoteAgeMs: 0,
               });
-              setUi(refreshed.ui);
+              setUi(buildUiModel({ snapshot: refreshed.snapshot, decision: refreshed.decision, quote: refreshed.quote }));
             } catch (e) {
               const mapped = mapErrorToUi(e);
               setUi(buildUiModel({ lastError: `${mapped.code}: ${mapped.message}` }));
@@ -97,9 +97,17 @@ export default function Home() {
                 attestationHash: new Uint8Array(32),
                 onSimulationComplete: (s) => setSimSummary(`${s} — ready for wallet prompt`),
                 signAndSend: async (tx: VersionedTransaction) => (await provider.signAndSendTransaction(tx)).signature,
-                notifications,
+                logger: notifications,
               });
-              setUi(res.ui);
+              setUi(
+                buildUiModel({
+                  snapshot: res.refresh?.snapshot,
+                  decision: res.refresh?.decision,
+                  quote: res.refresh?.quote,
+                  execution: res.execution,
+                  lastError: res.errorCode ? `${res.errorCode}: ${res.errorMessage ?? ''}` : undefined,
+                }),
+              );
             } catch (e) {
               const mapped = mapErrorToUi(e);
               setUi(buildUiModel({ lastError: `${mapped.code}: ${mapped.message}` }));

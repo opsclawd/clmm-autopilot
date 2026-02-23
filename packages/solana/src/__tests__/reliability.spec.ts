@@ -13,6 +13,26 @@ describe('reliability', () => {
     expect(out.reasonCode).toBe('QUOTE_STALE');
   });
 
+  it('crossed bound triggers rebuild', () => {
+    const out = shouldRebuild(
+      { quotedAtUnixMs: 10_000, quotedAtSlot: 10, quoteTickIndex: 100 },
+      { currentTickIndex: 50, lowerTickIndex: 90, upperTickIndex: 110, tickSpacing: 1 },
+      { nowUnixMs: 11_000, latestSlot: 11, quoteFreshnessMs: 20_000, maxSlotDrift: 8 },
+    );
+    expect(out.rebuild).toBe(true);
+    expect(out.reasonCode).toBe('BOUND_CROSSED');
+  });
+
+  it('tick move >= tickSpacing triggers rebuild', () => {
+    const out = shouldRebuild(
+      { quotedAtUnixMs: 10_000, quotedAtSlot: 10, quoteTickIndex: 100 },
+      { currentTickIndex: 101, lowerTickIndex: 90, upperTickIndex: 110, tickSpacing: 1 },
+      { nowUnixMs: 11_000, latestSlot: 11, quoteFreshnessMs: 20_000, maxSlotDrift: 8 },
+    );
+    expect(out.rebuild).toBe(true);
+    expect(out.reasonCode).toBe('TICK_MOVED');
+  });
+
   it('blockhash expiry triggers refresh + rebuild', async () => {
     const rebuildMessage = vi.fn(async () => {});
     const getLatestBlockhash = vi.fn(async () => ({ blockhash: 'new', lastValidBlockHeight: 2 }));
