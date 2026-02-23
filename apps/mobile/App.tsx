@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import * as Clipboard from 'expo-clipboard';
 import { Button, SafeAreaView, ScrollView, Text, TextInput } from 'react-native';
@@ -19,10 +19,45 @@ export default function App() {
   const [ui, setUi] = useState<UiModel>(buildUiModel({}));
   const [simSummary, setSimSummary] = useState('N/A');
   const [samples, setSamples] = useState<Sample[]>([]);
+  const monitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const canExecute = Boolean(wallet && positionAddress && ui.decision?.decision !== 'HOLD');
 
   const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+
+  useEffect(() => {
+    if (monitorRef.current) {
+      clearInterval(monitorRef.current);
+      monitorRef.current = null;
+    }
+    setSamples([]);
+
+    if (!positionAddress) return;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress));
+        const slot = await connection.getSlot('confirmed');
+        const unixTs = Math.floor(Date.now() / 1000);
+        if (cancelled) return;
+        setSamples((prev) => [...prev, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }].slice(-90));
+      } catch {
+        // keep monitor resilient; manual refresh surfaces explicit errors
+      }
+    };
+
+    void poll();
+    monitorRef.current = setInterval(() => void poll(), 2000);
+
+    return () => {
+      cancelled = true;
+      if (monitorRef.current) {
+        clearInterval(monitorRef.current);
+        monitorRef.current = null;
+      }
+    };
+  }, [positionAddress]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
