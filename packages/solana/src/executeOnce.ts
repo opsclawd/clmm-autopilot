@@ -114,13 +114,15 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     const epoch = Math.floor(now / 1000 / 86400);
     const [receiptPda] = deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch });
 
+    const latestBlockhash = await params.connection.getLatestBlockhash();
+
     const msg = await buildExitTransaction(
       snapshot,
       refreshed.decision.decision === 'TRIGGER_UP' ? 'UP' : ('DOWN' as ExitDirection),
       {
         authority: params.authority,
         payer: params.authority,
-        recentBlockhash: (await params.connection.getLatestBlockhash()).blockhash,
+        recentBlockhash: latestBlockhash.blockhash,
         computeUnitLimit: 600000,
         computeUnitPriceMicroLamports: 10000,
         conditionalAtaIxs: [],
@@ -134,12 +136,12 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         maxRebuildAttempts: 3,
         nowUnixMs: () => now,
         rebuildSnapshotAndQuote: async () => ({ snapshot, quote: params.quote }),
-        availableLamports: 5_000_000,
+        availableLamports: 50_000_000,
         estimatedNetworkFeeLamports: 20_000,
         estimatedPriorityFeeLamports: 10_000,
         estimatedRentLamports: 2_039_280,
         estimatedAtaCreateLamports: 0,
-        feeBufferLamports: 10_000,
+        feeBufferLamports: 10_000_000,
         attestationHash: params.attestationHash,
         returnVersioned: true,
         simulate: async (message) => {
@@ -156,7 +158,21 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     const sig = await params.signAndSend(msg as VersionedTransaction);
     params.notifications?.notify('transaction sent', { signature: sig });
 
-    const receipt = await fetchReceiptByPda(params.connection, receiptPda);
+    await params.connection.confirmTransaction(
+      {
+        signature: sig,
+        blockhash: latestBlockhash.blockhash,
+        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+      },
+      'confirmed',
+    );
+
+    let receipt = null;
+    for (let i = 0; i < 6; i += 1) {
+      receipt = await fetchReceiptByPda(params.connection, receiptPda);
+      if (receipt) break;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
     params.notifications?.notify('receipt fetched', { receiptPda: receiptPda.toBase58(), found: Boolean(receipt) });
 
     const exec: UiExecution = {
