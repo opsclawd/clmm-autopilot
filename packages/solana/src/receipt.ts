@@ -1,8 +1,26 @@
-import { PublicKey, SystemProgram, TransactionInstruction, type AccountMeta } from '@solana/web3.js';
+import {
+  PublicKey,
+  SystemProgram,
+  TransactionInstruction,
+  type AccountInfo,
+  type AccountMeta,
+  type Connection,
+} from '@solana/web3.js';
 
 type Direction = 0 | 1;
 
 export const RECEIPT_PROGRAM_ID = new PublicKey('A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm');
+
+export type ReceiptAccount = {
+  authority: PublicKey;
+  positionMint: PublicKey;
+  epoch: number;
+  direction: number;
+  attestationHash: Uint8Array;
+  slot: bigint;
+  unixTs: bigint;
+  bump: number;
+};
 
 export function deriveReceiptPda(params: {
   authority: PublicKey;
@@ -22,6 +40,29 @@ function u32Le(value: number): Buffer {
   const b = Buffer.alloc(4);
   b.writeUInt32LE(value);
   return b;
+}
+
+function decodeReceipt(info: AccountInfo<Buffer>): ReceiptAccount {
+  const data = info.data;
+  return {
+    authority: new PublicKey(data.subarray(8, 40)),
+    positionMint: new PublicKey(data.subarray(40, 72)),
+    epoch: data.readUInt32LE(72),
+    direction: data.readUInt8(76),
+    attestationHash: data.subarray(77, 109),
+    slot: data.readBigUInt64LE(109),
+    unixTs: data.readBigInt64LE(117),
+    bump: data.readUInt8(125),
+  };
+}
+
+export async function fetchReceiptByPda(
+  connection: Pick<Connection, 'getAccountInfo'>,
+  receiptPda: PublicKey,
+): Promise<ReceiptAccount | null> {
+  const info = await connection.getAccountInfo(receiptPda, 'confirmed');
+  if (!info) return null;
+  return decodeReceipt(info as AccountInfo<Buffer>);
 }
 
 // Anchor discriminator for `record_execution` (must match target/idl/receipt.json)
