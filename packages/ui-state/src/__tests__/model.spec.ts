@@ -51,6 +51,20 @@ describe('ui-state', () => {
     expect(model.decision?.cooldownRemainingMs).toBe(12000);
   });
 
+  it('surfaces config values used for policy + execution', () => {
+    const model = buildUiModel({
+      config: {
+        policy: { cadenceMs: 2000, requiredConsecutive: 3, cooldownMs: 90000 },
+        execution: { maxSlippageBps: 50, quoteFreshnessMs: 20000 },
+      },
+    });
+    expect(model.config?.policy.cadenceMs).toBe(2000);
+    expect(model.config?.policy.requiredConsecutive).toBe(3);
+    expect(model.config?.policy.cooldownMs).toBe(90000);
+    expect(model.config?.execution.maxSlippageBps).toBe(50);
+    expect(model.config?.execution.quoteFreshnessMs).toBe(20000);
+  });
+
   it('maps representative canonical errors', () => {
     expect(mapErrorToUi({ code: 'SIMULATION_FAILED' }).title).toBe('Simulation failed');
     expect(mapErrorToUi({ code: 'BLOCKHASH_EXPIRED' }).code).toBe('BLOCKHASH_EXPIRED');
