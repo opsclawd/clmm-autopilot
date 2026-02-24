@@ -30,6 +30,8 @@ export type RefreshResult = {
     lowerTick: number;
     upperTick: number;
     inRange: boolean;
+    pairLabel: string;
+    pairValid: boolean;
   };
   decision: {
     decision: 'HOLD' | 'TRIGGER_DOWN' | 'TRIGGER_UP';
@@ -56,6 +58,8 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
       lowerTick: snapshot.lowerTickIndex,
       upperTick: snapshot.upperTickIndex,
       inRange: snapshot.inRange,
+      pairLabel: snapshot.pairLabel,
+      pairValid: snapshot.pairValid,
     },
     decision: {
       decision: decision.action,

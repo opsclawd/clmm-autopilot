@@ -4,6 +4,8 @@ export type UiSnapshot = {
   lowerTick: number;
   upperTick: number;
   inRange: boolean;
+  pairLabel?: string;
+  pairValid?: boolean;
   slot?: number;
   unixTs?: number;
 };

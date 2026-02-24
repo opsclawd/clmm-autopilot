@@ -111,7 +111,27 @@ export default function Home() {
               setUi(buildUiModel({ snapshot: refreshed.snapshot, decision: refreshed.decision, quote: refreshed.quote }));
             } catch (e) {
               const mapped = mapErrorToUi(e);
-              setUi(buildUiModel({ lastError: `${mapped.code}: ${mapped.message}` }));
+              setUi(
+                buildUiModel({
+                  decision:
+                    mapped.code === 'NOT_SOL_USDC'
+                      ? { decision: 'HOLD', reasonCode: 'NOT_SOL_USDC', samplesUsed: 0, threshold: 0, cooldownRemainingMs: 0 }
+                      : undefined,
+                  snapshot:
+                    mapped.code === 'NOT_SOL_USDC' && positionAddress
+                      ? {
+                          positionAddress,
+                          currentTick: 0,
+                          lowerTick: 0,
+                          upperTick: 0,
+                          inRange: false,
+                          pairLabel: 'INVALID_PAIR',
+                          pairValid: false,
+                        }
+                      : undefined,
+                  lastError: `${mapped.code}: ${mapped.message}`,
+                }),
+              );
             }
           }}
         >
@@ -198,6 +218,8 @@ export default function Home() {
         <div>slippage cap: {ui.quote?.slippageBpsCap ?? 'N/A'}</div>
         <div>expected minOut: {ui.quote?.expectedMinOut ?? 'N/A'}</div>
         <div>quote age (ms): {ui.quote?.quoteAgeMs ?? 'N/A'}</div>
+        <div>pair: {ui.snapshot?.pairLabel ?? 'N/A'}</div>
+        <div>pair valid: {ui.snapshot?.pairValid === undefined ? 'N/A' : ui.snapshot?.pairValid ? 'yes' : 'no'}</div>
         <div>samples buffered: {samples.length}</div>
         <div>simulate summary: {simSummary}</div>
       </section>

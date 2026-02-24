@@ -22,6 +22,9 @@ function ix(seed: number): TransactionInstruction {
 }
 
 const baseSnapshot = {
+  cluster: 'devnet' as const,
+  pairLabel: 'SOL/USDC',
+  pairValid: true,
   whirlpool: pk(10),
   position: pk(11),
   positionMint: pk(111),

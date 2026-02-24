@@ -1,4 +1,5 @@
 import { BN } from 'bn.js';
+import { assertSolUsdcPair, symbolForMint, type SolanaCluster } from '@clmm-autopilot/core';
 import { Percentage } from '@orca-so/common-sdk';
 import {
   decreaseLiquidityQuoteByLiquidityWithParams,
@@ -8,6 +9,7 @@ import {
 } from '@orca-so/whirlpools-sdk';
 import { PublicKey, type AccountInfo, type Connection } from '@solana/web3.js';
 import { normalizeSolanaError } from './errors';
+import { loadSolanaConfig } from './config';
 import type { CanonicalErrorCode, NormalizedError } from './types';
 
 const ORCA_WHIRLPOOL_PROGRAM_ID = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
@@ -22,6 +24,9 @@ export type RemovePreview = {
 };
 
 export type PositionSnapshot = {
+  cluster: SolanaCluster;
+  pairLabel: string;
+  pairValid: boolean;
   whirlpool: PublicKey;
   position: PublicKey;
   positionMint: PublicKey;
@@ -232,6 +237,10 @@ export async function loadPositionSnapshot(
     ]);
     const mintA = parseMintMeta(mintAInfo);
     const mintB = parseMintMeta(mintBInfo);
+    const cluster = loadSolanaConfig(process.env).cluster;
+
+    assertSolUsdcPair(whirlpool.tokenMintA.toBase58(), whirlpool.tokenMintB.toBase58(), cluster);
+    const pairLabel = `${symbolForMint(whirlpool.tokenMintA.toBase58(), cluster)}/${symbolForMint(whirlpool.tokenMintB.toBase58(), cluster)}`;
 
     const tickArrayLower = deriveTickArrayFromTickIndex(
       position.whirlpool,
@@ -252,6 +261,9 @@ export async function loadPositionSnapshot(
     const removePreviewResult = computeRemovePreview(position, whirlpool);
 
     return {
+      cluster,
+      pairLabel,
+      pairValid: true,
       whirlpool: position.whirlpool,
       position: positionPubkey,
       positionMint: position.positionMint,

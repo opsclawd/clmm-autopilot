@@ -11,6 +11,9 @@ vi.mock('../executionBuilder', () => ({
 
 vi.mock('../orcaInspector', () => ({
   loadPositionSnapshot: vi.fn(async () => ({
+    cluster: 'devnet',
+    pairLabel: 'SOL/USDC',
+    pairValid: true,
     whirlpool: new PublicKey(new Uint8Array(32).fill(1)),
     position: new PublicKey(new Uint8Array(32).fill(2)),
     positionMint: new PublicKey(new Uint8Array(32).fill(3)),
@@ -177,7 +180,10 @@ describe('executeOnce', () => {
       checkExistingReceipt: async () => true,
       rebuildSnapshotAndQuote: async () => ({
         snapshot: {
-          whirlpool: new PublicKey(new Uint8Array(32).fill(1)),
+          cluster: 'devnet',
+    pairLabel: 'SOL/USDC',
+    pairValid: true,
+    whirlpool: new PublicKey(new Uint8Array(32).fill(1)),
           position: new PublicKey(new Uint8Array(32).fill(2)),
           positionMint: new PublicKey(new Uint8Array(32).fill(3)),
           currentTickIndex: 15,
