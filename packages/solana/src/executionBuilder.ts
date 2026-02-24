@@ -88,6 +88,23 @@ function u8At(payload: Uint8Array, offset: number): number {
   return payload[offset] ?? 0;
 }
 
+function i32leAt(payload: Uint8Array, offset: number): number {
+  return new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getInt32(offset, true);
+}
+
+function u32leAt(payload: Uint8Array, offset: number): number {
+  return new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(offset, true);
+}
+
+function u64leAt(payload: Uint8Array, offset: number): bigint {
+  const slice = payload.subarray(offset, offset + 8);
+  let n = BigInt(0);
+  for (let i = 7; i >= 0; i -= 1) {
+    n = (n << BigInt(8)) | BigInt(slice[i] ?? 0);
+  }
+  return n;
+}
+
 function bytesEqualConstantTime(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -189,10 +206,10 @@ export async function buildExitTransaction(
   if (!config.attestationPayloadBytes || config.attestationPayloadBytes.length === 0) {
     fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes are required', false);
   }
-  if (config.attestationPayloadBytes.length < 217) {
-    fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes must be canonical fixed-width length (>=217 bytes)', false, {
+  if (config.attestationPayloadBytes.length !== 217) {
+    fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes must be canonical fixed-width length (217 bytes)', false, {
       got: config.attestationPayloadBytes.length,
-      min: 217,
+      expected: 217,
     });
   }
   const expected = hashAttestationPayload(config.attestationPayloadBytes);
@@ -228,7 +245,38 @@ export async function buildExitTransaction(
   if (!fieldEq32(payload, 32, refreshed.snapshot.positionMint.toBuffer())) {
     fail('MISSING_ATTESTATION_HASH', 'attestation payload positionMint mismatch', false);
   }
+  if (i32leAt(payload, 69) !== refreshed.snapshot.lowerTickIndex) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload lowerTickIndex mismatch', false);
+  }
+  if (i32leAt(payload, 73) !== refreshed.snapshot.upperTickIndex) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload upperTickIndex mismatch', false);
+  }
+  if (i32leAt(payload, 77) !== refreshed.snapshot.currentTickIndex) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload currentTickIndex mismatch', false);
+  }
   assertQuoteDirection(direction, refreshed.quote, refreshed.snapshot);
+
+  if (!fieldEq32(payload, 97, refreshed.quote.inputMint.toBuffer())) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload quote.inputMint mismatch', false);
+  }
+  if (!fieldEq32(payload, 129, refreshed.quote.outputMint.toBuffer())) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload quote.outputMint mismatch', false);
+  }
+  if (u32leAt(payload, 189) !== config.computeUnitLimit) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload computeUnitLimit mismatch', false);
+  }
+  if (u64leAt(payload, 193) !== BigInt(config.computeUnitPriceMicroLamports)) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload computeUnitPriceMicroLamports mismatch', false);
+  }
+  if (u32leAt(payload, 201) !== config.maxSlippageBps) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload maxSlippageBps mismatch', false);
+  }
+  if (u64leAt(payload, 205) !== BigInt(config.quoteFreshnessMs)) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload quoteFreshnessMs mismatch', false);
+  }
+  if (u32leAt(payload, 213) !== config.maxRebuildAttempts) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload maxRebuildAttempts mismatch', false);
+  }
 
   if (refreshed.quote.slippageBps > config.maxSlippageBps) {
     fail('SLIPPAGE_EXCEEDED', 'Quote slippage exceeds configured cap', false);

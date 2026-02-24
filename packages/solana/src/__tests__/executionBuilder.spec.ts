@@ -410,6 +410,10 @@ describe('buildExitTransaction', () => {
       code: 'MISSING_ATTESTATION_HASH',
     });
 
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationPayloadBytes: new Uint8Array(218) }))).rejects.toMatchObject({
+      code: 'MISSING_ATTESTATION_HASH',
+    });
+
     await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationHash: new Uint8Array(31) }))).rejects.toMatchObject({
       code: 'MISSING_ATTESTATION_HASH',
     });
@@ -532,6 +536,24 @@ describe('buildExitTransaction', () => {
           nowUnixMs: () => epochNowMs,
           attestationPayloadBytes: encodeAttestationPayload(mismatchDirectionInput),
           attestationHash: computeAttestationHash(mismatchDirectionInput),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+
+    const mismatchQuoteInput = {
+      ...mismatchDirectionInput,
+      direction: 0 as const,
+      quoteInputMint: pk(77).toBase58(),
+    };
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({
+          nowUnixMs: () => epochNowMs,
+          attestationPayloadBytes: encodeAttestationPayload(mismatchQuoteInput),
+          attestationHash: computeAttestationHash(mismatchQuoteInput),
         }),
       ),
     ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
