@@ -22,6 +22,7 @@ export default function Home() {
   const [ui, setUi] = useState<UiModel>(buildUiModel({}));
   const [simSummary, setSimSummary] = useState<string>('N/A');
   const [samples, setSamples] = useState<Sample[]>([]);
+  const [lastSimDebug, setLastSimDebug] = useState<unknown>(null);
   const pollingRef = useRef<number | null>(null);
 
   const canExecute = Boolean(wallet && positionAddress && ui.decision?.decision !== 'HOLD');
@@ -159,6 +160,7 @@ export default function Home() {
                 logger: notifications,
               });
 
+              setLastSimDebug(res.errorDebug ?? null);
               setUi(
                 buildUiModel({
                   snapshot: res.refresh?.snapshot,
@@ -221,6 +223,12 @@ export default function Home() {
       </section>
 
       {ui.lastError ? <div className="text-red-700 text-sm">{ui.lastError}</div> : null}
+      {process.env.NODE_ENV !== 'production' && ui.lastError && lastSimDebug ? (
+        <details className="text-xs border rounded p-3">
+          <summary className="cursor-pointer font-semibold">Sim logs (dev)</summary>
+          <pre className="whitespace-pre-wrap break-all mt-2">{JSON.stringify(lastSimDebug, null, 2)}</pre>
+        </details>
+      ) : null}
     </main>
   );
 }

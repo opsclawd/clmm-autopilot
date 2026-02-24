@@ -87,6 +87,58 @@ describe('executeOnce', () => {
     expect(res.refresh?.decision.decision).toBe('HOLD');
   });
 
+  it('returns mapped simulation diagnostics debug payload on execution failure', async () => {
+    buildExitTransactionMock.mockRejectedValueOnce({
+      code: 'DATA_UNAVAILABLE',
+      retryable: false,
+      message: 'Simulation failed due to missing account/ATA',
+      debug: { logs: ['could not find account'], err: 'AccountNotFound' },
+    });
+
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: vi.fn(async () => null),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2039280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      slippageBpsCap: 50,
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      checkExistingReceipt: async () => false,
+      buildJupiterSwapIxs: vi.fn(async () => ({ instructions: [], lookupTableAddresses: [] })),
+    });
+
+    expect(res.status).toBe('ERROR');
+    expect(res.errorCode).toBe('DATA_UNAVAILABLE');
+    expect(res.errorDebug).toMatchObject({ logs: ['could not find account'] });
+  });
+
   it('aborts before builder when receipt already exists for canonical epoch', async () => {
     buildExitTransactionMock.mockClear();
     const authority = new PublicKey(new Uint8Array(32).fill(20));

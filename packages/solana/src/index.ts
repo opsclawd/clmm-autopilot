@@ -7,5 +7,6 @@ export * from './orcaInspector';
 export * from './executionBuilder';
 export * from './jupiter';
 export * from './reliability';
+export * from './simErrors';
 export * from './executeOnce';
 export * from './requirements';

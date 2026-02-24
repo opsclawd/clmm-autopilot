@@ -12,6 +12,7 @@ import { fetchJupiterSwapIxs, type JupiterQuote, type JupiterSwapIxs } from './j
 import type { PositionSnapshot } from './orcaInspector';
 import { buildOrcaExitIxs, type OrcaExitIxs } from './orcaExitBuilder';
 import { buildRecordExecutionIx } from './receipt';
+import { classifySimulationFailure, type SimulationDiagnostics } from './simErrors';
 import type { CanonicalErrorCode } from './types';
 import type { FeeBufferDebugPayload, FeeRequirementsBreakdown } from './requirements';
 import { buildWsolLifecycleIxs, type WsolLifecycle } from './wsol';
@@ -53,8 +54,8 @@ export type BuildExitConfig = {
 
   lookupTableAccounts?: AddressLookupTableAccount[];
 
-  // Mandatory simulation gate.
-  simulate: (tx: VersionedTransaction) => Promise<{ err: unknown | null; accountsResolved: boolean }>;
+  // Mandatory simulation gate (must be run against the exact tx message that will be signed).
+  simulate: (tx: VersionedTransaction) => Promise<SimulationDiagnostics>;
 
   returnVersioned?: boolean;
 };
@@ -245,8 +246,9 @@ export async function buildExitTransaction(
   const tx = new VersionedTransaction(v0);
 
   const simulation = await config.simulate(tx);
-  if (simulation.err !== null || !simulation.accountsResolved) {
-    fail('SIMULATION_FAILED', 'simulate-then-send gate failed', false);
+  if (simulation.err !== null) {
+    const mapped = classifySimulationFailure(simulation);
+    fail(mapped.code, mapped.message, false, mapped.debug);
   }
 
   if (config.returnVersioned) return tx;
