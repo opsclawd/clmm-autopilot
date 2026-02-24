@@ -206,54 +206,28 @@ export default function Home() {
                 : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
 
               const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.maxSlippageBps });
-              const observedSlot = await connection.getSlot(solanaConfig.commitment);
               const epochNowMs = Date.now();
-              const observedUnixTs = Math.floor(epochNowMs / 1000);
               const epoch = unixDaysFromUnixMs(epochNowMs);
-              const attestationPayloadBytes = encodeAttestationPayload({
+              const attestationInput = {
+                cluster: solanaConfig.cluster,
                 authority: authority.toBase58(),
+                position: snapshot.position.toBase58(),
                 positionMint: snapshot.positionMint.toBase58(),
+                whirlpool: snapshot.whirlpool.toBase58(),
                 epoch,
-                direction: dir === 'UP' ? 1 : 0,
+                direction: dir === 'UP' ? (1 as const) : (0 as const),
+                tickCurrent: snapshot.currentTickIndex,
                 lowerTickIndex: snapshot.lowerTickIndex,
                 upperTickIndex: snapshot.upperTickIndex,
-                currentTickIndex: snapshot.currentTickIndex,
-                observedSlot: BigInt(observedSlot),
-                observedUnixTs: BigInt(observedUnixTs),
+                slippageBpsCap: autopilotConfig.execution.maxSlippageBps,
                 quoteInputMint: quote.inputMint.toBase58(),
                 quoteOutputMint: quote.outputMint.toBase58(),
                 quoteInAmount: quote.inAmount,
-                quoteOutAmount: quote.outAmount,
-                quoteSlippageBps: quote.slippageBps,
+                quoteMinOutAmount: quote.outAmount,
                 quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
-                computeUnitLimit: autopilotConfig.execution.computeUnitLimit,
-                computeUnitPriceMicroLamports: BigInt(autopilotConfig.execution.computeUnitPriceMicroLamports),
-                maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
-                quoteFreshnessMs: BigInt(autopilotConfig.execution.quoteFreshnessMs),
-                maxRebuildAttempts: autopilotConfig.execution.maxRebuildAttempts,
-              });
-              const attestationHash = computeAttestationHash({
-                authority: authority.toBase58(),
-                positionMint: snapshot.positionMint.toBase58(),
-                epoch,
-                direction: dir === 'UP' ? 1 : 0,
-                lowerTickIndex: snapshot.lowerTickIndex,
-                upperTickIndex: snapshot.upperTickIndex,
-                currentTickIndex: snapshot.currentTickIndex,
-                observedSlot: BigInt(observedSlot),
-                observedUnixTs: BigInt(observedUnixTs),
-                quoteInputMint: quote.inputMint.toBase58(),
-                quoteOutputMint: quote.outputMint.toBase58(),
-                quoteInAmount: quote.inAmount,
-                quoteOutAmount: quote.outAmount,
-                quoteSlippageBps: quote.slippageBps,
-                quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
-                computeUnitLimit: autopilotConfig.execution.computeUnitLimit,
-                computeUnitPriceMicroLamports: BigInt(autopilotConfig.execution.computeUnitPriceMicroLamports),
-                maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
-                quoteFreshnessMs: BigInt(autopilotConfig.execution.quoteFreshnessMs),
-                maxRebuildAttempts: autopilotConfig.execution.maxRebuildAttempts,
-              });
+              };
+              const attestationPayloadBytes = encodeAttestationPayload(attestationInput);
+              const attestationHash = computeAttestationHash(attestationInput);
               setAttestationDebugPrefix(Buffer.from(attestationHash).toString('hex').slice(0, 12));
 
               const res = await executeOnce({

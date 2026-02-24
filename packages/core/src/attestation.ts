@@ -1,45 +1,50 @@
+import type { SolanaCluster } from './mints';
+
 export type AttestationDirection = 0 | 1;
 
+// Canonical, fixed-width execution attestation payload input.
+// IMPORTANT: any change to this shape or encoding must be treated as a consensus-breaking change
+// across web/mobile and the Solana tx builder.
 export type AttestationInput = {
-  authority: string | Uint8Array;
-  positionMint: string | Uint8Array;
-  epoch: number;
-  direction: AttestationDirection;
+  cluster: SolanaCluster | number; // u8
+  authority: string | Uint8Array; // 32
+  position: string | Uint8Array; // 32
+  positionMint: string | Uint8Array; // 32
+  whirlpool: string | Uint8Array; // 32
 
-  lowerTickIndex: number;
-  upperTickIndex: number;
-  currentTickIndex: number;
-  observedSlot: bigint;
-  observedUnixTs: bigint;
+  epoch: number; // u32 LE (unix-days)
+  direction: AttestationDirection; // u8
 
-  quoteInputMint: string | Uint8Array;
-  quoteOutputMint: string | Uint8Array;
-  quoteInAmount: bigint;
-  quoteOutAmount: bigint;
-  quoteSlippageBps: number;
-  quoteQuotedAtUnixMs: bigint;
+  tickCurrent: number; // i32 LE
+  lowerTickIndex: number; // i32 LE
+  upperTickIndex: number; // i32 LE
 
-  computeUnitLimit: number;
-  computeUnitPriceMicroLamports: bigint;
-  maxSlippageBps: number;
-  quoteFreshnessMs: bigint;
-  maxRebuildAttempts: number;
+  slippageBpsCap: number; // u16 LE
+
+  quoteInputMint: string | Uint8Array; // 32
+  quoteOutputMint: string | Uint8Array; // 32
+  quoteInAmount: bigint; // u64 LE
+  quoteMinOutAmount: bigint; // u64 LE
+  quoteQuotedAtUnixMs: bigint; // u64 LE
 };
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const BASE58_MAP = new Map(BASE58_ALPHABET.split('').map((ch, idx) => [ch, idx]));
 
 function base58Decode(value: string): Uint8Array {
   if (value.length === 0) return new Uint8Array();
-  const bytes = [0];
-  for (const char of value) {
-    const idx = BASE58_ALPHABET.indexOf(char);
-    if (idx < 0) throw new Error(`Invalid base58 character: ${char}`);
 
-    let carry = idx;
+  const bytes: number[] = [0];
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    const carry0 = BASE58_MAP.get(ch);
+    if (carry0 === undefined) throw new Error(`Invalid base58 character: ${ch}`);
+
+    let carry = carry0;
     for (let j = 0; j < bytes.length; j += 1) {
-      const n = bytes[j] * 58 + carry;
-      bytes[j] = n & 0xff;
-      carry = n >> 8;
+      const x = bytes[j] * 58 + carry;
+      bytes[j] = x & 0xff;
+      carry = x >> 8;
     }
     while (carry > 0) {
       bytes.push(carry & 0xff);
@@ -47,7 +52,9 @@ function base58Decode(value: string): Uint8Array {
     }
   }
 
-  for (let i = 0; i < value.length && value[i] === '1'; i += 1) {
+  let leadingZeroes = 0;
+  while (leadingZeroes < value.length && value[leadingZeroes] === '1') leadingZeroes += 1;
+  for (let i = 1; i < leadingZeroes; i += 1) {
     bytes.push(0);
   }
 
@@ -63,6 +70,14 @@ function toPubkey32(value: string | Uint8Array): Uint8Array {
 function u8(value: number): Uint8Array {
   if (!Number.isInteger(value) || value < 0 || value > 0xff) throw new Error('u8 out of range');
   return Uint8Array.from([value]);
+}
+
+function u16le(value: number): Uint8Array {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffff) throw new Error('u16 out of range');
+  const b = new Uint8Array(2);
+  const view = new DataView(b.buffer);
+  view.setUint16(0, value, true);
+  return b;
 }
 
 function u32le(value: number): Uint8Array {
@@ -185,31 +200,44 @@ export function hashAttestationPayload(bytes: Uint8Array): Uint8Array {
   return out;
 }
 
+function clusterToU8(cluster: SolanaCluster | number): number {
+  if (typeof cluster === 'number') return cluster;
+  // Canonical cluster mapping for attestation payloads.
+  // NOTE: do not reorder.
+  switch (cluster) {
+    case 'devnet':
+      return 0;
+    case 'mainnet-beta':
+      return 1;
+    case 'localnet':
+      return 2;
+    default:
+      throw new Error(`Unsupported cluster: ${String(cluster)}`);
+  }
+}
+
 export function encodeAttestationPayload(input: AttestationInput): Uint8Array {
   return concat([
+    u8(clusterToU8(input.cluster)),
     toPubkey32(input.authority),
+    toPubkey32(input.position),
     toPubkey32(input.positionMint),
+    toPubkey32(input.whirlpool),
+
     u32le(input.epoch),
     u8(input.direction),
 
+    i32le(input.tickCurrent),
     i32le(input.lowerTickIndex),
     i32le(input.upperTickIndex),
-    i32le(input.currentTickIndex),
-    u64le(input.observedSlot),
-    u64le(input.observedUnixTs),
+
+    u16le(input.slippageBpsCap),
 
     toPubkey32(input.quoteInputMint),
     toPubkey32(input.quoteOutputMint),
     u64le(input.quoteInAmount),
-    u64le(input.quoteOutAmount),
-    u32le(input.quoteSlippageBps),
+    u64le(input.quoteMinOutAmount),
     u64le(input.quoteQuotedAtUnixMs),
-
-    u32le(input.computeUnitLimit),
-    u64le(input.computeUnitPriceMicroLamports),
-    u32le(input.maxSlippageBps),
-    u64le(input.quoteFreshnessMs),
-    u32le(input.maxRebuildAttempts),
   ]);
 }
 

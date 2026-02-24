@@ -179,31 +179,25 @@ export default function App() {
                 : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
 
               const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.maxSlippageBps });
-              const observedSlot = await connection.getSlot('confirmed');
               const epochNowMs = Date.now();
-              const observedUnixTs = Math.floor(epochNowMs / 1000);
               const epoch = unixDaysFromUnixMs(epochNowMs);
               const attestationInput = {
+                cluster: CLUSTER,
                 authority: authority.toBase58(),
+                position: snapshot.position.toBase58(),
                 positionMint: snapshot.positionMint.toBase58(),
+                whirlpool: snapshot.whirlpool.toBase58(),
                 epoch,
                 direction: dir === 'UP' ? (1 as const) : (0 as const),
+                tickCurrent: snapshot.currentTickIndex,
                 lowerTickIndex: snapshot.lowerTickIndex,
                 upperTickIndex: snapshot.upperTickIndex,
-                currentTickIndex: snapshot.currentTickIndex,
-                observedSlot: BigInt(observedSlot),
-                observedUnixTs: BigInt(observedUnixTs),
+                slippageBpsCap: autopilotConfig.execution.maxSlippageBps,
                 quoteInputMint: quote.inputMint.toBase58(),
                 quoteOutputMint: quote.outputMint.toBase58(),
                 quoteInAmount: quote.inAmount,
-                quoteOutAmount: quote.outAmount,
-                quoteSlippageBps: quote.slippageBps,
+                quoteMinOutAmount: quote.outAmount,
                 quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
-                computeUnitLimit: autopilotConfig.execution.computeUnitLimit,
-                computeUnitPriceMicroLamports: BigInt(autopilotConfig.execution.computeUnitPriceMicroLamports),
-                maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
-                quoteFreshnessMs: BigInt(autopilotConfig.execution.quoteFreshnessMs),
-                maxRebuildAttempts: autopilotConfig.execution.maxRebuildAttempts,
               };
               const attestationPayloadBytes = encodeAttestationPayload(attestationInput);
               const attestationHash = computeAttestationHash(attestationInput);

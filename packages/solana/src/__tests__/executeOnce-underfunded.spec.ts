@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
+import { DEFAULT_CONFIG, encodeAttestationPayload } from '@clmm-autopilot/core';
 import { PublicKey } from '@solana/web3.js';
 
 vi.mock('@clmm-autopilot/core', async (importOriginal) => {
@@ -99,29 +99,24 @@ describe('executeOnce underfunded', () => {
       expectedMinOut: '0',
       quoteAgeMs: 0,
       attestationHash: new Uint8Array(32).fill(1),
-      attestationPayloadBytes: (() => {
-        const b = new Uint8Array(217);
-        b.set(authority.toBuffer(), 0);
-        b.set(new PublicKey(new Uint8Array(32).fill(12)).toBuffer(), 32);
-        // lower=50 i32 LE
-        b[69] = 50;
-        // upper=150 i32 LE
-        b[73] = 150;
-        // current=100 i32 LE
-        b[77] = 100;
-        b.set(new PublicKey('So11111111111111111111111111111111111111112').toBuffer(), 97);
-        b.set(new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU').toBuffer(), 129);
-        b[161] = 1; // quoteInAmount
-        b[169] = 1; // quoteOutAmount
-        b[177] = 1; // quoteSlippageBps
-        b[181] = 1; // quoteQuotedAtUnixMs
-        b[189] = 0xC0; b[190] = 0x27; b[191] = 0x09; // 600000 LE u32
-        b[193] = 0x10; b[194] = 0x27; // 10000 LE u64 low bytes
-        b[201] = 50; // maxSlippageBps
-        b[205] = 0x20; b[206] = 0x4E; // 20000 LE u64 low bytes
-        b[213] = 3; // maxRebuildAttempts
-        return b;
-      })(),
+      attestationPayloadBytes: encodeAttestationPayload({
+        cluster: 'devnet',
+        authority: authority.toBase58(),
+        position: new PublicKey(new Uint8Array(32).fill(11)).toBase58(),
+        positionMint: new PublicKey(new Uint8Array(32).fill(12)).toBase58(),
+        whirlpool: new PublicKey(new Uint8Array(32).fill(10)).toBase58(),
+        epoch: 0,
+        direction: 0,
+        tickCurrent: 100,
+        lowerTickIndex: 50,
+        upperTickIndex: 150,
+        slippageBpsCap: 50,
+        quoteInputMint: new PublicKey('So11111111111111111111111111111111111111112').toBase58(),
+        quoteOutputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU').toBase58(),
+        quoteInAmount: 1n,
+        quoteMinOutAmount: 1n,
+        quoteQuotedAtUnixMs: 1n,
+      }),
       buildJupiterSwapIxs: vi.fn(async () => ({ instructions: [], lookupTableAddresses: [] })),
       signAndSend: vi.fn(async () => 'sig'),
       nowUnixMs: () => 0,
