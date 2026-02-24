@@ -1,7 +1,6 @@
+import type { AutopilotConfig } from '@clmm-autopilot/core';
 import type { PositionSnapshot } from './orcaInspector';
 import { normalizeSolanaError } from './errors';
-
-export const RETRY_BACKOFF_MS = [250, 750, 2000] as const;
 
 export type ReliabilityQuote = {
   quotedAtUnixMs: number;
@@ -12,8 +11,8 @@ export type ReliabilityQuote = {
 export type ShouldRebuildConfig = {
   nowUnixMs: number;
   latestSlot?: number;
-  quoteFreshnessMs?: number;
-  maxSlotDrift?: number;
+  quoteFreshnessMs: number;
+  maxSlotDrift: number;
 };
 
 export function shouldRebuild(
@@ -21,13 +20,10 @@ export function shouldRebuild(
   latestSnapshot: Pick<PositionSnapshot, 'currentTickIndex' | 'lowerTickIndex' | 'upperTickIndex' | 'tickSpacing'>,
   config: ShouldRebuildConfig,
 ): { rebuild: boolean; reasonCode?: 'QUOTE_STALE' | 'BOUND_CROSSED' | 'TICK_MOVED' } {
-  const quoteFreshnessMs = config.quoteFreshnessMs ?? 20_000;
-  const maxSlotDrift = config.maxSlotDrift ?? 8;
-
-  const staleByTime = config.nowUnixMs - quote.quotedAtUnixMs > quoteFreshnessMs;
+  const staleByTime = config.nowUnixMs - quote.quotedAtUnixMs > config.quoteFreshnessMs;
   const staleBySlot =
     typeof quote.quotedAtSlot === 'number' && typeof config.latestSlot === 'number'
-      ? config.latestSlot - quote.quotedAtSlot > maxSlotDrift
+      ? config.latestSlot - quote.quotedAtSlot > config.maxSlotDrift
       : false;
 
   if (staleByTime || staleBySlot) {
@@ -54,9 +50,12 @@ export function shouldRebuild(
 export async function withBoundedRetry<T>(
   fn: () => Promise<T>,
   sleep: (ms: number) => Promise<void>,
-  maxAttempts = 3,
+  cfg: Pick<AutopilotConfig['reliability'], 'fetchMaxAttempts' | 'retryBackoffMs'>,
 ): Promise<T> {
   let lastError: unknown;
+  const maxAttempts = cfg.fetchMaxAttempts;
+  const backoffs = cfg.retryBackoffMs;
+
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       return await fn();
@@ -66,9 +65,11 @@ export async function withBoundedRetry<T>(
       if (!normalized.retryable || attempt === maxAttempts) {
         throw normalized;
       }
-      await sleep(RETRY_BACKOFF_MS[attempt - 1] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]);
+      const backoff = backoffs[attempt - 1] ?? backoffs[backoffs.length - 1] ?? 0;
+      await sleep(backoff);
     }
   }
+
   throw lastError;
 }
 
@@ -76,15 +77,14 @@ export async function refreshBlockhashIfNeeded(params: {
   getLatestBlockhash: () => Promise<{ blockhash: string; lastValidBlockHeight: number }>;
   current: { blockhash: string; lastValidBlockHeight: number; fetchedAtUnixMs: number };
   nowUnixMs: number;
-  quoteFreshnessMs?: number;
+  quoteFreshnessMs: number;
   sendError?: unknown;
   rebuildMessage: () => Promise<void>;
 }): Promise<{ blockhash: string; lastValidBlockHeight: number; rebuilt: boolean }> {
-  const quoteFreshnessMs = params.quoteFreshnessMs ?? 20_000;
   const userDelayMs = params.nowUnixMs - params.current.fetchedAtUnixMs;
 
   const normalized = params.sendError ? normalizeSolanaError(params.sendError) : null;
-  const requiresRebuild = userDelayMs > quoteFreshnessMs || normalized?.code === 'BLOCKHASH_EXPIRED';
+  const requiresRebuild = userDelayMs > params.quoteFreshnessMs || normalized?.code === 'BLOCKHASH_EXPIRED';
   if (!requiresRebuild) {
     return {
       blockhash: params.current.blockhash,

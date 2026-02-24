@@ -1,4 +1,4 @@
-import { evaluateRangeBreak, type Sample, unixDaysFromUnixMs } from '@clmm-autopilot/core';
+import { evaluateRangeBreak, type AutopilotConfig, type PolicyState, type Sample, unixDaysFromUnixMs } from '@clmm-autopilot/core';
 import { Connection, PublicKey, VersionedTransaction, type AddressLookupTableAccount } from '@solana/web3.js';
 import { buildExitTransaction, type ExitDirection, type ExitQuote } from './executionBuilder';
 import { loadSolanaConfig } from './config';
@@ -19,7 +19,10 @@ export type RefreshParams = {
   connection: Connection;
   position: PublicKey;
   samples: Sample[];
-  slippageBpsCap: number;
+  config: AutopilotConfig;
+  policyState?: PolicyState;
+
+  // UI-only quote diagnostics (not used by core policy).
   expectedMinOut: string;
   quoteAgeMs: number;
 };
@@ -40,6 +43,7 @@ export type RefreshResult = {
     samplesUsed: number;
     threshold: number;
     cooldownRemainingMs: number;
+    nextState: PolicyState;
   };
   quote: { slippageBpsCap: number; expectedMinOut: string; quoteAgeMs: number };
 };
@@ -50,7 +54,8 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
   const decision = evaluateRangeBreak(
     params.samples,
     { lowerTickIndex: snapshot.lowerTickIndex, upperTickIndex: snapshot.upperTickIndex },
-    { requiredConsecutive: 3, cadenceMs: 2000, cooldownMs: 90_000 },
+    params.config.policy,
+    params.policyState ?? {},
   );
 
   return {
@@ -69,9 +74,10 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
       samplesUsed: decision.debug.samplesUsed,
       threshold: decision.debug.threshold,
       cooldownRemainingMs: decision.debug.cooldownRemainingMs,
+      nextState: decision.nextState,
     },
     quote: {
-      slippageBpsCap: params.slippageBpsCap,
+      slippageBpsCap: params.config.execution.maxSlippageBps,
       expectedMinOut: params.expectedMinOut,
       quoteAgeMs: params.quoteAgeMs,
     },
@@ -138,17 +144,17 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
 
   try {
     const cluster = loadSolanaConfig(process.env).cluster;
-    const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, 3);
+    const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, params.config.reliability);
     params.logger?.notify?.('snapshot fetched', { position: params.position.toBase58() });
 
     if (refreshed.decision.decision === 'HOLD') {
       return { status: 'HOLD', refresh: refreshed };
     }
 
-    let snapshot = await withBoundedRetry(() => loadPositionSnapshot(params.connection, params.position, cluster), sleep, 3);
+    let snapshot = await withBoundedRetry(() => loadPositionSnapshot(params.connection, params.position, cluster), sleep, params.config.reliability);
     let quote = params.quote;
     let quoteContext = params.quoteContext;
-    const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, 3);
+    const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, params.config.reliability);
 
     const rebuildCheck = shouldRebuild(
       {
@@ -157,7 +163,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         quoteTickIndex: quoteContext?.quoteTickIndex,
       },
       snapshot,
-      { nowUnixMs: nowUnixMs(), latestSlot, quoteFreshnessMs: 20_000, maxSlotDrift: 8 },
+      { nowUnixMs: nowUnixMs(), latestSlot, quoteFreshnessMs: params.config.execution.quoteFreshnessMs, maxSlotDrift: params.config.reliability.maxSlotDrift },
     );
 
     if (rebuildCheck.rebuild) {
@@ -169,7 +175,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           errorMessage: `Rebuild required: ${rebuildCheck.reasonCode}`,
         };
       }
-      const rebuilt = await withBoundedRetry(() => params.rebuildSnapshotAndQuote!(), sleep, 3);
+      const rebuilt = await withBoundedRetry(() => params.rebuildSnapshotAndQuote!(), sleep, params.config.reliability);
       snapshot = rebuilt.snapshot;
       quote = rebuilt.quote;
       quoteContext = rebuilt.quoteContext;
@@ -181,7 +187,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     const [receiptPda] = deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch });
     const existingReceipt = params.checkExistingReceipt
       ? await params.checkExistingReceipt(receiptPda)
-      : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, 3));
+      : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, params.config.reliability));
     if (existingReceipt) {
       return {
         status: 'ERROR',
@@ -191,10 +197,10 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       };
     }
 
-    const availableLamports = await withBoundedRetry(() => params.connection.getBalance(params.authority), sleep, 3);
+    const availableLamports = await withBoundedRetry(() => params.connection.getBalance(params.authority), sleep, params.config.reliability);
 
     const fetchedAtUnixMs = nowUnixMs();
-    let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, 3);
+    let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, params.config.reliability);
 
     const buildTx = async (recentBlockhash: string) => {
       const buildSwapIxs = params.buildJupiterSwapIxs ?? fetchJupiterSwapIxs;
@@ -205,12 +211,13 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         authority: params.authority,
         payer: params.authority,
         recentBlockhash,
-        computeUnitLimit: 600000,
-        computeUnitPriceMicroLamports: 10000,
+        computeUnitLimit: params.config.execution.computeUnitLimit,
+        computeUnitPriceMicroLamports: params.config.execution.computeUnitPriceMicroLamports,
         quote,
-        maxSlippageBps: params.slippageBpsCap,
-        quoteFreshnessMs: 20_000,
-        maxRebuildAttempts: 3,
+        maxSlippageBps: params.config.execution.maxSlippageBps,
+        quoteFreshnessMs: params.config.execution.quoteFreshnessMs,
+        maxRebuildAttempts: params.config.execution.maxRebuildAttempts,
+        rebuildWindowMs: params.config.execution.rebuildWindowMs,
         nowUnixMs,
         receiptEpochUnixMs: epochSourceMs,
         rebuildSnapshotAndQuote: async () => {
@@ -227,10 +234,10 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           quote,
           authority: params.authority,
           payer: params.authority,
-          txFeeLamports: 20_000,
-          computeUnitLimit: 600_000,
-          computeUnitPriceMicroLamports: 10_000,
-          bufferLamports: 10_000_000,
+          txFeeLamports: params.config.execution.txFeeLamports,
+          computeUnitLimit: params.config.execution.computeUnitLimit,
+          computeUnitPriceMicroLamports: params.config.execution.computeUnitPriceMicroLamports,
+          bufferLamports: params.config.execution.feeBufferLamports,
         }),
         attestationHash: params.attestationHash,
         attestationPayloadBytes: params.attestationPayloadBytes,
@@ -262,7 +269,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         getLatestBlockhash: () => params.connection.getLatestBlockhash(),
         current: { ...latestBlockhash, fetchedAtUnixMs },
         nowUnixMs: nowUnixMs(),
-        quoteFreshnessMs: 20_000,
+        quoteFreshnessMs: params.config.execution.quoteFreshnessMs,
         rebuildMessage: async () => {
           msg = (await buildTx((await params.connection.getLatestBlockhash()).blockhash)) as VersionedTransaction;
         },
@@ -279,7 +286,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         getLatestBlockhash: () => params.connection.getLatestBlockhash(),
         current: { ...latestBlockhash, fetchedAtUnixMs },
         nowUnixMs: nowUnixMs(),
-        quoteFreshnessMs: 20_000,
+        quoteFreshnessMs: params.config.execution.quoteFreshnessMs,
         sendError,
         rebuildMessage: async () => {
           msg = (await buildTx((await params.connection.getLatestBlockhash()).blockhash)) as VersionedTransaction;

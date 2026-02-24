@@ -9,10 +9,15 @@ export type Bounds = {
   upperTickIndex: number;
 };
 
-export type Config = {
+// Settings (static) portion of the debounce policy.
+export type PolicyConfig = {
   requiredConsecutive: number;
   cadenceMs: number;
   cooldownMs: number;
+};
+
+// Runtime state carried across evaluations.
+export type PolicyState = {
   lastTriggerUnixTs?: number;
   lastEvaluatedSample?: Sample;
 };
@@ -35,10 +40,7 @@ export type Decision = {
     threshold: number;
     cooldownRemainingMs: number;
   };
-  nextState: {
-    lastTriggerUnixTs?: number;
-    lastEvaluatedSample?: Sample;
-  };
+  nextState: PolicyState;
 };
 
 type Side = 'DOWN' | 'UP' | 'IN_RANGE';
@@ -107,7 +109,11 @@ function trailingConsecutiveWithinCadence(
   return streak;
 }
 
-function cooldownRemainingMs(lastTriggerUnixTs: number | undefined, latestUnixTs: number, cooldownMs: number): number {
+function cooldownRemainingMs(
+  lastTriggerUnixTs: number | undefined,
+  latestUnixTs: number,
+  cooldownMs: number,
+): number {
   if (lastTriggerUnixTs == null) return 0;
   const elapsedMs = (latestUnixTs - lastTriggerUnixTs) * 1000;
   return Math.max(0, cooldownMs - elapsedMs);
@@ -121,10 +127,11 @@ function sameSample(a?: Sample, b?: Sample): boolean {
 export function evaluateRangeBreak(
   samples: readonly Sample[],
   bounds: Bounds,
-  config: Config,
+  policy: PolicyConfig,
+  state: PolicyState = {},
 ): Decision {
   const canonical = canonicalize(samples);
-  const threshold = config.requiredConsecutive * config.cadenceMs;
+  const threshold = policy.requiredConsecutive * policy.cadenceMs;
 
   if (canonical.length === 0) {
     return {
@@ -132,40 +139,39 @@ export function evaluateRangeBreak(
       reasonCode: 'DATA_UNAVAILABLE',
       debug: { samplesUsed: 0, threshold, cooldownRemainingMs: 0 },
       nextState: {
-        lastTriggerUnixTs: config.lastTriggerUnixTs,
-        lastEvaluatedSample: config.lastEvaluatedSample,
+        lastTriggerUnixTs: state.lastTriggerUnixTs,
+        lastEvaluatedSample: state.lastEvaluatedSample,
       },
     };
   }
 
   const latest = canonical[canonical.length - 1];
-  const cooldown = cooldownRemainingMs(config.lastTriggerUnixTs, latest.unixTs, config.cooldownMs);
+  const cooldown = cooldownRemainingMs(state.lastTriggerUnixTs, latest.unixTs, policy.cooldownMs);
 
-  if (sameSample(latest, config.lastEvaluatedSample)) {
+  if (sameSample(latest, state.lastEvaluatedSample)) {
     return {
       action: 'HOLD',
       reasonCode: 'DUPLICATE_EVALUATION',
       debug: { samplesUsed: canonical.length, threshold, cooldownRemainingMs: cooldown },
       nextState: {
-        lastTriggerUnixTs: config.lastTriggerUnixTs,
-        lastEvaluatedSample: config.lastEvaluatedSample,
+        lastTriggerUnixTs: state.lastTriggerUnixTs,
+        lastEvaluatedSample: state.lastEvaluatedSample,
       },
     };
   }
 
   if (
-    config.lastEvaluatedSample &&
-    (latest.slot < config.lastEvaluatedSample.slot ||
-      (latest.slot === config.lastEvaluatedSample.slot &&
-        latest.unixTs < config.lastEvaluatedSample.unixTs))
+    state.lastEvaluatedSample &&
+    (latest.slot < state.lastEvaluatedSample.slot ||
+      (latest.slot === state.lastEvaluatedSample.slot && latest.unixTs < state.lastEvaluatedSample.unixTs))
   ) {
     return {
       action: 'HOLD',
       reasonCode: 'NON_MONOTONIC_SAMPLE',
       debug: { samplesUsed: canonical.length, threshold, cooldownRemainingMs: cooldown },
       nextState: {
-        lastTriggerUnixTs: config.lastTriggerUnixTs,
-        lastEvaluatedSample: config.lastEvaluatedSample,
+        lastTriggerUnixTs: state.lastTriggerUnixTs,
+        lastEvaluatedSample: state.lastEvaluatedSample,
       },
     };
   }
@@ -173,8 +179,8 @@ export function evaluateRangeBreak(
   const classified = canonical.map((s) => classify(s, bounds));
   const latestClass = classified[classified.length - 1];
 
-  const baseState = {
-    lastTriggerUnixTs: config.lastTriggerUnixTs,
+  const baseState: PolicyState = {
+    lastTriggerUnixTs: state.lastTriggerUnixTs,
     lastEvaluatedSample: latest,
   };
 
@@ -187,8 +193,13 @@ export function evaluateRangeBreak(
     };
   }
 
-  const streak = trailingConsecutiveWithinCadence(canonical, classified, latestClass, config.cadenceMs);
-  if (streak < config.requiredConsecutive) {
+  const streak = trailingConsecutiveWithinCadence(
+    canonical,
+    classified,
+    latestClass,
+    policy.cadenceMs,
+  );
+  if (streak < policy.requiredConsecutive) {
     return {
       action: 'HOLD',
       reasonCode: 'DEBOUNCE_NOT_MET',

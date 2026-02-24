@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
 import { refreshBlockhashIfNeeded, shouldRebuild, withBoundedRetry } from '../reliability';
 
 describe('reliability', () => {
@@ -42,6 +43,7 @@ describe('reliability', () => {
       current: { blockhash: 'old', lastValidBlockHeight: 1, fetchedAtUnixMs: 1000 },
       nowUnixMs: 1001,
       sendError: new Error('blockhash not found'),
+      quoteFreshnessMs: DEFAULT_CONFIG.execution.quoteFreshnessMs,
       rebuildMessage,
     });
 
@@ -56,7 +58,7 @@ describe('reliability', () => {
     });
     const sleep = vi.fn(async () => {});
 
-    await expect(withBoundedRetry(fn, sleep, 3)).rejects.toMatchObject({ code: 'RPC_TRANSIENT' });
+    await expect(withBoundedRetry(fn, sleep, DEFAULT_CONFIG.reliability)).rejects.toMatchObject({ code: 'RPC_TRANSIENT' });
     expect(fn).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenNthCalledWith(1, 250);

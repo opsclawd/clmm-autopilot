@@ -1,3 +1,15 @@
+export type UiConfig = {
+  policy: {
+    cadenceMs: number;
+    requiredConsecutive: number;
+    cooldownMs: number;
+  };
+  execution: {
+    maxSlippageBps: number;
+    quoteFreshnessMs: number;
+  };
+};
+
 export type UiSnapshot = {
   positionAddress: string;
   currentTick: number;
@@ -36,6 +48,7 @@ export type UiExecution = {
 };
 
 export type UiModel = {
+  config?: UiConfig;
   loading: {
     snapshot: boolean;
     decision: boolean;
@@ -51,6 +64,7 @@ export type UiModel = {
 };
 
 export function buildUiModel(input: {
+  config?: UiConfig;
   snapshot?: UiSnapshot;
   decision?: UiDecision;
   quote?: UiQuote;
@@ -59,6 +73,7 @@ export function buildUiModel(input: {
   loading?: Partial<UiModel['loading']>;
 }): UiModel {
   return {
+    config: input.config,
     loading: {
       snapshot: input.loading?.snapshot ?? false,
       decision: input.loading?.decision ?? false,
@@ -76,6 +91,9 @@ export function buildUiModel(input: {
     lastError: input.lastError,
   };
 }
+
+export const applyConfig = (prev: UiModel, config: UiConfig): UiModel =>
+  buildUiModel({ ...prev, config });
 
 export const applySnapshot = (prev: UiModel, snapshot: UiSnapshot): UiModel =>
   buildUiModel({ ...prev, snapshot });

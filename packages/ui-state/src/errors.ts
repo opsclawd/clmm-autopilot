@@ -10,7 +10,8 @@ export type CanonicalCode =
   | 'SLIPPAGE_EXCEEDED'
   | 'INSUFFICIENT_FEE_BUFFER'
   | 'BLOCKHASH_EXPIRED'
-  | 'MISSING_ATTESTATION_HASH';
+  | 'MISSING_ATTESTATION_HASH'
+  | 'CONFIG_INVALID';
 
 export type UiError = {
   code: CanonicalCode;
@@ -32,6 +33,7 @@ const messages: Record<CanonicalCode, Omit<UiError, 'code'>> = {
   INSUFFICIENT_FEE_BUFFER: { title: 'Insufficient fee buffer', message: 'Insufficient lamports after fee buffer reserve.' },
   BLOCKHASH_EXPIRED: { title: 'Blockhash expired', message: 'Refresh and rebuild transaction.' },
   MISSING_ATTESTATION_HASH: { title: 'Missing attestation hash', message: 'Execution attestation hash is missing or invalid.' },
+  CONFIG_INVALID: { title: 'Invalid configuration', message: 'Autopilot configuration is invalid. Fix config values before execution.' },
 };
 
 function safeJson(value: unknown): string {

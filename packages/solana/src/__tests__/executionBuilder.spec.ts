@@ -78,6 +78,7 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     maxSlippageBps: 50,
     quoteFreshnessMs: 2_000,
     maxRebuildAttempts: 3,
+    rebuildWindowMs: 15_000,
     nowUnixMs: () => epochNowMs,
     receiptEpochUnixMs: epochNowMs,
     rebuildSnapshotAndQuote: async () => ({ snapshot: baseSnapshot, quote: { ...defaultQuote, quotedAtUnixMs: 1_700_000_000_200 } }),
@@ -195,7 +196,7 @@ describe('buildExitTransaction', () => {
     expect(rebuildSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('stale rebuild loop stops on 15s window with live clock', async () => {
+  it('stale rebuild loop stops on configured rebuild window with live clock', async () => {
     let now = 1_700_000_000_500;
     const nowFn = () => {
       now += 4_000;

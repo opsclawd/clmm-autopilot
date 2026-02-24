@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 
 const { buildExitTransactionMock } = vi.hoisted(() => ({
@@ -79,7 +80,8 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      slippageBpsCap: 50,
+      config: DEFAULT_CONFIG,
+      policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
       attestationHash: new Uint8Array(32),
@@ -130,7 +132,8 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      slippageBpsCap: 50,
+      config: DEFAULT_CONFIG,
+      policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
       attestationHash: new Uint8Array(32),
@@ -175,7 +178,8 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      slippageBpsCap: 50,
+      config: DEFAULT_CONFIG,
+      policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
       attestationHash: new Uint8Array(32),
@@ -266,7 +270,8 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      slippageBpsCap: 50,
+      config: DEFAULT_CONFIG,
+      policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
       attestationHash: new Uint8Array(32),
