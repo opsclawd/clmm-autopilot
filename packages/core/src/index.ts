@@ -1,5 +1,6 @@
 export type NonEmptyArray<T> = [T, ...T[]];
 
+export * from './config';
 export * from './policy';
 export * from './mints';
 export * from './attestation';
