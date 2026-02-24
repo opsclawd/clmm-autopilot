@@ -84,8 +84,11 @@ function i32le(value: number): Uint8Array {
 function u64le(value: bigint): Uint8Array {
   if (value < BigInt(0) || value > BigInt('0xffffffffffffffff')) throw new Error('u64 out of range');
   const b = new Uint8Array(8);
-  const view = new DataView(b.buffer);
-  view.setBigUint64(0, value, true);
+  let n = value;
+  for (let i = 0; i < 8; i += 1) {
+    b[i] = Number(n & BigInt(0xff));
+    n >>= BigInt(8);
+  }
   return b;
 }
 
@@ -122,8 +125,11 @@ export function hashAttestationPayload(bytes: Uint8Array): Uint8Array {
   const msg = new Uint8Array(bytes.length + padLen);
   msg.set(bytes);
   msg[bytes.length] = 0x80;
+  for (let i = 0; i < 8; i += 1) {
+    const shift = BigInt((7 - i) * 8);
+    msg[msg.length - 8 + i] = Number((bitLen >> shift) & BigInt(0xff));
+  }
   const view = new DataView(msg.buffer);
-  view.setBigUint64(msg.length - 8, bitLen, false);
 
   const H = new Uint32Array([
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,

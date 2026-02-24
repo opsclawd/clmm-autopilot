@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { computeAttestationHash, encodeAttestationPayload } from '../attestation';
+import { createHash } from 'node:crypto';
+import { computeAttestationHash, encodeAttestationPayload, hashAttestationPayload } from '../attestation';
 
 const INPUT = {
   authority: '8qbHbw2BbbTHBW1sbn4j4d93M2D8v1jQ7Rj4tTBW5u7x',
@@ -47,5 +48,22 @@ describe('attestation encoding/hash', () => {
 
     expect(payload.length).toBe(217);
     expect(Buffer.from(hash).toString('hex')).toBe('6c4ac83dfae26bcc68f3093dc342110bdabead4577fbd4b7903607dfea945b26');
+  });
+
+  it('matches node crypto sha256 reference across payload sizes', () => {
+    const payloads = [
+      new Uint8Array([]),
+      new Uint8Array([1]),
+      new Uint8Array(55).fill(0xab),
+      new Uint8Array(56).fill(0xcd),
+      new Uint8Array(57).fill(0xef),
+      encodeAttestationPayload(INPUT),
+    ];
+
+    for (const payload of payloads) {
+      const ours = Buffer.from(hashAttestationPayload(payload)).toString('hex');
+      const node = createHash('sha256').update(Buffer.from(payload)).digest('hex');
+      expect(ours).toBe(node);
+    }
   });
 });

@@ -6,6 +6,7 @@ import {
   type AddressLookupTableAccount,
   type VersionedTransaction,
 } from '@solana/web3.js';
+import { computeAttestationHash, encodeAttestationPayload } from '@clmm-autopilot/core';
 import { buildExitTransaction, type BuildExitConfig, type ExitQuote } from '../executionBuilder';
 
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
@@ -265,6 +266,59 @@ describe('buildExitTransaction', () => {
     ).rejects.toMatchObject({ code: 'NOT_SOL_USDC' });
   });
 
+  it('accepts matching attestation payload hash + epoch', async () => {
+    const epochNowMs = 1_700_000_000_500;
+    const epoch = Math.floor(epochNowMs / 1000 / 86400);
+    const payload = encodeAttestationPayload({
+      authority: buildConfig().authority.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch,
+      direction: 0,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    });
+    const hash = computeAttestationHash({
+      authority: buildConfig().authority.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch,
+      direction: 0,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    });
+
+    await expect(
+      buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ nowUnixMs: () => epochNowMs, attestationHash: hash, attestationPayloadBytes: payload })),
+    ).resolves.toBeInstanceOf(TransactionMessage);
+  });
+
   it('rejects missing/zero/mismatched attestation hash', async () => {
     await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationHash: new Uint8Array(31) }))).rejects.toMatchObject({
       code: 'MISSING_ATTESTATION_HASH',
@@ -282,6 +336,60 @@ describe('buildExitTransaction', () => {
           attestationHash,
           attestationPayloadBytes,
         }),
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+
+    const epochNowMs = 1_700_000_000_500;
+    const badEpochPayload = encodeAttestationPayload({
+      authority: buildConfig().authority.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch: 1,
+      direction: 0,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    });
+    const badEpochHash = computeAttestationHash({
+      authority: buildConfig().authority.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch: 1,
+      direction: 0,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    });
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({ nowUnixMs: () => epochNowMs, attestationHash: badEpochHash, attestationPayloadBytes: badEpochPayload }),
       ),
     ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
   });

@@ -7,7 +7,7 @@ import {
   type TransactionInstruction,
 } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
-import { assertSolUsdcPair, hashAttestationPayload } from '@clmm-autopilot/core';
+import { assertSolUsdcPair, hashAttestationPayload, unixDaysFromUnixMs } from '@clmm-autopilot/core';
 import { buildCreateAtaIdempotentIx, SOL_MINT } from './ata';
 import { fetchJupiterSwapIxs, type JupiterQuote, type JupiterSwapIxs } from './jupiter';
 import type { PositionSnapshot } from './orcaInspector';
@@ -75,7 +75,13 @@ function fail(code: CanonicalErrorCode, message: string, retryable: boolean, deb
 }
 
 function canonicalEpoch(unixMs: number): number {
-  return Math.floor(unixMs / 1000 / 86400);
+  return unixDaysFromUnixMs(unixMs);
+}
+
+function epochFromPayloadBytes(payload: Uint8Array): number {
+  if (payload.length < 68) throw new Error('attestationPayloadBytes too short to read epoch');
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  return view.getUint32(64, true);
 }
 
 function assertQuoteDirection(direction: ExitDirection, quote: ExitQuote, snapshot: PositionSnapshot): void {
@@ -167,6 +173,14 @@ export async function buildExitTransaction(
     const expected = hashAttestationPayload(config.attestationPayloadBytes);
     if (Buffer.from(expected).compare(Buffer.from(config.attestationHash)) !== 0) {
       fail('MISSING_ATTESTATION_HASH', 'attestationHash must equal sha256(attestationPayloadBytes)', false);
+    }
+    const payloadEpoch = epochFromPayloadBytes(config.attestationPayloadBytes);
+    const receiptEpoch = canonicalEpoch(config.nowUnixMs());
+    if (payloadEpoch !== receiptEpoch) {
+      fail('MISSING_ATTESTATION_HASH', 'attestation payload epoch must match canonical receipt epoch', false, {
+        payloadEpoch,
+        receiptEpoch,
+      });
     }
   }
 

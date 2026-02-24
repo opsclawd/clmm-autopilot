@@ -10,6 +10,7 @@ vi.mock('@clmm-autopilot/core', async () => {
       reasonCode: 'BREAK_CONFIRMED',
       debug: { samplesUsed: 3, threshold: 3, cooldownRemainingMs: 0 },
     }),
+    unixDaysFromUnixMs: (unixMs: number) => Math.floor(unixMs / 1000 / 86400),
     assertSolUsdcPair: (mintA: string, mintB: string) => {
       if (!((mintA === SOL && mintB === USDC) || (mintA === USDC && mintB === SOL))) {
         const err = new Error('Unsupported pair') as Error & { code: 'NOT_SOL_USDC'; retryable: false };

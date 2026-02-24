@@ -5,7 +5,7 @@ import { Button, SafeAreaView, ScrollView, Text, TextInput } from 'react-native'
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { createConsoleNotificationsAdapter } from '@clmm-autopilot/notifications';
 import { executeOnce, fetchJupiterQuote, loadPositionSnapshot, refreshPositionDecision } from '@clmm-autopilot/solana';
-import { computeAttestationHash, encodeAttestationPayload } from '@clmm-autopilot/core';
+import { computeAttestationHash, encodeAttestationPayload, unixDaysFromUnixMs } from '@clmm-autopilot/core';
 import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-state';
 import { runMwaSignAndSendVersionedTransaction, runMwaSignMessageSmoke } from './src/mwaSmoke';
 
@@ -146,8 +146,9 @@ export default function App() {
 
               const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: 50 });
               const observedSlot = await connection.getSlot('confirmed');
-              const observedUnixTs = Math.floor(Date.now() / 1000);
-              const epoch = Math.floor(observedUnixTs / 86400);
+              const epochNowMs = Date.now();
+              const observedUnixTs = Math.floor(epochNowMs / 1000);
+              const epoch = unixDaysFromUnixMs(epochNowMs);
               const attestationInput = {
                 authority: authority.toBase58(),
                 positionMint: snapshot.positionMint.toBase58(),
@@ -188,6 +189,7 @@ export default function App() {
                 onSimulationComplete: (s) => setSimSummary(`${s} — ready for wallet prompt`),
                 signAndSend: async (tx: VersionedTransaction) => (await runMwaSignAndSendVersionedTransaction(tx)).signature,
                 logger: notifications,
+                nowUnixMs: () => epochNowMs,
               });
 
               setUi(

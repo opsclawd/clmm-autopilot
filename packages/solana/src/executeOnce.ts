@@ -1,4 +1,4 @@
-import { evaluateRangeBreak, type Sample } from '@clmm-autopilot/core';
+import { evaluateRangeBreak, type Sample, unixDaysFromUnixMs } from '@clmm-autopilot/core';
 import { Connection, PublicKey, VersionedTransaction, type AddressLookupTableAccount } from '@solana/web3.js';
 import { buildExitTransaction, type ExitDirection, type ExitQuote } from './executionBuilder';
 import { loadSolanaConfig } from './config';
@@ -176,7 +176,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       params.logger?.notify?.('quote rebuilt', { reasonCode: rebuildCheck.reasonCode ?? 'QUOTE_STALE' });
     }
 
-    const epoch = Math.floor(nowUnixMs() / 1000 / 86400);
+    const epochSourceMs = nowUnixMs();
+    const epoch = unixDaysFromUnixMs(epochSourceMs);
     const [receiptPda] = deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch });
     const existingReceipt = params.checkExistingReceipt
       ? await params.checkExistingReceipt(receiptPda)
@@ -210,7 +211,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         maxSlippageBps: params.slippageBpsCap,
         quoteFreshnessMs: 20_000,
         maxRebuildAttempts: 3,
-        nowUnixMs,
+        nowUnixMs: () => epochSourceMs,
         rebuildSnapshotAndQuote: async () => {
           const r = params.rebuildSnapshotAndQuote ? await params.rebuildSnapshotAndQuote() : { snapshot, quote, quoteContext };
           snapshot = r.snapshot;
