@@ -50,7 +50,7 @@ const baseSnapshot = {
 };
 
 const attestationHash = new Uint8Array(32).fill(7);
-const attestationPayloadBytes = new Uint8Array([1, 2, 3]);
+const attestationPayloadBytes = new Uint8Array(68);
 
 type SimResult = { err: unknown | null; logs?: string[]; unitsConsumed?: number; innerInstructions?: unknown; returnData?: unknown };
 
@@ -65,8 +65,34 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     raw: { inAmount: '123', outAmount: '456' },
   };
 
+  const authority = pk(18);
+  const epochNowMs = 1_700_000_000_500;
+  const epoch = Math.floor(epochNowMs / 1000 / 86400);
+  const baseAttestationInput = {
+    authority: authority.toBase58(),
+    positionMint: baseSnapshot.positionMint.toBase58(),
+    epoch,
+    direction: 0 as const,
+    lowerTickIndex: baseSnapshot.lowerTickIndex,
+    upperTickIndex: baseSnapshot.upperTickIndex,
+    currentTickIndex: baseSnapshot.currentTickIndex,
+    observedSlot: 1n,
+    observedUnixTs: 1n,
+    quoteInputMint: SOL_MINT.toBase58(),
+    quoteOutputMint: USDC_MINT.toBase58(),
+    quoteInAmount: 123n,
+    quoteOutAmount: 456n,
+    quoteSlippageBps: 30,
+    quoteQuotedAtUnixMs: 1n,
+    computeUnitLimit: 600_000,
+    computeUnitPriceMicroLamports: 10_000n,
+    maxSlippageBps: 50,
+    quoteFreshnessMs: 2_000n,
+    maxRebuildAttempts: 3,
+  };
+
   return {
-    authority: pk(18),
+    authority,
     payer: pk(19),
     recentBlockhash: 'EETubP5AKH2uP8WqzU7xYfPqBrM6oTnP3v8igJE6wz7A',
     computeUnitLimit: 600_000,
@@ -75,7 +101,8 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     maxSlippageBps: 50,
     quoteFreshnessMs: 2_000,
     maxRebuildAttempts: 3,
-    nowUnixMs: () => 1_700_000_000_500,
+    nowUnixMs: () => epochNowMs,
+    receiptEpochUnixMs: epochNowMs,
     rebuildSnapshotAndQuote: async () => ({ snapshot: baseSnapshot, quote: { ...quote, quotedAtUnixMs: 1_700_000_000_200 } }),
     availableLamports: 5_000_000,
     requirements: {
@@ -86,7 +113,8 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
       bufferLamports: 10_000,
       totalRequiredLamports: 2_039_280 + 20_000 + 5_000 + 10_000,
     },
-    attestationHash,
+    attestationHash: computeAttestationHash(baseAttestationInput),
+    attestationPayloadBytes: encodeAttestationPayload(baseAttestationInput),
     simulate: async (): Promise<SimResult> => ({ err: null, logs: ['ok'] }),
     buildOrcaExitIxs: () => ({
       conditionalAtaIxs: [ix(21), ix(22)],
@@ -158,6 +186,33 @@ describe('buildExitTransaction', () => {
 
     await buildExitTransaction(baseSnapshot, 'DOWN', config);
     expect(rebuildSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('stale rebuild loop stops on 15s window with live clock', async () => {
+    let now = 1_700_000_000_500;
+    const nowFn = () => {
+      now += 4_000;
+      return now;
+    };
+
+    const rebuildSpy = vi.fn(async () => ({
+      snapshot: baseSnapshot,
+      quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_900_000 },
+    }));
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({
+          nowUnixMs: nowFn,
+          quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_900_000 },
+          rebuildSnapshotAndQuote: rebuildSpy,
+          maxRebuildAttempts: 99,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'QUOTE_STALE' });
+    expect(rebuildSpy).toHaveBeenCalled();
   });
 
   it('simulate-then-send gate cannot be bypassed', async () => {
@@ -320,6 +375,10 @@ describe('buildExitTransaction', () => {
   });
 
   it('rejects missing/zero/mismatched attestation hash', async () => {
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationPayloadBytes: undefined as unknown as Uint8Array }))).rejects.toMatchObject({
+      code: 'MISSING_ATTESTATION_HASH',
+    });
+
     await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationHash: new Uint8Array(31) }))).rejects.toMatchObject({
       code: 'MISSING_ATTESTATION_HASH',
     });

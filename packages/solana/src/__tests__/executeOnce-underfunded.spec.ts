@@ -11,6 +11,7 @@ vi.mock('@clmm-autopilot/core', async () => {
       debug: { samplesUsed: 3, threshold: 3, cooldownRemainingMs: 0 },
     }),
     unixDaysFromUnixMs: (unixMs: number) => Math.floor(unixMs / 1000 / 86400),
+    hashAttestationPayload: (_bytes: Uint8Array) => new Uint8Array(32).fill(1),
     assertSolUsdcPair: (mintA: string, mintB: string) => {
       if (!((mintA === SOL && mintB === USDC) || (mintA === USDC && mintB === SOL))) {
         const err = new Error('Unsupported pair') as Error & { code: 'NOT_SOL_USDC'; retryable: false };
@@ -93,8 +94,10 @@ describe('executeOnce underfunded', () => {
       expectedMinOut: '0',
       quoteAgeMs: 0,
       attestationHash: new Uint8Array(32).fill(1),
+      attestationPayloadBytes: new Uint8Array(68),
       buildJupiterSwapIxs: vi.fn(async () => ({ instructions: [], lookupTableAddresses: [] })),
       signAndSend: vi.fn(async () => 'sig'),
+      nowUnixMs: () => 0,
     });
 
     expect(res.status).toBe('ERROR');

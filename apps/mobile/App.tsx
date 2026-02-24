@@ -189,7 +189,6 @@ export default function App() {
                 onSimulationComplete: (s) => setSimSummary(`${s} — ready for wallet prompt`),
                 signAndSend: async (tx: VersionedTransaction) => (await runMwaSignAndSendVersionedTransaction(tx)).signature,
                 logger: notifications,
-                nowUnixMs: () => epochNowMs,
               });
 
               setUi(

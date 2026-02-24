@@ -39,6 +39,7 @@ export type BuildExitConfig = {
   quoteFreshnessMs: number;
   maxRebuildAttempts: number;
   nowUnixMs: () => number;
+  receiptEpochUnixMs: number;
   rebuildSnapshotAndQuote?: () => Promise<{ snapshot: PositionSnapshot; quote: ExitQuote }>;
 
   // Cost guardrails.
@@ -47,7 +48,7 @@ export type BuildExitConfig = {
 
   // Receipt.
   attestationHash: Uint8Array;
-  attestationPayloadBytes?: Uint8Array;
+  attestationPayloadBytes: Uint8Array;
 
   // Builder deps (override in tests). Defaults construct real Orca/Jupiter/WSOL modules.
   buildOrcaExitIxs?: (args: { snapshot: PositionSnapshot; authority: PublicKey; payer: PublicKey }) => OrcaExitIxs;
@@ -169,19 +170,20 @@ export async function buildExitTransaction(
   if (config.attestationHash.every((b) => b === 0)) {
     fail('MISSING_ATTESTATION_HASH', 'attestationHash must be non-zero', false);
   }
-  if (config.attestationPayloadBytes) {
-    const expected = hashAttestationPayload(config.attestationPayloadBytes);
-    if (Buffer.from(expected).compare(Buffer.from(config.attestationHash)) !== 0) {
-      fail('MISSING_ATTESTATION_HASH', 'attestationHash must equal sha256(attestationPayloadBytes)', false);
-    }
-    const payloadEpoch = epochFromPayloadBytes(config.attestationPayloadBytes);
-    const receiptEpoch = canonicalEpoch(config.nowUnixMs());
-    if (payloadEpoch !== receiptEpoch) {
-      fail('MISSING_ATTESTATION_HASH', 'attestation payload epoch must match canonical receipt epoch', false, {
-        payloadEpoch,
-        receiptEpoch,
-      });
-    }
+  if (!config.attestationPayloadBytes || config.attestationPayloadBytes.length === 0) {
+    fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes are required', false);
+  }
+  const expected = hashAttestationPayload(config.attestationPayloadBytes);
+  if (Buffer.from(expected).compare(Buffer.from(config.attestationHash)) !== 0) {
+    fail('MISSING_ATTESTATION_HASH', 'attestationHash must equal sha256(attestationPayloadBytes)', false);
+  }
+  const payloadEpoch = epochFromPayloadBytes(config.attestationPayloadBytes);
+  const receiptEpoch = canonicalEpoch(config.receiptEpochUnixMs);
+  if (payloadEpoch !== receiptEpoch) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload epoch must match canonical receipt epoch', false, {
+      payloadEpoch,
+      receiptEpoch,
+    });
   }
 
   assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), snapshot.cluster);
@@ -246,7 +248,7 @@ export async function buildExitTransaction(
   const receiptIx = buildRecordExecutionIx({
     authority: config.authority,
     positionMint: refreshed.snapshot.positionMint,
-    epoch: canonicalEpoch(config.nowUnixMs()),
+    epoch: canonicalEpoch(config.receiptEpochUnixMs),
     direction: direction === 'DOWN' ? 0 : 1,
     attestationHash: config.attestationHash,
   });

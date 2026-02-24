@@ -230,7 +230,6 @@ export default function Home() {
                 onSimulationComplete: (s) => setSimSummary(`${s} — ready for wallet prompt`),
                 signAndSend: async (tx: VersionedTransaction) => (await provider.signAndSendTransaction(tx)).signature,
                 logger: notifications,
-                nowUnixMs: () => epochNowMs,
               });
 
               setLastSimDebug(res.errorDebug ?? null);

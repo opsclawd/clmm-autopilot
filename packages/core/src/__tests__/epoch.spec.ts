@@ -13,4 +13,8 @@ describe('epoch canonical helpers', () => {
     expect(unixDaysFromUnixMs(86_399_999)).toBe(0);
     expect(unixDaysFromUnixMs(86_400_000)).toBe(1);
   });
+
+  it('rejects non-integer unixTs input', () => {
+    expect(() => unixDaysFromUnixTs(1.5)).toThrow(/integer/);
+  });
 });

@@ -84,7 +84,7 @@ export type ExecuteOnceParams = RefreshParams & {
   quoteContext?: { quotedAtSlot?: number; quoteTickIndex?: number };
   // Receipt attestation hash (sha256 over canonical bytes) provided by app.
   attestationHash: Uint8Array;
-  attestationPayloadBytes?: Uint8Array;
+  attestationPayloadBytes: Uint8Array;
 
   signAndSend: (tx: VersionedTransaction) => Promise<string>;
 
@@ -211,7 +211,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         maxSlippageBps: params.slippageBpsCap,
         quoteFreshnessMs: 20_000,
         maxRebuildAttempts: 3,
-        nowUnixMs: () => epochSourceMs,
+        nowUnixMs,
+        receiptEpochUnixMs: epochSourceMs,
         rebuildSnapshotAndQuote: async () => {
           const r = params.rebuildSnapshotAndQuote ? await params.rebuildSnapshotAndQuote() : { snapshot, quote, quoteContext };
           snapshot = r.snapshot;
