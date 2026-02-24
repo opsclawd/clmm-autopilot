@@ -73,11 +73,14 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     nowUnixMs: () => 1_700_000_000_500,
     rebuildSnapshotAndQuote: async () => ({ snapshot: baseSnapshot, quote: { ...quote, quotedAtUnixMs: 1_700_000_000_200 } }),
     availableLamports: 5_000_000,
-    estimatedNetworkFeeLamports: 20_000,
-    estimatedPriorityFeeLamports: 5_000,
-    estimatedRentLamports: 2_039_280,
-    estimatedAtaCreateLamports: 2_039_280,
-    feeBufferLamports: 10_000,
+    requirements: {
+      rentLamports: 2_039_280,
+      ataCount: 1,
+      txFeeLamports: 20_000,
+      priorityFeeLamports: 5_000,
+      bufferLamports: 10_000,
+      totalRequiredLamports: 2_039_280 + 20_000 + 5_000 + 10_000,
+    },
     attestationHash,
     simulate: async (): Promise<SimResult> => ({ err: null, accountsResolved: true }),
     buildOrcaExitIxs: () => ({
@@ -176,5 +179,32 @@ describe('buildExitTransaction', () => {
   it('when returnVersioned=true compiles to v0 message', async () => {
     const tx = (await buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ returnVersioned: true }))) as VersionedTransaction;
     expect(tx.message.version).toBe(0);
+  });
+
+  it('fails underfunded with canonical code and structured debug payload', async () => {
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({
+          availableLamports: 1,
+          requirements: {
+            rentLamports: 2,
+            ataCount: 1,
+            txFeeLamports: 3,
+            priorityFeeLamports: 4,
+            bufferLamports: 5,
+            totalRequiredLamports: 14,
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'INSUFFICIENT_FEE_BUFFER',
+      debug: {
+        availableLamports: 1,
+        deficitLamports: 13,
+        requirements: { totalRequiredLamports: 14 },
+      },
+    });
   });
 });

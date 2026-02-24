@@ -145,7 +145,12 @@ export default function App() {
                   quote: result.refresh?.quote,
                   execution: result.execution,
                   lastError:
-                    result.status === 'ERROR' && result.errorCode ? `${result.errorCode}: ${result.errorMessage ?? ''}` : undefined,
+                    result.status === 'ERROR' && result.errorCode
+                      ? (() => {
+                          const mapped = mapErrorToUi({ code: result.errorCode, debug: result.errorDebug, message: result.errorMessage });
+                          return `${mapped.code}: ${mapped.message}`;
+                        })()
+                      : undefined,
                 }),
               );
             } catch (e) {

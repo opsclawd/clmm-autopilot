@@ -32,11 +32,61 @@ const messages: Record<CanonicalCode, Omit<UiError, 'code'>> = {
   BLOCKHASH_EXPIRED: { title: 'Blockhash expired', message: 'Refresh and rebuild transaction.' },
 };
 
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 export function mapErrorToUi(err: unknown): UiError {
   const code =
     typeof err === 'object' && err && 'code' in err && typeof (err as { code?: string }).code === 'string'
       ? ((err as { code: CanonicalCode }).code)
       : 'RPC_PERMANENT';
-  const debug = err instanceof Error ? err.message : String(err ?? 'Unknown error');
-  return { code, ...messages[code], debug };
+
+  const debugRaw =
+    typeof err === 'object' && err && 'debug' in err
+      ? (err as { debug?: unknown }).debug
+      : err instanceof Error
+        ? err.message
+        : String(err ?? 'Unknown error');
+
+  // Provide actionable detail for fee-buffer failures while preserving canonical taxonomy.
+  if (code === 'INSUFFICIENT_FEE_BUFFER' && typeof debugRaw === 'object' && debugRaw) {
+    const d = debugRaw as {
+      availableLamports?: number;
+      deficitLamports?: number;
+      requirements?: {
+        rentLamports?: number;
+        ataCount?: number;
+        txFeeLamports?: number;
+        priorityFeeLamports?: number;
+        bufferLamports?: number;
+        totalRequiredLamports?: number;
+      };
+    };
+
+    const req = d.requirements ?? {};
+    const parts = [
+      typeof d.availableLamports === 'number' ? `available=${d.availableLamports}` : undefined,
+      typeof req.totalRequiredLamports === 'number' ? `required≈${req.totalRequiredLamports}` : undefined,
+      typeof d.deficitLamports === 'number' ? `deficit=${d.deficitLamports}` : undefined,
+      typeof req.ataCount === 'number' ? `missingATAs=${req.ataCount}` : undefined,
+      typeof req.rentLamports === 'number' ? `rent≈${req.rentLamports}` : undefined,
+      typeof req.txFeeLamports === 'number' ? `txFee≈${req.txFeeLamports}` : undefined,
+      typeof req.priorityFeeLamports === 'number' ? `priority≈${req.priorityFeeLamports}` : undefined,
+      typeof req.bufferLamports === 'number' ? `buffer=${req.bufferLamports}` : undefined,
+    ].filter(Boolean);
+
+    return {
+      code,
+      ...messages[code],
+      message: parts.length ? `Not enough SOL for fees/buffer (${parts.join(', ')}).` : messages[code].message,
+      debug: safeJson(debugRaw),
+    };
+  }
+
+  return { code, ...messages[code], debug: typeof debugRaw === 'string' ? debugRaw : safeJson(debugRaw) };
 }

@@ -21,4 +21,5 @@ export type NormalizedError = {
   code: CanonicalErrorCode;
   message: string;
   retryable: boolean;
+  debug?: unknown;
 };

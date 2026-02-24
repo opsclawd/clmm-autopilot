@@ -13,6 +13,7 @@ import type { PositionSnapshot } from './orcaInspector';
 import { buildOrcaExitIxs, type OrcaExitIxs } from './orcaExitBuilder';
 import { buildRecordExecutionIx } from './receipt';
 import type { CanonicalErrorCode } from './types';
+import type { FeeBufferDebugPayload, FeeRequirementsBreakdown } from './requirements';
 import { buildWsolLifecycleIxs, type WsolLifecycle } from './wsol';
 
 export type ExitDirection = 'DOWN' | 'UP';
@@ -40,11 +41,7 @@ export type BuildExitConfig = {
 
   // Cost guardrails.
   availableLamports: number;
-  estimatedNetworkFeeLamports: number;
-  estimatedPriorityFeeLamports: number;
-  estimatedRentLamports: number;
-  estimatedAtaCreateLamports: number;
-  feeBufferLamports: number;
+  requirements: FeeRequirementsBreakdown;
 
   // Receipt.
   attestationHash: Uint8Array;
@@ -64,12 +61,13 @@ export type BuildExitConfig = {
 
 export type BuildExitResult = VersionedTransaction | TransactionMessage;
 
-type TypedError = Error & { code: CanonicalErrorCode; retryable: boolean };
+type TypedError = Error & { code: CanonicalErrorCode; retryable: boolean; debug?: unknown };
 
-function fail(code: CanonicalErrorCode, message: string, retryable: boolean): never {
+function fail(code: CanonicalErrorCode, message: string, retryable: boolean, debug?: unknown): never {
   const err = new Error(message) as TypedError;
   err.code = code;
   err.retryable = retryable;
+  if (debug !== undefined) err.debug = debug;
   throw err;
 }
 
@@ -93,14 +91,19 @@ function assertQuoteDirection(direction: ExitDirection, quote: ExitQuote, snapsh
 }
 
 function enforceFeeBuffer(cfg: BuildExitConfig): void {
-  const projectedCost =
-    cfg.estimatedNetworkFeeLamports +
-    cfg.estimatedPriorityFeeLamports +
-    cfg.estimatedRentLamports +
-    cfg.estimatedAtaCreateLamports;
-  const remaining = cfg.availableLamports - projectedCost;
-  if (remaining < cfg.feeBufferLamports) {
-    fail('INSUFFICIENT_FEE_BUFFER', 'Insufficient fee buffer after projected costs', false);
+  const required = cfg.requirements.totalRequiredLamports;
+  if (cfg.availableLamports < required) {
+    const deficitLamports = required - cfg.availableLamports;
+    const debug: FeeBufferDebugPayload = {
+      availableLamports: cfg.availableLamports,
+      requirements: cfg.requirements,
+      deficitLamports,
+      notes: [
+        'requirements.totalRequiredLamports = rentLamports + txFeeLamports + priorityFeeLamports + bufferLamports',
+        'rentLamports is derived from missing ATA count * rent exemption for token account size',
+      ],
+    };
+    fail('INSUFFICIENT_FEE_BUFFER', 'Insufficient lamports for projected execution costs + fee buffer', false, debug);
   }
 }
 

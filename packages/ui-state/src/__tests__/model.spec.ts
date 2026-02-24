@@ -35,4 +35,19 @@ describe('ui-state', () => {
     expect(mapErrorToUi({ code: 'SIMULATION_FAILED' }).title).toBe('Simulation failed');
     expect(mapErrorToUi({ code: 'BLOCKHASH_EXPIRED' }).code).toBe('BLOCKHASH_EXPIRED');
   });
+
+  it('renders actionable insufficient-fee-buffer details when debug payload is present', () => {
+    const ui = mapErrorToUi({
+      code: 'INSUFFICIENT_FEE_BUFFER',
+      debug: {
+        availableLamports: 100,
+        deficitLamports: 23,
+        requirements: { totalRequiredLamports: 123, ataCount: 1, rentLamports: 50, bufferLamports: 10 },
+      },
+    });
+    expect(ui.message).toContain('available=100');
+    expect(ui.message).toContain('required');
+    expect(ui.message).toContain('deficit=23');
+    expect(ui.debug).toContain('"availableLamports": 100');
+  });
 });
