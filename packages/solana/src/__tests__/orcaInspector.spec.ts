@@ -240,6 +240,38 @@ describe('loadPositionSnapshot', () => {
     });
   });
 
+  it('honors explicit cluster override for pair validation', async () => {
+    clearTickArrayCache();
+    const position = Keypair.generate().publicKey;
+    const whirlpool = Keypair.generate().publicKey;
+    const positionMint = Keypair.generate().publicKey;
+
+    const accounts = new Map<string, { data: Buffer; owner?: PublicKey }>();
+    accounts.set(
+      position.toBase58(),
+      { data: mkPositionData({ whirlpool, positionMint, liquidity: 1n, lowerTickIndex: 120, upperTickIndex: 200 }) },
+    );
+    accounts.set(
+      whirlpool.toBase58(),
+      {
+        data: mkWhirlpoolData({
+          tickSpacing: 1,
+          currentTickIndex: 150,
+          tokenMintA: SOL_MINT,
+          tokenVaultA: Keypair.generate().publicKey,
+          tokenMintB: USDC_MINT,
+          tokenVaultB: Keypair.generate().publicKey,
+        }),
+      },
+    );
+    accounts.set(SOL_MINT.toBase58(), { data: mkMintData(9), owner: TOKEN_PROGRAM_V1 });
+    accounts.set(USDC_MINT.toBase58(), { data: mkMintData(6), owner: TOKEN_PROGRAM_V1 });
+
+    await expect(loadPositionSnapshot(mockConn({ accounts }), position, 'mainnet-beta')).rejects.toMatchObject({
+      code: 'NOT_SOL_USDC',
+    });
+  });
+
   it('explicitly invalidates tick-array cache when slot changes', async () => {
     clearTickArrayCache();
     __setRemovePreviewQuoteFnForTests(() => {

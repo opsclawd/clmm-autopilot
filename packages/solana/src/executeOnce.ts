@@ -1,6 +1,7 @@
 import { evaluateRangeBreak, type Sample } from '@clmm-autopilot/core';
 import { Connection, PublicKey, VersionedTransaction, type AddressLookupTableAccount } from '@solana/web3.js';
 import { buildExitTransaction, type ExitDirection, type ExitQuote } from './executionBuilder';
+import { loadSolanaConfig } from './config';
 import { computeExecutionRequirements } from './requirements';
 import { fetchJupiterSwapIxs } from './jupiter';
 import { normalizeSolanaError } from './errors';
@@ -44,7 +45,8 @@ export type RefreshResult = {
 };
 
 export async function refreshPositionDecision(params: RefreshParams): Promise<RefreshResult> {
-  const snapshot = await loadPositionSnapshot(params.connection, params.position);
+  const cluster = loadSolanaConfig(process.env).cluster;
+  const snapshot = await loadPositionSnapshot(params.connection, params.position, cluster);
   const decision = evaluateRangeBreak(
     params.samples,
     { lowerTickIndex: snapshot.lowerTickIndex, upperTickIndex: snapshot.upperTickIndex },
@@ -134,6 +136,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
 
   try {
+    const cluster = loadSolanaConfig(process.env).cluster;
     const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, 3);
     params.logger?.notify?.('snapshot fetched', { position: params.position.toBase58() });
 
@@ -141,7 +144,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       return { status: 'HOLD', refresh: refreshed };
     }
 
-    let snapshot = await withBoundedRetry(() => loadPositionSnapshot(params.connection, params.position), sleep, 3);
+    let snapshot = await withBoundedRetry(() => loadPositionSnapshot(params.connection, params.position, cluster), sleep, 3);
     let quote = params.quote;
     let quoteContext = params.quoteContext;
     const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, 3);

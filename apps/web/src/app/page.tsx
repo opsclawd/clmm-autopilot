@@ -25,13 +25,7 @@ export default function Home() {
   const [lastSimDebug, setLastSimDebug] = useState<unknown>(null);
   const pollingRef = useRef<number | null>(null);
 
-  const canExecute = Boolean(
-    wallet &&
-    positionAddress &&
-    ui.decision?.decision !== 'HOLD' &&
-    ui.snapshot?.pairValid !== false &&
-    !ui.lastError?.includes('NOT_SOL_USDC')
-  );
+  const canExecute = Boolean(wallet && positionAddress && ui.canExecute);
 
   useEffect(() => {
     if (pollingRef.current) {
@@ -47,7 +41,7 @@ export default function Home() {
 
     const tick = async () => {
       try {
-        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress));
+        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), config.cluster);
         const slot = await connection.getSlot(config.commitment);
         const unixTs = Math.floor(Date.now() / 1000);
         if (cancelled) return;
@@ -70,7 +64,7 @@ export default function Home() {
         pollingRef.current = null;
       }
     };
-  }, [positionAddress, config.commitment, config.rpcUrl]);
+  }, [positionAddress, config.cluster, config.commitment, config.rpcUrl]);
 
   return (
     <main className="p-6 font-sans space-y-3">
@@ -131,7 +125,7 @@ export default function Home() {
                           lowerTick: 0,
                           upperTick: 0,
                           inRange: false,
-                          pairLabel: 'SOL/USDC',
+                          pairLabel: 'UNSUPPORTED',
                           pairValid: false,
                         }
                       : undefined,
@@ -156,7 +150,7 @@ export default function Home() {
               const connection = new Connection(config.rpcUrl, config.commitment);
 
               // Build a quote off the current snapshot remove preview (best-effort Phase-1 heuristic).
-              const snapshot = await loadPositionSnapshot(connection, position);
+              const snapshot = await loadPositionSnapshot(connection, position, config.cluster);
               const dir = ui.decision?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN';
               if (!snapshot.removePreview) throw new Error(`Remove preview unavailable (${snapshot.removePreviewReasonCode ?? 'DATA_UNAVAILABLE'})`);
 

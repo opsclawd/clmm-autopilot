@@ -9,6 +9,7 @@ import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-sta
 import { runMwaSignAndSendVersionedTransaction, runMwaSignMessageSmoke } from './src/mwaSmoke';
 
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
+const CLUSTER = 'devnet' as const;
 
 type Sample = { slot: number; unixTs: number; currentTickIndex: number };
 
@@ -21,13 +22,7 @@ export default function App() {
   const [samples, setSamples] = useState<Sample[]>([]);
   const monitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const canExecute = Boolean(
-    wallet &&
-    positionAddress &&
-    ui.decision?.decision !== 'HOLD' &&
-    ui.snapshot?.pairValid !== false &&
-    !ui.lastError?.includes('NOT_SOL_USDC')
-  );
+  const canExecute = Boolean(wallet && positionAddress && ui.canExecute);
 
   const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
 
@@ -43,7 +38,7 @@ export default function App() {
     let cancelled = false;
     const poll = async () => {
       try {
-        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress));
+        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), CLUSTER);
         const slot = await connection.getSlot('confirmed');
         const unixTs = Math.floor(Date.now() / 1000);
         if (cancelled) return;
@@ -86,7 +81,7 @@ export default function App() {
           disabled={!positionAddress}
           onPress={async () => {
             try {
-              const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress));
+              const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), CLUSTER);
               const slot = await connection.getSlot('confirmed');
               const unixTs = Math.floor(Date.now() / 1000);
               const nextSamples = [...samples, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }].slice(-90);
@@ -117,7 +112,7 @@ export default function App() {
                           lowerTick: 0,
                           upperTick: 0,
                           inRange: false,
-                          pairLabel: 'SOL/USDC',
+                          pairLabel: 'UNSUPPORTED',
                           pairValid: false,
                         }
                       : undefined,
@@ -135,7 +130,7 @@ export default function App() {
             try {
               const authority = new PublicKey(wallet);
               const position = new PublicKey(positionAddress);
-              const snapshot = await loadPositionSnapshot(connection, position);
+              const snapshot = await loadPositionSnapshot(connection, position, CLUSTER);
               const dir = ui.decision?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN';
               if (!snapshot.removePreview) throw new Error(`Remove preview unavailable (${snapshot.removePreviewReasonCode ?? 'DATA_UNAVAILABLE'})`);
 

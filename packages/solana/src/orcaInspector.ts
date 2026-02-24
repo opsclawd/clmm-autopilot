@@ -220,6 +220,7 @@ function computeRemovePreview(
 export async function loadPositionSnapshot(
   connection: Pick<Connection, 'getAccountInfo' | 'getSlot'>,
   positionPubkey: PublicKey,
+  clusterOverride?: SolanaCluster,
 ): Promise<PositionSnapshot> {
   try {
     const positionInfo = await connection.getAccountInfo(positionPubkey, 'confirmed');
@@ -231,7 +232,7 @@ export async function loadPositionSnapshot(
     if (!whirlpoolInfo) throw makeError('DATA_UNAVAILABLE', 'whirlpool account not found');
     const whirlpool = parseWhirlpoolAccount(whirlpoolInfo.data);
 
-    const cluster = loadSolanaConfig(process.env).cluster;
+    const cluster = clusterOverride ?? loadSolanaConfig(process.env).cluster;
     assertSolUsdcPair(whirlpool.tokenMintA.toBase58(), whirlpool.tokenMintB.toBase58(), cluster);
 
     const [mintAInfo, mintBInfo] = await Promise.all([

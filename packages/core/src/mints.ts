@@ -65,7 +65,8 @@ export function assertSolUsdcPair(mintA: string, mintB: string, cluster: SolanaC
 
 export function symbolForMint(mint: string, cluster: SolanaCluster): 'SOL' | 'USDC' | 'UNKNOWN' {
   const registry = getMintRegistry(cluster);
-  return registry.symbols[normalizeMint(mint)] ?? 'UNKNOWN';
+  const canonical = canonicalizeMint(mint, registry);
+  return registry.symbols[canonical] ?? 'UNKNOWN';
 }
 
 export function getCanonicalPairLabel(cluster: SolanaCluster): string {
