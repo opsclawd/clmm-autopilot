@@ -7,7 +7,7 @@ import {
   type TransactionInstruction,
 } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
-import { assertSolUsdcPair } from '@clmm-autopilot/core';
+import { assertSolUsdcPair, hashAttestationPayload, unixDaysFromUnixMs } from '@clmm-autopilot/core';
 import { buildCreateAtaIdempotentIx, SOL_MINT } from './ata';
 import { fetchJupiterSwapIxs, type JupiterQuote, type JupiterSwapIxs } from './jupiter';
 import type { PositionSnapshot } from './orcaInspector';
@@ -39,6 +39,7 @@ export type BuildExitConfig = {
   quoteFreshnessMs: number;
   maxRebuildAttempts: number;
   nowUnixMs: () => number;
+  receiptEpochUnixMs: number;
   rebuildSnapshotAndQuote?: () => Promise<{ snapshot: PositionSnapshot; quote: ExitQuote }>;
 
   // Cost guardrails.
@@ -47,6 +48,7 @@ export type BuildExitConfig = {
 
   // Receipt.
   attestationHash: Uint8Array;
+  attestationPayloadBytes: Uint8Array;
 
   // Builder deps (override in tests). Defaults construct real Orca/Jupiter/WSOL modules.
   buildOrcaExitIxs?: (args: { snapshot: PositionSnapshot; authority: PublicKey; payer: PublicKey }) => OrcaExitIxs;
@@ -74,7 +76,54 @@ function fail(code: CanonicalErrorCode, message: string, retryable: boolean, deb
 }
 
 function canonicalEpoch(unixMs: number): number {
-  return Math.floor(unixMs / 1000 / 86400);
+  return unixDaysFromUnixMs(unixMs);
+}
+
+function epochFromPayloadBytes(payload: Uint8Array): number {
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  return view.getUint32(64, true);
+}
+
+function u8At(payload: Uint8Array, offset: number): number {
+  return payload[offset] ?? 0;
+}
+
+function i32leAt(payload: Uint8Array, offset: number): number {
+  return new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getInt32(offset, true);
+}
+
+function u32leAt(payload: Uint8Array, offset: number): number {
+  return new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(offset, true);
+}
+
+function u64leAt(payload: Uint8Array, offset: number): bigint {
+  const slice = payload.subarray(offset, offset + 8);
+  let n = BigInt(0);
+  for (let i = 7; i >= 0; i -= 1) {
+    n = (n << BigInt(8)) | BigInt(slice[i] ?? 0);
+  }
+  return n;
+}
+
+function bytesEqualConstantTime(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+function fieldEq32(payload: Uint8Array, offset: number, expected: Uint8Array): boolean {
+  if (expected.length !== 32) return false;
+  const got = payload.subarray(offset, offset + 32);
+  return bytesEqualConstantTime(got, expected);
+}
+
+function hex32At(payload: Uint8Array, offset: number): string {
+  return Buffer.from(payload.subarray(offset, offset + 32)).toString('hex');
+}
+
+function failMismatch(field: string, expected: unknown, actual: unknown): never {
+  fail('MISSING_ATTESTATION_HASH', `attestation payload ${field} mismatch`, false, { expected, actual });
 }
 
 function assertQuoteDirection(direction: ExitDirection, quote: ExitQuote, snapshot: PositionSnapshot): void {
@@ -157,13 +206,94 @@ export async function buildExitTransaction(
   config: BuildExitConfig,
 ): Promise<BuildExitResult> {
   if (config.attestationHash.length !== 32) {
-    fail('DATA_UNAVAILABLE', 'attestationHash must be exactly 32 bytes', false);
+    fail('MISSING_ATTESTATION_HASH', 'attestationHash must be exactly 32 bytes', false);
+  }
+  if (config.attestationHash.every((b) => b === 0)) {
+    fail('MISSING_ATTESTATION_HASH', 'attestationHash must be non-zero', false);
+  }
+  if (!config.attestationPayloadBytes || config.attestationPayloadBytes.length === 0) {
+    fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes are required', false);
+  }
+  if (config.attestationPayloadBytes.length !== 217) {
+    fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes must be canonical fixed-width length (217 bytes)', false, {
+      got: config.attestationPayloadBytes.length,
+      expected: 217,
+    });
+  }
+  const expected = hashAttestationPayload(config.attestationPayloadBytes);
+  if (!bytesEqualConstantTime(expected, config.attestationHash)) {
+    fail('MISSING_ATTESTATION_HASH', 'attestationHash must equal sha256(attestationPayloadBytes)', false);
+  }
+  const payloadEpoch = epochFromPayloadBytes(config.attestationPayloadBytes);
+  const receiptEpoch = canonicalEpoch(config.receiptEpochUnixMs);
+  if (payloadEpoch !== receiptEpoch) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload epoch must match canonical receipt epoch', false, {
+      payloadEpoch,
+      receiptEpoch,
+    });
+  }
+
+  // Semantic attestation binding (critical fields) to this concrete execution intent.
+  const payload = config.attestationPayloadBytes;
+  const payloadDirection = u8At(payload, 68);
+  const expectedDirection = direction === 'DOWN' ? 0 : 1;
+  if (payloadDirection !== expectedDirection) {
+    failMismatch('direction', expectedDirection, payloadDirection);
+  }
+  if (!fieldEq32(payload, 0, config.authority.toBuffer())) {
+    failMismatch('authority', config.authority.toBase58(), hex32At(payload, 0));
   }
 
   assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), snapshot.cluster);
 
   const refreshed = await resolveFreshSnapshotAndQuote(snapshot, config);
+  if (!fieldEq32(payload, 32, refreshed.snapshot.positionMint.toBuffer())) {
+    failMismatch('positionMint', refreshed.snapshot.positionMint.toBase58(), hex32At(payload, 32));
+  }
+  if (i32leAt(payload, 69) !== refreshed.snapshot.lowerTickIndex) {
+    failMismatch('lowerTickIndex', refreshed.snapshot.lowerTickIndex, i32leAt(payload, 69));
+  }
+  if (i32leAt(payload, 73) !== refreshed.snapshot.upperTickIndex) {
+    failMismatch('upperTickIndex', refreshed.snapshot.upperTickIndex, i32leAt(payload, 73));
+  }
+  if (i32leAt(payload, 77) !== refreshed.snapshot.currentTickIndex) {
+    failMismatch('currentTickIndex', refreshed.snapshot.currentTickIndex, i32leAt(payload, 77));
+  }
   assertQuoteDirection(direction, refreshed.quote, refreshed.snapshot);
+
+  if (!fieldEq32(payload, 97, refreshed.quote.inputMint.toBuffer())) {
+    failMismatch('quote.inputMint', refreshed.quote.inputMint.toBase58(), hex32At(payload, 97));
+  }
+  if (!fieldEq32(payload, 129, refreshed.quote.outputMint.toBuffer())) {
+    failMismatch('quote.outputMint', refreshed.quote.outputMint.toBase58(), hex32At(payload, 129));
+  }
+  if (u64leAt(payload, 161) !== refreshed.quote.inAmount) {
+    failMismatch('quote.inAmount', refreshed.quote.inAmount.toString(), u64leAt(payload, 161).toString());
+  }
+  if (u64leAt(payload, 169) !== refreshed.quote.outAmount) {
+    failMismatch('quote.outAmount', refreshed.quote.outAmount.toString(), u64leAt(payload, 169).toString());
+  }
+  if (u32leAt(payload, 177) !== refreshed.quote.slippageBps) {
+    failMismatch('quote.slippageBps', refreshed.quote.slippageBps, u32leAt(payload, 177));
+  }
+  if (u64leAt(payload, 181) !== BigInt(refreshed.quote.quotedAtUnixMs)) {
+    failMismatch('quote.quotedAtUnixMs', refreshed.quote.quotedAtUnixMs, Number(u64leAt(payload, 181)));
+  }
+  if (u32leAt(payload, 189) !== config.computeUnitLimit) {
+    failMismatch('computeUnitLimit', config.computeUnitLimit, u32leAt(payload, 189));
+  }
+  if (u64leAt(payload, 193) !== BigInt(config.computeUnitPriceMicroLamports)) {
+    failMismatch('computeUnitPriceMicroLamports', config.computeUnitPriceMicroLamports, Number(u64leAt(payload, 193)));
+  }
+  if (u32leAt(payload, 201) !== config.maxSlippageBps) {
+    failMismatch('maxSlippageBps', config.maxSlippageBps, u32leAt(payload, 201));
+  }
+  if (u64leAt(payload, 205) !== BigInt(config.quoteFreshnessMs)) {
+    failMismatch('quoteFreshnessMs', config.quoteFreshnessMs, Number(u64leAt(payload, 205)));
+  }
+  if (u32leAt(payload, 213) !== config.maxRebuildAttempts) {
+    failMismatch('maxRebuildAttempts', config.maxRebuildAttempts, u32leAt(payload, 213));
+  }
 
   if (refreshed.quote.slippageBps > config.maxSlippageBps) {
     fail('SLIPPAGE_EXCEEDED', 'Quote slippage exceeds configured cap', false);
@@ -222,7 +352,7 @@ export async function buildExitTransaction(
   const receiptIx = buildRecordExecutionIx({
     authority: config.authority,
     positionMint: refreshed.snapshot.positionMint,
-    epoch: canonicalEpoch(config.nowUnixMs()),
+    epoch: canonicalEpoch(config.receiptEpochUnixMs),
     direction: direction === 'DOWN' ? 0 : 1,
     attestationHash: config.attestationHash,
   });

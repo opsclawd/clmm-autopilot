@@ -13,6 +13,7 @@ const CANONICAL_CODES: CanonicalErrorCode[] = [
   'SLIPPAGE_EXCEEDED',
   'INSUFFICIENT_FEE_BUFFER',
   'BLOCKHASH_EXPIRED',
+  'MISSING_ATTESTATION_HASH',
 ];
 
 function isCanonicalCode(value: unknown): value is CanonicalErrorCode {

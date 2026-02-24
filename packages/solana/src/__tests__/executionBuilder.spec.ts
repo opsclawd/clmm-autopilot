@@ -6,6 +6,7 @@ import {
   type AddressLookupTableAccount,
   type VersionedTransaction,
 } from '@solana/web3.js';
+import { computeAttestationHash, encodeAttestationPayload } from '@clmm-autopilot/core';
 import { buildExitTransaction, type BuildExitConfig, type ExitQuote } from '../executionBuilder';
 
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
@@ -49,11 +50,12 @@ const baseSnapshot = {
 };
 
 const attestationHash = new Uint8Array(32).fill(7);
+const attestationPayloadBytes = new Uint8Array(68);
 
 type SimResult = { err: unknown | null; logs?: string[]; unitsConsumed?: number; innerInstructions?: unknown; returnData?: unknown };
 
 function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
-  const quote: ExitQuote = {
+  const defaultQuote: ExitQuote = {
     inputMint: SOL_MINT,
     outputMint: USDC_MINT,
     inAmount: BigInt(123),
@@ -63,18 +65,22 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     raw: { inAmount: '123', outAmount: '456' },
   };
 
-  return {
-    authority: pk(18),
+  const authority = pk(18);
+  const epochNowMs = 1_700_000_000_500;
+
+  const defaults: BuildExitConfig = {
+    authority,
     payer: pk(19),
     recentBlockhash: 'EETubP5AKH2uP8WqzU7xYfPqBrM6oTnP3v8igJE6wz7A',
     computeUnitLimit: 600_000,
     computeUnitPriceMicroLamports: 10_000,
-    quote,
+    quote: defaultQuote,
     maxSlippageBps: 50,
     quoteFreshnessMs: 2_000,
     maxRebuildAttempts: 3,
-    nowUnixMs: () => 1_700_000_000_500,
-    rebuildSnapshotAndQuote: async () => ({ snapshot: baseSnapshot, quote: { ...quote, quotedAtUnixMs: 1_700_000_000_200 } }),
+    nowUnixMs: () => epochNowMs,
+    receiptEpochUnixMs: epochNowMs,
+    rebuildSnapshotAndQuote: async () => ({ snapshot: baseSnapshot, quote: { ...defaultQuote, quotedAtUnixMs: 1_700_000_000_200 } }),
     availableLamports: 5_000_000,
     requirements: {
       rentLamports: 2_039_280,
@@ -84,7 +90,8 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
       bufferLamports: 10_000,
       totalRequiredLamports: 2_039_280 + 20_000 + 5_000 + 10_000,
     },
-    attestationHash,
+    attestationHash: new Uint8Array(32),
+    attestationPayloadBytes: new Uint8Array(217),
     simulate: async (): Promise<SimResult> => ({ err: null, logs: ['ok'] }),
     buildOrcaExitIxs: () => ({
       conditionalAtaIxs: [ix(21), ix(22)],
@@ -97,8 +104,38 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     buildJupiterSwapIxs: async () => ({ instructions: [ix(33)], lookupTableAddresses: [pk(90)] }),
     buildWsolLifecycleIxs: () => ({ preSwap: [ix(23)], postSwap: [ix(24)], wsolAta: pk(55) }),
     lookupTableAccounts: [] as AddressLookupTableAccount[],
-    ...overrides,
   };
+
+  const merged = { ...defaults, ...overrides } as BuildExitConfig;
+  const epoch = Math.floor(merged.receiptEpochUnixMs / 1000 / 86400);
+  const autoInput = {
+    authority: merged.authority.toBase58(),
+    positionMint: baseSnapshot.positionMint.toBase58(),
+    epoch,
+    direction: 0 as const,
+    lowerTickIndex: baseSnapshot.lowerTickIndex,
+    upperTickIndex: baseSnapshot.upperTickIndex,
+    currentTickIndex: baseSnapshot.currentTickIndex,
+    observedSlot: 1n,
+    observedUnixTs: 1n,
+    quoteInputMint: merged.quote.inputMint.toBase58(),
+    quoteOutputMint: merged.quote.outputMint.toBase58(),
+    quoteInAmount: merged.quote.inAmount,
+    quoteOutAmount: merged.quote.outAmount,
+    quoteSlippageBps: merged.quote.slippageBps,
+    quoteQuotedAtUnixMs: BigInt(merged.quote.quotedAtUnixMs),
+    computeUnitLimit: merged.computeUnitLimit,
+    computeUnitPriceMicroLamports: BigInt(merged.computeUnitPriceMicroLamports),
+    maxSlippageBps: merged.maxSlippageBps,
+    quoteFreshnessMs: BigInt(merged.quoteFreshnessMs),
+    maxRebuildAttempts: merged.maxRebuildAttempts,
+  };
+
+  const hasPayloadOverride = Boolean(overrides && Object.prototype.hasOwnProperty.call(overrides, 'attestationPayloadBytes'));
+  const hasHashOverride = Boolean(overrides && Object.prototype.hasOwnProperty.call(overrides, 'attestationHash'));
+  if (!hasPayloadOverride) merged.attestationPayloadBytes = encodeAttestationPayload(autoInput);
+  if (!hasHashOverride) merged.attestationHash = computeAttestationHash(autoInput);
+  return merged;
 }
 
 describe('buildExitTransaction', () => {
@@ -146,7 +183,7 @@ describe('buildExitTransaction', () => {
     expect(rebuildSpy).toHaveBeenCalledTimes(0);
   });
 
-  it('stale quote triggers deterministic rebuild path', async () => {
+  it('stale quote triggers deterministic rebuild path and fails attestation mismatch', async () => {
     const rebuiltQuote: ExitQuote = {
       ...buildConfig().quote,
       quotedAtUnixMs: 1_700_000_000_400,
@@ -154,8 +191,35 @@ describe('buildExitTransaction', () => {
     const rebuildSpy = vi.fn(async () => ({ snapshot: baseSnapshot, quote: rebuiltQuote }));
     const config = buildConfig({ quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_990_000 }, rebuildSnapshotAndQuote: rebuildSpy });
 
-    await buildExitTransaction(baseSnapshot, 'DOWN', config);
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', config)).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
     expect(rebuildSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('stale rebuild loop stops on 15s window with live clock', async () => {
+    let now = 1_700_000_000_500;
+    const nowFn = () => {
+      now += 4_000;
+      return now;
+    };
+
+    const rebuildSpy = vi.fn(async () => ({
+      snapshot: baseSnapshot,
+      quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_900_000 },
+    }));
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({
+          nowUnixMs: nowFn,
+          quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_900_000 },
+          rebuildSnapshotAndQuote: rebuildSpy,
+          maxRebuildAttempts: 99,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'QUOTE_STALE' });
+    expect(rebuildSpy).toHaveBeenCalled();
   });
 
   it('simulate-then-send gate cannot be bypassed', async () => {
@@ -249,11 +313,38 @@ describe('buildExitTransaction', () => {
       ),
     ).rejects.toMatchObject({ code: 'NOT_SOL_USDC' });
 
+    const epochNowMs = 1_700_000_000_500;
+    const upInput = {
+      authority: buildConfig().authority.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch: Math.floor(epochNowMs / 1000 / 86400),
+      direction: 1 as const,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    };
+
     await expect(
       buildExitTransaction(
         baseSnapshot,
         'UP',
         buildConfig({
+          nowUnixMs: () => epochNowMs,
+          attestationPayloadBytes: encodeAttestationPayload(upInput),
+          attestationHash: computeAttestationHash(upInput),
           quote: {
             ...buildConfig().quote,
             inputMint: SOL_MINT,
@@ -263,4 +354,276 @@ describe('buildExitTransaction', () => {
       ),
     ).rejects.toMatchObject({ code: 'NOT_SOL_USDC' });
   });
+
+  it('accepts matching attestation payload hash + epoch', async () => {
+    const epochNowMs = 1_700_000_000_500;
+    const epoch = Math.floor(epochNowMs / 1000 / 86400);
+    const payload = encodeAttestationPayload({
+      authority: buildConfig().authority.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch,
+      direction: 0,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    });
+    const hash = computeAttestationHash({
+      authority: buildConfig().authority.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch,
+      direction: 0,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    });
+
+    await expect(
+      buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ nowUnixMs: () => epochNowMs, attestationHash: hash, attestationPayloadBytes: payload })),
+    ).resolves.toBeInstanceOf(TransactionMessage);
+  });
+
+  it('rejects missing/zero/mismatched attestation hash', async () => {
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationPayloadBytes: undefined as unknown as Uint8Array }))).rejects.toMatchObject({
+      code: 'MISSING_ATTESTATION_HASH',
+    });
+
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationPayloadBytes: new Uint8Array(67) }))).rejects.toMatchObject({
+      code: 'MISSING_ATTESTATION_HASH',
+    });
+
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationPayloadBytes: new Uint8Array(218) }))).rejects.toMatchObject({
+      code: 'MISSING_ATTESTATION_HASH',
+    });
+
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationHash: new Uint8Array(31) }))).rejects.toMatchObject({
+      code: 'MISSING_ATTESTATION_HASH',
+    });
+
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationHash: new Uint8Array(32) }))).rejects.toMatchObject({
+      code: 'MISSING_ATTESTATION_HASH',
+    });
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({
+          attestationHash,
+          attestationPayloadBytes,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+
+    const epochNowMs = 1_700_000_000_500;
+    const badEpochPayload = encodeAttestationPayload({
+      authority: buildConfig().authority.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch: 1,
+      direction: 0,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    });
+    const badEpochHash = computeAttestationHash({
+      authority: buildConfig().authority.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch: 1,
+      direction: 0,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    });
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({ nowUnixMs: () => epochNowMs, attestationHash: badEpochHash, attestationPayloadBytes: badEpochPayload }),
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+
+    const mismatchAuthorityInput = {
+      authority: pk(99).toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch: Math.floor(epochNowMs / 1000 / 86400),
+      direction: 0 as const,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    };
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({
+          nowUnixMs: () => epochNowMs,
+          attestationPayloadBytes: encodeAttestationPayload(mismatchAuthorityInput),
+          attestationHash: computeAttestationHash(mismatchAuthorityInput),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+
+    const mismatchDirectionInput = {
+      ...mismatchAuthorityInput,
+      authority: buildConfig().authority.toBase58(),
+      direction: 1 as const,
+    };
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({
+          nowUnixMs: () => epochNowMs,
+          attestationPayloadBytes: encodeAttestationPayload(mismatchDirectionInput),
+          attestationHash: computeAttestationHash(mismatchDirectionInput),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+
+    const mismatchQuoteInput = {
+      ...mismatchDirectionInput,
+      direction: 0 as const,
+      quoteInputMint: pk(77).toBase58(),
+    };
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({
+          nowUnixMs: () => epochNowMs,
+          attestationPayloadBytes: encodeAttestationPayload(mismatchQuoteInput),
+          attestationHash: computeAttestationHash(mismatchQuoteInput),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+  });
+
+  it('rejects attestation when rebuilt quote differs from payload-bound quote', async () => {
+    const cfg = buildConfig({
+      quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_000_000 },
+      rebuildSnapshotAndQuote: async () => ({
+        snapshot: baseSnapshot,
+        quote: { ...buildConfig().quote, quotedAtUnixMs: 1_700_000_000_250, inAmount: 999n },
+      }),
+    });
+
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', cfg)).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+  });
+
+  it('rejects mismatches for compute + guardrail fields', async () => {
+    const epochNowMs = 1_700_000_000_500;
+    const base = {
+      authority: buildConfig().authority.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch: Math.floor(epochNowMs / 1000 / 86400),
+      direction: 0 as const,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    };
+
+    for (const mutated of [
+      { ...base, computeUnitLimit: 600_001 },
+      { ...base, computeUnitPriceMicroLamports: 10_001n },
+      { ...base, maxSlippageBps: 51 },
+      { ...base, quoteFreshnessMs: 2_001n },
+      { ...base, maxRebuildAttempts: 4 },
+      { ...base, quoteOutAmount: 457n },
+      { ...base, quoteSlippageBps: 31 },
+    ]) {
+      await expect(
+        buildExitTransaction(
+          baseSnapshot,
+          'DOWN',
+          buildConfig({
+            nowUnixMs: () => epochNowMs,
+            attestationPayloadBytes: encodeAttestationPayload(mutated),
+            attestationHash: computeAttestationHash(mutated),
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+    }
+  });
+
 });

@@ -10,6 +10,8 @@ vi.mock('@clmm-autopilot/core', async () => {
       reasonCode: 'BREAK_CONFIRMED',
       debug: { samplesUsed: 3, threshold: 3, cooldownRemainingMs: 0 },
     }),
+    unixDaysFromUnixMs: (unixMs: number) => Math.floor(unixMs / 1000 / 86400),
+    hashAttestationPayload: (_bytes: Uint8Array) => new Uint8Array(32).fill(1),
     assertSolUsdcPair: (mintA: string, mintB: string) => {
       if (!((mintA === SOL && mintB === USDC) || (mintA === USDC && mintB === SOL))) {
         const err = new Error('Unsupported pair') as Error & { code: 'NOT_SOL_USDC'; retryable: false };
@@ -76,7 +78,7 @@ describe('executeOnce underfunded', () => {
       inAmount: BigInt(1),
       outAmount: BigInt(1),
       slippageBps: 1,
-      quotedAtUnixMs: Date.now(),
+      quotedAtUnixMs: 1,
       raw: { inAmount: '1', outAmount: '1' },
     };
 
@@ -91,9 +93,33 @@ describe('executeOnce underfunded', () => {
       slippageBpsCap: 50,
       expectedMinOut: '0',
       quoteAgeMs: 0,
-      attestationHash: new Uint8Array(32),
+      attestationHash: new Uint8Array(32).fill(1),
+      attestationPayloadBytes: (() => {
+        const b = new Uint8Array(217);
+        b.set(authority.toBuffer(), 0);
+        b.set(new PublicKey(new Uint8Array(32).fill(12)).toBuffer(), 32);
+        // lower=50 i32 LE
+        b[69] = 50;
+        // upper=150 i32 LE
+        b[73] = 150;
+        // current=100 i32 LE
+        b[77] = 100;
+        b.set(new PublicKey('So11111111111111111111111111111111111111112').toBuffer(), 97);
+        b.set(new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU').toBuffer(), 129);
+        b[161] = 1; // quoteInAmount
+        b[169] = 1; // quoteOutAmount
+        b[177] = 1; // quoteSlippageBps
+        b[181] = 1; // quoteQuotedAtUnixMs
+        b[189] = 0xC0; b[190] = 0x27; b[191] = 0x09; // 600000 LE u32
+        b[193] = 0x10; b[194] = 0x27; // 10000 LE u64 low bytes
+        b[201] = 50; // maxSlippageBps
+        b[205] = 0x20; b[206] = 0x4E; // 20000 LE u64 low bytes
+        b[213] = 3; // maxRebuildAttempts
+        return b;
+      })(),
       buildJupiterSwapIxs: vi.fn(async () => ({ instructions: [], lookupTableAddresses: [] })),
       signAndSend: vi.fn(async () => 'sig'),
+      nowUnixMs: () => 0,
     });
 
     expect(res.status).toBe('ERROR');

@@ -9,7 +9,8 @@ export type CanonicalCode =
   | 'SIMULATION_FAILED'
   | 'SLIPPAGE_EXCEEDED'
   | 'INSUFFICIENT_FEE_BUFFER'
-  | 'BLOCKHASH_EXPIRED';
+  | 'BLOCKHASH_EXPIRED'
+  | 'MISSING_ATTESTATION_HASH';
 
 export type UiError = {
   code: CanonicalCode;
@@ -30,6 +31,7 @@ const messages: Record<CanonicalCode, Omit<UiError, 'code'>> = {
   SLIPPAGE_EXCEEDED: { title: 'Slippage exceeded', message: 'Quote exceeds configured slippage cap.' },
   INSUFFICIENT_FEE_BUFFER: { title: 'Insufficient fee buffer', message: 'Insufficient lamports after fee buffer reserve.' },
   BLOCKHASH_EXPIRED: { title: 'Blockhash expired', message: 'Refresh and rebuild transaction.' },
+  MISSING_ATTESTATION_HASH: { title: 'Missing attestation hash', message: 'Execution attestation hash is missing or invalid.' },
 };
 
 function safeJson(value: unknown): string {

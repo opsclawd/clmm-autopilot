@@ -5,6 +5,7 @@ import { Button, SafeAreaView, ScrollView, Text, TextInput } from 'react-native'
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { createConsoleNotificationsAdapter } from '@clmm-autopilot/notifications';
 import { executeOnce, fetchJupiterQuote, loadPositionSnapshot, refreshPositionDecision } from '@clmm-autopilot/solana';
+import { computeAttestationHash, encodeAttestationPayload, unixDaysFromUnixMs } from '@clmm-autopilot/core';
 import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-state';
 import { runMwaSignAndSendVersionedTransaction, runMwaSignMessageSmoke } from './src/mwaSmoke';
 
@@ -20,6 +21,7 @@ export default function App() {
   const [ui, setUi] = useState<UiModel>(buildUiModel({}));
   const [simSummary, setSimSummary] = useState('N/A');
   const [samples, setSamples] = useState<Sample[]>([]);
+  const [attestationDebugPrefix, setAttestationDebugPrefix] = useState('N/A');
   const monitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const canExecute = Boolean(wallet && positionAddress && ui.canExecute);
@@ -143,6 +145,35 @@ export default function App() {
                 : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
 
               const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: 50 });
+              const observedSlot = await connection.getSlot('confirmed');
+              const epochNowMs = Date.now();
+              const observedUnixTs = Math.floor(epochNowMs / 1000);
+              const epoch = unixDaysFromUnixMs(epochNowMs);
+              const attestationInput = {
+                authority: authority.toBase58(),
+                positionMint: snapshot.positionMint.toBase58(),
+                epoch,
+                direction: dir === 'UP' ? (1 as const) : (0 as const),
+                lowerTickIndex: snapshot.lowerTickIndex,
+                upperTickIndex: snapshot.upperTickIndex,
+                currentTickIndex: snapshot.currentTickIndex,
+                observedSlot: BigInt(observedSlot),
+                observedUnixTs: BigInt(observedUnixTs),
+                quoteInputMint: quote.inputMint.toBase58(),
+                quoteOutputMint: quote.outputMint.toBase58(),
+                quoteInAmount: quote.inAmount,
+                quoteOutAmount: quote.outAmount,
+                quoteSlippageBps: quote.slippageBps,
+                quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
+                computeUnitLimit: 600000,
+                computeUnitPriceMicroLamports: BigInt(10000),
+                maxSlippageBps: 50,
+                quoteFreshnessMs: BigInt(20000),
+                maxRebuildAttempts: 3,
+              };
+              const attestationPayloadBytes = encodeAttestationPayload(attestationInput);
+              const attestationHash = computeAttestationHash(attestationInput);
+              setAttestationDebugPrefix(Buffer.from(attestationHash).toString('hex').slice(0, 12));
 
               const result = await executeOnce({
                 connection,
@@ -153,7 +184,8 @@ export default function App() {
                 slippageBpsCap: 50,
                 expectedMinOut: quote.outAmount.toString(),
                 quoteAgeMs: 0,
-                attestationHash: new Uint8Array(32),
+                attestationHash,
+                attestationPayloadBytes,
                 onSimulationComplete: (s) => setSimSummary(`${s} — ready for wallet prompt`),
                 signAndSend: async (tx: VersionedTransaction) => (await runMwaSignAndSendVersionedTransaction(tx)).signature,
                 logger: notifications,
@@ -196,6 +228,7 @@ export default function App() {
         <Text>pair valid: {ui.snapshot?.pairValid === undefined ? 'N/A' : ui.snapshot?.pairValid ? 'yes' : 'no'}</Text>
         <Text>samples buffered: {samples.length}</Text>
         <Text>simulate summary: {simSummary}</Text>
+        <Text>attestation hash (prefix): {attestationDebugPrefix}</Text>
 
         <Text>tx signature: {ui.execution?.sendSig ?? 'N/A'}</Text>
         <Button

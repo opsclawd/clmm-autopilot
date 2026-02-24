@@ -83,6 +83,7 @@ describe('executeOnce', () => {
       expectedMinOut: '0',
       quoteAgeMs: 0,
       attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
       signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
     });
 
@@ -133,6 +134,7 @@ describe('executeOnce', () => {
       expectedMinOut: '0',
       quoteAgeMs: 0,
       attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
       signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
       checkExistingReceipt: async () => false,
       buildJupiterSwapIxs: vi.fn(async () => ({ instructions: [], lookupTableAddresses: [] })),
@@ -177,6 +179,7 @@ describe('executeOnce', () => {
       expectedMinOut: '0',
       quoteAgeMs: 0,
       attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
       signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
       checkExistingReceipt: async () => true,
       rebuildSnapshotAndQuote: async () => ({
@@ -267,6 +270,7 @@ describe('executeOnce', () => {
       expectedMinOut: '0',
       quoteAgeMs: 0,
       attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
       signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
       checkExistingReceipt: async () => false,
       buildJupiterSwapIxs: vi.fn(async () => ({ instructions: [], lookupTableAddresses: [] })),

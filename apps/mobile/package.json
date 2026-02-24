@@ -13,6 +13,7 @@
     "smoke:mwa": "expo start --dev-client"
   },
   "dependencies": {
+    "@clmm-autopilot/core": "workspace:*",
     "@clmm-autopilot/notifications": "workspace:*",
     "@clmm-autopilot/solana": "workspace:*",
     "@clmm-autopilot/ui-state": "workspace:*",
