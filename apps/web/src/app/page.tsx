@@ -78,7 +78,8 @@ export default function Home() {
       <h1 className="text-2xl font-bold">CLMM Autopilot — M6 Shell</h1>
       {!configValid ? (
         <div className="rounded border border-red-300 bg-red-50 p-3 text-sm">
-          <div className="font-semibold">Invalid autopilot config</div>
+          <div className="font-semibold">{mapErrorToUi({ code: 'RPC_PERMANENT' }).title}</div>
+          <div className="mb-1">{mapErrorToUi({ code: 'RPC_PERMANENT' }).message}</div>
           <ul className="list-disc pl-5">
             {loaded.ok ? null : loaded.errors.map((e) => (
               <li key={`${e.path}:${e.code}`}>

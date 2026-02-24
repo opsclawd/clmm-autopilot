@@ -38,6 +38,7 @@ export type BuildExitConfig = {
   maxSlippageBps: number;
   quoteFreshnessMs: number;
   maxRebuildAttempts: number;
+  rebuildWindowMs: number;
   nowUnixMs: () => number;
   receiptEpochUnixMs: number;
   rebuildSnapshotAndQuote?: () => Promise<{ snapshot: PositionSnapshot; quote: ExitQuote }>;
@@ -181,8 +182,8 @@ async function resolveFreshSnapshotAndQuote(
     if (attempts >= config.maxRebuildAttempts) {
       fail('QUOTE_STALE', 'Quote is stale and rebuild attempts exhausted', true);
     }
-    if (config.nowUnixMs() - start > 15_000) {
-      fail('QUOTE_STALE', 'Quote is stale and rebuild window exceeded 15s', true);
+    if (config.nowUnixMs() - start > config.rebuildWindowMs) {
+      fail('QUOTE_STALE', `Quote is stale and rebuild window exceeded ${config.rebuildWindowMs}ms`, true);
     }
 
     const rebuilt = await config.rebuildSnapshotAndQuote();

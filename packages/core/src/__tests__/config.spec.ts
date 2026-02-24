@@ -8,6 +8,15 @@ describe('validateConfig', () => {
     if (res.ok) expect(res.value).toEqual(DEFAULT_CONFIG);
   });
 
+  it('rejects non-object root input', () => {
+    const res = validateConfig('bad-root');
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.errors[0]?.path).toBe('$');
+      expect(res.errors[0]?.code).toBe('TYPE');
+    }
+  });
+
   it('rejects slippage above 50 bps', () => {
     const res = validateConfig({ execution: { maxSlippageBps: 51 } });
     expect(res.ok).toBe(false);
@@ -34,12 +43,30 @@ describe('validateConfig', () => {
     }
   });
 
+  it('rejects non-coercible numeric strings', () => {
+    const res = validateConfig({ policy: { cadenceMs: 'abc' } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      const err = res.errors.find((e) => e.path === 'policy.cadenceMs');
+      expect(err?.code).toBe('TYPE');
+    }
+  });
+
   it('rejects bad backoff schedule', () => {
     const res = validateConfig({ reliability: { retryBackoffMs: [250, 200, 750] } });
     expect(res.ok).toBe(false);
     if (!res.ok) {
       const err = res.errors.find((e) => e.path === 'reliability.retryBackoffMs');
       expect(err?.code).toBe('INVALID_BACKOFF_SCHEDULE');
+    }
+  });
+
+  it('rejects non-coercible backoff entries', () => {
+    const res = validateConfig({ reliability: { retryBackoffMs: [250, 'oops', 750] } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      const err = res.errors.find((e) => e.path === 'reliability.retryBackoffMs[1]');
+      expect(err?.code).toBe('TYPE');
     }
   });
 

@@ -4,19 +4,29 @@ export type LoadedAutopilotConfig =
   | { ok: true; config: AutopilotConfig }
   | { ok: false; errors: ConfigError[]; config: AutopilotConfig };
 
-function parseJsonConfig(raw: string | undefined): unknown {
-  if (!raw) return undefined;
+function parseJsonConfig(raw: string | undefined): { ok: true; value: unknown } | { ok: false; error: ConfigError } {
+  if (!raw) return { ok: true, value: undefined };
   try {
-    return JSON.parse(raw);
+    return { ok: true, value: JSON.parse(raw) };
   } catch {
-    return { __parseError: true };
+    return {
+      ok: false,
+      error: {
+        path: 'NEXT_PUBLIC_AUTOPILOT_CONFIG',
+        code: 'TYPE',
+        message: 'Invalid JSON for NEXT_PUBLIC_AUTOPILOT_CONFIG',
+        expected: 'valid JSON object',
+        actual: raw,
+      },
+    };
   }
 }
 
 export function loadAutopilotConfig(env: Record<string, string | undefined> = process.env): LoadedAutopilotConfig {
-  const raw = env.NEXT_PUBLIC_AUTOPILOT_CONFIG;
-  const parsed = parseJsonConfig(raw);
-  const validated = validateConfig(parsed);
+  const parsed = parseJsonConfig(env.NEXT_PUBLIC_AUTOPILOT_CONFIG);
+  if (!parsed.ok) return { ok: false, errors: [parsed.error], config: DEFAULT_CONFIG };
+
+  const validated = validateConfig(parsed.value);
   if (validated.ok) return { ok: true, config: validated.value };
   return { ok: false, errors: validated.errors, config: DEFAULT_CONFIG };
 }

@@ -72,8 +72,15 @@ export default function App() {
       <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
         <Text style={{ fontSize: 24, fontWeight: '700' }}>M6 Shell UX</Text>
         {!configValid ? (
-          <Text style={{ color: "#b91c1c" }}>Invalid autopilot config (check app.json extra)</Text>
+          <Text style={{ color: '#b91c1c' }}>
+            {mapErrorToUi({ code: 'RPC_PERMANENT' }).title}: {mapErrorToUi({ code: 'RPC_PERMANENT' }).message}
+          </Text>
         ) : null}
+        {!loaded.ok ? loaded.errors.map((e) => (
+          <Text key={`${e.path}:${e.code}`} style={{ color: '#b91c1c', fontSize: 12 }}>
+            {e.path}: {e.message} {e.expected ? `(expected ${e.expected})` : ''}
+          </Text>
+        )) : null}
         <Text style={{ fontSize: 12, color: "#111" }}>
           cadenceMs={autopilotConfig.policy.cadenceMs} requiredConsecutive={autopilotConfig.policy.requiredConsecutive} cooldownMs={autopilotConfig.policy.cooldownMs}
         </Text>
@@ -221,6 +228,13 @@ export default function App() {
 
               setUi(
                 buildUiModel({
+                  config: {
+                    policy: autopilotConfig.policy,
+                    execution: {
+                      maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
+                      quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessMs,
+                    },
+                  },
                   snapshot: result.refresh?.snapshot,
                   decision: result.refresh?.decision,
                   quote: result.refresh?.quote,

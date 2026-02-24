@@ -217,6 +217,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         maxSlippageBps: params.config.execution.maxSlippageBps,
         quoteFreshnessMs: params.config.execution.quoteFreshnessMs,
         maxRebuildAttempts: params.config.execution.maxRebuildAttempts,
+        rebuildWindowMs: params.config.execution.rebuildWindowMs,
         nowUnixMs,
         receiptEpochUnixMs: epochSourceMs,
         rebuildSnapshotAndQuote: async () => {
