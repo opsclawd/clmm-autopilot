@@ -1,5 +1,5 @@
 import { BN } from 'bn.js';
-import { assertSolUsdcPair, symbolForMint, type SolanaCluster } from '@clmm-autopilot/core';
+import { assertSolUsdcPair, getCanonicalPairLabel, type SolanaCluster } from '@clmm-autopilot/core';
 import { Percentage } from '@orca-so/common-sdk';
 import {
   decreaseLiquidityQuoteByLiquidityWithParams,
@@ -231,16 +231,16 @@ export async function loadPositionSnapshot(
     if (!whirlpoolInfo) throw makeError('DATA_UNAVAILABLE', 'whirlpool account not found');
     const whirlpool = parseWhirlpoolAccount(whirlpoolInfo.data);
 
+    const cluster = loadSolanaConfig(process.env).cluster;
+    assertSolUsdcPair(whirlpool.tokenMintA.toBase58(), whirlpool.tokenMintB.toBase58(), cluster);
+
     const [mintAInfo, mintBInfo] = await Promise.all([
       connection.getAccountInfo(whirlpool.tokenMintA, 'confirmed'),
       connection.getAccountInfo(whirlpool.tokenMintB, 'confirmed'),
     ]);
     const mintA = parseMintMeta(mintAInfo);
     const mintB = parseMintMeta(mintBInfo);
-    const cluster = loadSolanaConfig(process.env).cluster;
-
-    assertSolUsdcPair(whirlpool.tokenMintA.toBase58(), whirlpool.tokenMintB.toBase58(), cluster);
-    const pairLabel = `${symbolForMint(whirlpool.tokenMintA.toBase58(), cluster)}/${symbolForMint(whirlpool.tokenMintB.toBase58(), cluster)}`;
+    const pairLabel = getCanonicalPairLabel(cluster);
 
     const tickArrayLower = deriveTickArrayFromTickIndex(
       position.whirlpool,

@@ -123,6 +123,8 @@ describe('loadPositionSnapshot', () => {
     expect(snapshot.tokenVaultB.toBase58()).toBe(tokenVaultB.toBase58());
     expect(snapshot.tokenProgramA.toBase58()).toBe(TOKEN_PROGRAM_V1.toBase58());
     expect(snapshot.tokenProgramB.toBase58()).toBe(TOKEN_PROGRAM_2022.toBase58());
+    expect(snapshot.pairLabel).toBe('SOL/USDC');
+    expect(snapshot.pairValid).toBe(true);
     expect(snapshot.removePreview).toEqual({ tokenAOut: 123n, tokenBOut: 456n });
     expect(snapshot.removePreviewReasonCode).toBeNull();
   });

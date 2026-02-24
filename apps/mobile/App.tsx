@@ -21,7 +21,13 @@ export default function App() {
   const [samples, setSamples] = useState<Sample[]>([]);
   const monitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const canExecute = Boolean(wallet && positionAddress && ui.decision?.decision !== 'HOLD');
+  const canExecute = Boolean(
+    wallet &&
+    positionAddress &&
+    ui.decision?.decision !== 'HOLD' &&
+    ui.snapshot?.pairValid !== false &&
+    !ui.lastError?.includes('NOT_SOL_USDC')
+  );
 
   const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
 
@@ -111,7 +117,7 @@ export default function App() {
                           lowerTick: 0,
                           upperTick: 0,
                           inRange: false,
-                          pairLabel: 'INVALID_PAIR',
+                          pairLabel: 'SOL/USDC',
                           pairValid: false,
                         }
                       : undefined,

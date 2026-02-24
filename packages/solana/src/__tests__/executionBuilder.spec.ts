@@ -220,4 +220,47 @@ describe('buildExitTransaction', () => {
       },
     });
   });
+
+  it('fails fast with NOT_SOL_USDC when snapshot pair is not SOL/USDC', async () => {
+    await expect(
+      buildExitTransaction(
+        {
+          ...baseSnapshot,
+          tokenMintB: pk(88),
+        },
+        'DOWN',
+        buildConfig(),
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_SOL_USDC' });
+  });
+
+  it('enforces deterministic direction-to-target swap intent', async () => {
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({
+          quote: {
+            ...buildConfig().quote,
+            inputMint: USDC_MINT,
+            outputMint: SOL_MINT,
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_SOL_USDC' });
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'UP',
+        buildConfig({
+          quote: {
+            ...buildConfig().quote,
+            inputMint: SOL_MINT,
+            outputMint: USDC_MINT,
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_SOL_USDC' });
+  });
 });

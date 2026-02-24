@@ -25,7 +25,13 @@ export default function Home() {
   const [lastSimDebug, setLastSimDebug] = useState<unknown>(null);
   const pollingRef = useRef<number | null>(null);
 
-  const canExecute = Boolean(wallet && positionAddress && ui.decision?.decision !== 'HOLD');
+  const canExecute = Boolean(
+    wallet &&
+    positionAddress &&
+    ui.decision?.decision !== 'HOLD' &&
+    ui.snapshot?.pairValid !== false &&
+    !ui.lastError?.includes('NOT_SOL_USDC')
+  );
 
   useEffect(() => {
     if (pollingRef.current) {
@@ -125,7 +131,7 @@ export default function Home() {
                           lowerTick: 0,
                           upperTick: 0,
                           inRange: false,
-                          pairLabel: 'INVALID_PAIR',
+                          pairLabel: 'SOL/USDC',
                           pairValid: false,
                         }
                       : undefined,
