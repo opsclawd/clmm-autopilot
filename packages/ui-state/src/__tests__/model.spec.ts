@@ -16,8 +16,28 @@ describe('ui-state', () => {
     expect(model.lastError).toBeUndefined();
   });
 
-  it('enables execute on TRIGGER and keeps debounce/cooldown fields', () => {
+  it('enables execute on TRIGGER only when pair validation is true', () => {
+    const blocked = buildUiModel({
+      decision: {
+        decision: 'TRIGGER_DOWN',
+        reasonCode: 'BREAK_CONFIRMED',
+        samplesUsed: 3,
+        threshold: 3,
+        cooldownRemainingMs: 12000,
+      },
+    });
+    expect(blocked.canExecute).toBe(false);
+
     const model = buildUiModel({
+      snapshot: {
+        positionAddress: 'pos',
+        currentTick: 1,
+        lowerTick: 0,
+        upperTick: 2,
+        inRange: false,
+        pairLabel: 'SOL/USDC',
+        pairValid: true,
+      },
       decision: {
         decision: 'TRIGGER_DOWN',
         reasonCode: 'BREAK_CONFIRMED',

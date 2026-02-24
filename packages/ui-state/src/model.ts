@@ -71,7 +71,7 @@ export function buildUiModel(input: {
     execution: input.execution,
     canExecute:
       input.decision
-        ? input.decision.decision !== 'HOLD' && input.snapshot?.pairValid !== false && input.decision.reasonCode !== 'NOT_SOL_USDC'
+        ? input.decision.decision !== 'HOLD' && input.snapshot?.pairValid === true && input.decision.reasonCode !== 'NOT_SOL_USDC'
         : false,
     lastError: input.lastError,
   };

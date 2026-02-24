@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertSolUsdcPair, getMintRegistry, isSolUsdcPair } from '../mints';
+import { assertSolUsdcPair, getMintRegistry, isSolUsdcPair, symbolForMint } from '../mints';
 
 const SOL = 'So11111111111111111111111111111111111111112';
 const SOL_NATIVE = 'SOL_NATIVE';
@@ -32,5 +32,12 @@ describe('mint registry + SOL/USDC pair guardrails', () => {
     expect(getMintRegistry('devnet').sol).toBe(SOL_NATIVE);
     expect(getMintRegistry('devnet').usdc).toBe(USDC_DEVNET);
     expect(getMintRegistry('mainnet-beta').usdc).not.toBe(USDC_DEVNET);
+  });
+
+  it('symbolForMint canonicalizes WSOL and SOL_NATIVE as SOL', () => {
+    expect(symbolForMint(SOL, 'devnet')).toBe('SOL');
+    expect(symbolForMint(SOL_NATIVE, 'devnet')).toBe('SOL');
+    expect(symbolForMint(USDC_DEVNET, 'devnet')).toBe('USDC');
+    expect(symbolForMint(USDT, 'devnet')).toBe('UNKNOWN');
   });
 });
