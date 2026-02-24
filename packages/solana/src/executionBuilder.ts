@@ -7,7 +7,7 @@ import {
   type TransactionInstruction,
 } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
-import { assertSolUsdcPair } from '@clmm-autopilot/core';
+import { assertSolUsdcPair, hashAttestationPayload } from '@clmm-autopilot/core';
 import { buildCreateAtaIdempotentIx, SOL_MINT } from './ata';
 import { fetchJupiterSwapIxs, type JupiterQuote, type JupiterSwapIxs } from './jupiter';
 import type { PositionSnapshot } from './orcaInspector';
@@ -47,6 +47,7 @@ export type BuildExitConfig = {
 
   // Receipt.
   attestationHash: Uint8Array;
+  attestationPayloadBytes?: Uint8Array;
 
   // Builder deps (override in tests). Defaults construct real Orca/Jupiter/WSOL modules.
   buildOrcaExitIxs?: (args: { snapshot: PositionSnapshot; authority: PublicKey; payer: PublicKey }) => OrcaExitIxs;
@@ -157,7 +158,16 @@ export async function buildExitTransaction(
   config: BuildExitConfig,
 ): Promise<BuildExitResult> {
   if (config.attestationHash.length !== 32) {
-    fail('DATA_UNAVAILABLE', 'attestationHash must be exactly 32 bytes', false);
+    fail('MISSING_ATTESTATION_HASH', 'attestationHash must be exactly 32 bytes', false);
+  }
+  if (config.attestationHash.every((b) => b === 0)) {
+    fail('MISSING_ATTESTATION_HASH', 'attestationHash must be non-zero', false);
+  }
+  if (config.attestationPayloadBytes) {
+    const expected = hashAttestationPayload(config.attestationPayloadBytes);
+    if (Buffer.from(expected).compare(Buffer.from(config.attestationHash)) !== 0) {
+      fail('MISSING_ATTESTATION_HASH', 'attestationHash must equal sha256(attestationPayloadBytes)', false);
+    }
   }
 
   assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), snapshot.cluster);

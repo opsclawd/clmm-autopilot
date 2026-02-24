@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createConsoleNotificationsAdapter } from '@clmm-autopilot/notifications';
 import { executeOnce, fetchJupiterQuote, loadPositionSnapshot, loadSolanaConfig, refreshPositionDecision } from '@clmm-autopilot/solana';
+import { computeAttestationHash, encodeAttestationPayload } from '@clmm-autopilot/core';
 import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-state';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 
@@ -23,6 +24,7 @@ export default function Home() {
   const [simSummary, setSimSummary] = useState<string>('N/A');
   const [samples, setSamples] = useState<Sample[]>([]);
   const [lastSimDebug, setLastSimDebug] = useState<unknown>(null);
+  const [attestationDebugPrefix, setAttestationDebugPrefix] = useState<string>('N/A');
   const pollingRef = useRef<number | null>(null);
 
   const canExecute = Boolean(wallet && positionAddress && ui.canExecute);
@@ -164,6 +166,54 @@ export default function Home() {
                 : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
 
               const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: 50 });
+              const observedSlot = await connection.getSlot(config.commitment);
+              const observedUnixTs = Math.floor(Date.now() / 1000);
+              const epoch = Math.floor(observedUnixTs / 86400);
+              const attestationPayloadBytes = encodeAttestationPayload({
+                authority: authority.toBase58(),
+                positionMint: snapshot.positionMint.toBase58(),
+                epoch,
+                direction: dir === 'UP' ? 1 : 0,
+                lowerTickIndex: snapshot.lowerTickIndex,
+                upperTickIndex: snapshot.upperTickIndex,
+                currentTickIndex: snapshot.currentTickIndex,
+                observedSlot: BigInt(observedSlot),
+                observedUnixTs: BigInt(observedUnixTs),
+                quoteInputMint: quote.inputMint.toBase58(),
+                quoteOutputMint: quote.outputMint.toBase58(),
+                quoteInAmount: quote.inAmount,
+                quoteOutAmount: quote.outAmount,
+                quoteSlippageBps: quote.slippageBps,
+                quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
+                computeUnitLimit: 600000,
+                computeUnitPriceMicroLamports: BigInt(10000),
+                maxSlippageBps: 50,
+                quoteFreshnessMs: BigInt(20000),
+                maxRebuildAttempts: 3,
+              });
+              const attestationHash = computeAttestationHash({
+                authority: authority.toBase58(),
+                positionMint: snapshot.positionMint.toBase58(),
+                epoch,
+                direction: dir === 'UP' ? 1 : 0,
+                lowerTickIndex: snapshot.lowerTickIndex,
+                upperTickIndex: snapshot.upperTickIndex,
+                currentTickIndex: snapshot.currentTickIndex,
+                observedSlot: BigInt(observedSlot),
+                observedUnixTs: BigInt(observedUnixTs),
+                quoteInputMint: quote.inputMint.toBase58(),
+                quoteOutputMint: quote.outputMint.toBase58(),
+                quoteInAmount: quote.inAmount,
+                quoteOutAmount: quote.outAmount,
+                quoteSlippageBps: quote.slippageBps,
+                quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
+                computeUnitLimit: 600000,
+                computeUnitPriceMicroLamports: BigInt(10000),
+                maxSlippageBps: 50,
+                quoteFreshnessMs: BigInt(20000),
+                maxRebuildAttempts: 3,
+              });
+              setAttestationDebugPrefix(Buffer.from(attestationHash).toString('hex').slice(0, 12));
 
               const res = await executeOnce({
                 connection,
@@ -174,7 +224,8 @@ export default function Home() {
                 slippageBpsCap: 50,
                 expectedMinOut: quote.outAmount.toString(),
                 quoteAgeMs: 0,
-                attestationHash: new Uint8Array(32),
+                attestationHash,
+                attestationPayloadBytes,
                 onSimulationComplete: (s) => setSimSummary(`${s} — ready for wallet prompt`),
                 signAndSend: async (tx: VersionedTransaction) => (await provider.signAndSendTransaction(tx)).signature,
                 logger: notifications,
@@ -222,6 +273,7 @@ export default function Home() {
         <div>pair valid: {ui.snapshot?.pairValid === undefined ? 'N/A' : ui.snapshot?.pairValid ? 'yes' : 'no'}</div>
         <div>samples buffered: {samples.length}</div>
         <div>simulate summary: {simSummary}</div>
+        <div>attestation hash (prefix): {attestationDebugPrefix}</div>
       </section>
 
       <section className="text-sm space-y-1 border rounded p-3">

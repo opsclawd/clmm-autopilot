@@ -49,6 +49,7 @@ const baseSnapshot = {
 };
 
 const attestationHash = new Uint8Array(32).fill(7);
+const attestationPayloadBytes = new Uint8Array([1, 2, 3]);
 
 type SimResult = { err: unknown | null; logs?: string[]; unitsConsumed?: number; innerInstructions?: unknown; returnData?: unknown };
 
@@ -262,5 +263,26 @@ describe('buildExitTransaction', () => {
         }),
       ),
     ).rejects.toMatchObject({ code: 'NOT_SOL_USDC' });
+  });
+
+  it('rejects missing/zero/mismatched attestation hash', async () => {
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationHash: new Uint8Array(31) }))).rejects.toMatchObject({
+      code: 'MISSING_ATTESTATION_HASH',
+    });
+
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationHash: new Uint8Array(32) }))).rejects.toMatchObject({
+      code: 'MISSING_ATTESTATION_HASH',
+    });
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({
+          attestationHash,
+          attestationPayloadBytes,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
   });
 });

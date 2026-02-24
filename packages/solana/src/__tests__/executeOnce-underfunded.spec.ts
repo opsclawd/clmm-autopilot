@@ -91,7 +91,7 @@ describe('executeOnce underfunded', () => {
       slippageBpsCap: 50,
       expectedMinOut: '0',
       quoteAgeMs: 0,
-      attestationHash: new Uint8Array(32),
+      attestationHash: new Uint8Array(32).fill(1),
       buildJupiterSwapIxs: vi.fn(async () => ({ instructions: [], lookupTableAddresses: [] })),
       signAndSend: vi.fn(async () => 'sig'),
     });

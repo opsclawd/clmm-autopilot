@@ -9,7 +9,8 @@ export type CanonicalErrorCode =
   | 'SIMULATION_FAILED'
   | 'SLIPPAGE_EXCEEDED'
   | 'INSUFFICIENT_FEE_BUFFER'
-  | 'BLOCKHASH_EXPIRED';
+  | 'BLOCKHASH_EXPIRED'
+  | 'MISSING_ATTESTATION_HASH';
 
 export type SolanaConfig = {
   rpcUrl: string;

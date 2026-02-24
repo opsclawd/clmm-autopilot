@@ -84,6 +84,7 @@ export type ExecuteOnceParams = RefreshParams & {
   quoteContext?: { quotedAtSlot?: number; quoteTickIndex?: number };
   // Receipt attestation hash (sha256 over canonical bytes) provided by app.
   attestationHash: Uint8Array;
+  attestationPayloadBytes?: Uint8Array;
 
   signAndSend: (tx: VersionedTransaction) => Promise<string>;
 
@@ -230,6 +231,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           bufferLamports: 10_000_000,
         }),
         attestationHash: params.attestationHash,
+        attestationPayloadBytes: params.attestationPayloadBytes,
         lookupTableAccounts,
         returnVersioned: true,
         // Phase-1: simulate must succeed before prompting wallet.
