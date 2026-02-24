@@ -47,7 +47,7 @@ const baseSnapshot = {
 
 const attestationHash = new Uint8Array(32).fill(7);
 
-type SimResult = { err: unknown | null; accountsResolved: boolean };
+type SimResult = { err: unknown | null; logs?: string[]; unitsConsumed?: number; innerInstructions?: unknown; returnData?: unknown };
 
 function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
   const quote: ExitQuote = {
@@ -82,7 +82,7 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
       totalRequiredLamports: 2_039_280 + 20_000 + 5_000 + 10_000,
     },
     attestationHash,
-    simulate: async (): Promise<SimResult> => ({ err: null, accountsResolved: true }),
+    simulate: async (): Promise<SimResult> => ({ err: null, logs: ['ok'] }),
     buildOrcaExitIxs: () => ({
       conditionalAtaIxs: [ix(21), ix(22)],
       removeLiquidityIx: ix(31),
@@ -157,12 +157,22 @@ describe('buildExitTransaction', () => {
 
   it('simulate-then-send gate cannot be bypassed', async () => {
     await expect(
-      buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ simulate: async () => ({ err: new Error('sim err'), accountsResolved: true }) })),
-    ).rejects.toMatchObject({ code: 'SIMULATION_FAILED' });
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({ simulate: async () => ({ err: new Error('sim err'), logs: ['custom failure'] }) }),
+      ),
+    ).rejects.toMatchObject({ code: 'SIMULATION_FAILED', debug: { logs: ['custom failure'] } });
+  });
 
+  it('maps missing-account simulation failures to canonical data-unavailable', async () => {
     await expect(
-      buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ simulate: async () => ({ err: null, accountsResolved: false }) })),
-    ).rejects.toMatchObject({ code: 'SIMULATION_FAILED' });
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({ simulate: async () => ({ err: 'AccountNotFound', logs: ['could not find account'] }) }),
+      ),
+    ).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE' });
   });
 
   it('builder output is deterministic for fixed snapshot + quote', async () => {

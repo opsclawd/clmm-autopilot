@@ -228,7 +228,13 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         // Phase-1: simulate must succeed before prompting wallet.
         simulate: async (tx) => {
           const sim = await params.connection.simulateTransaction(tx);
-          return { err: sim.value.err, accountsResolved: true };
+          return {
+            err: sim.value.err,
+            logs: sim.value.logs ?? undefined,
+            unitsConsumed: sim.value.unitsConsumed ?? undefined,
+            innerInstructions: sim.value.innerInstructions ?? undefined,
+            returnData: sim.value.returnData ?? undefined,
+          };
         },
         // Provide cached Jupiter swap so ordering is stable.
         buildJupiterSwapIxs: async () => swap,
