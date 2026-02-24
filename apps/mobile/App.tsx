@@ -5,7 +5,8 @@ import { Button, SafeAreaView, ScrollView, Text, TextInput } from 'react-native'
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { createConsoleNotificationsAdapter } from '@clmm-autopilot/notifications';
 import { executeOnce, fetchJupiterQuote, loadPositionSnapshot, refreshPositionDecision } from '@clmm-autopilot/solana';
-import { computeAttestationHash, encodeAttestationPayload, unixDaysFromUnixMs } from '@clmm-autopilot/core';
+import { computeAttestationHash, encodeAttestationPayload, unixDaysFromUnixMs, type PolicyState } from '@clmm-autopilot/core';
+import { loadAutopilotConfig } from './src/config';
 import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-state';
 import { runMwaSignAndSendVersionedTransaction, runMwaSignMessageSmoke } from './src/mwaSmoke';
 
@@ -16,15 +17,19 @@ type Sample = { slot: number; unixTs: number; currentTickIndex: number };
 
 export default function App() {
   const notifications = useMemo(() => createConsoleNotificationsAdapter(), []);
+  const loaded = useMemo(() => loadAutopilotConfig(), []);
+  const autopilotConfig = loaded.config;
+  const configValid = loaded.ok;
   const [wallet, setWallet] = useState('');
   const [positionAddress, setPositionAddress] = useState('');
   const [ui, setUi] = useState<UiModel>(buildUiModel({}));
   const [simSummary, setSimSummary] = useState('N/A');
   const [samples, setSamples] = useState<Sample[]>([]);
+  const policyStateRef = useRef<PolicyState>({});
   const [attestationDebugPrefix, setAttestationDebugPrefix] = useState('N/A');
   const monitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const canExecute = Boolean(wallet && positionAddress && ui.canExecute);
+  const canExecute = Boolean(configValid && wallet && positionAddress && ui.canExecute);
 
   const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
 
@@ -51,7 +56,7 @@ export default function App() {
     };
 
     void poll();
-    monitorRef.current = setInterval(() => void poll(), 2000);
+    monitorRef.current = setInterval(() => void poll(), autopilotConfig.policy.cadenceMs);
 
     return () => {
       cancelled = true;
@@ -60,12 +65,21 @@ export default function App() {
         monitorRef.current = null;
       }
     };
-  }, [positionAddress]);
+  }, [positionAddress, autopilotConfig.policy.cadenceMs]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
       <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
         <Text style={{ fontSize: 24, fontWeight: '700' }}>M6 Shell UX</Text>
+        {!configValid ? (
+          <Text style={{ color: "#b91c1c" }}>Invalid autopilot config (check app.json extra)</Text>
+        ) : null}
+        <Text style={{ fontSize: 12, color: "#111" }}>
+          cadenceMs={autopilotConfig.policy.cadenceMs} requiredConsecutive={autopilotConfig.policy.requiredConsecutive} cooldownMs={autopilotConfig.policy.cooldownMs}
+        </Text>
+        <Text style={{ fontSize: 12, color: "#111" }}>
+          maxSlippageBps={autopilotConfig.execution.maxSlippageBps} quoteFreshnessMs={autopilotConfig.execution.quoteFreshnessMs}
+        </Text>
         <Button
           title={wallet ? 'Wallet Connected' : 'Connect Wallet'}
           onPress={async () => setWallet((await runMwaSignMessageSmoke()).publicKey)}
@@ -80,7 +94,7 @@ export default function App() {
 
         <Button
           title="Refresh"
-          disabled={!positionAddress}
+          disabled={!configValid || !positionAddress}
           onPress={async () => {
             try {
               const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), CLUSTER);
@@ -93,11 +107,24 @@ export default function App() {
                 connection,
                 position: new PublicKey(positionAddress),
                 samples: nextSamples,
-                slippageBpsCap: 50,
+                config: autopilotConfig,
+                policyState: policyStateRef.current,
                 expectedMinOut: 'N/A',
                 quoteAgeMs: 0,
               });
-              setUi(buildUiModel({ snapshot: r.snapshot, decision: r.decision, quote: r.quote }));
+              policyStateRef.current = r.decision.nextState;
+              setUi(buildUiModel({
+                config: {
+                  policy: autopilotConfig.policy,
+                  execution: {
+                    maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
+                    quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessMs,
+                  },
+                },
+                snapshot: r.snapshot,
+                decision: r.decision,
+                quote: r.quote,
+              }));
             } catch (e) {
               const mapped = mapErrorToUi(e);
               setUi(
@@ -144,7 +171,7 @@ export default function App() {
                 ? (snapshot.tokenMintA.equals(SOL_MINT) ? tokenAOut : tokenBOut)
                 : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
 
-              const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: 50 });
+              const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.maxSlippageBps });
               const observedSlot = await connection.getSlot('confirmed');
               const epochNowMs = Date.now();
               const observedUnixTs = Math.floor(epochNowMs / 1000);
@@ -165,11 +192,11 @@ export default function App() {
                 quoteOutAmount: quote.outAmount,
                 quoteSlippageBps: quote.slippageBps,
                 quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
-                computeUnitLimit: 600000,
-                computeUnitPriceMicroLamports: BigInt(10000),
-                maxSlippageBps: 50,
-                quoteFreshnessMs: BigInt(20000),
-                maxRebuildAttempts: 3,
+                computeUnitLimit: autopilotConfig.execution.computeUnitLimit,
+                computeUnitPriceMicroLamports: BigInt(autopilotConfig.execution.computeUnitPriceMicroLamports),
+                maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
+                quoteFreshnessMs: BigInt(autopilotConfig.execution.quoteFreshnessMs),
+                maxRebuildAttempts: autopilotConfig.execution.maxRebuildAttempts,
               };
               const attestationPayloadBytes = encodeAttestationPayload(attestationInput);
               const attestationHash = computeAttestationHash(attestationInput);
@@ -181,9 +208,10 @@ export default function App() {
                 position,
                 samples,
                 quote,
-                slippageBpsCap: 50,
+                config: autopilotConfig,
+                policyState: policyStateRef.current,
                 expectedMinOut: quote.outAmount.toString(),
-                quoteAgeMs: 0,
+                quoteAgeMs: Math.max(0, Date.now() - quote.quotedAtUnixMs),
                 attestationHash,
                 attestationPayloadBytes,
                 onSimulationComplete: (s) => setSimSummary(`${s} — ready for wallet prompt`),

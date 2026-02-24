@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createConsoleNotificationsAdapter } from '@clmm-autopilot/notifications';
 import { executeOnce, fetchJupiterQuote, loadPositionSnapshot, loadSolanaConfig, refreshPositionDecision } from '@clmm-autopilot/solana';
-import { computeAttestationHash, encodeAttestationPayload, unixDaysFromUnixMs } from '@clmm-autopilot/core';
+import { computeAttestationHash, encodeAttestationPayload, unixDaysFromUnixMs, type PolicyState } from '@clmm-autopilot/core';
+import { loadAutopilotConfig } from '../config';
 import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-state';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 
@@ -16,18 +17,22 @@ type WalletProvider = {
 type Sample = { slot: number; unixTs: number; currentTickIndex: number };
 
 export default function Home() {
-  const config = loadSolanaConfig(process.env);
+  const solanaConfig = loadSolanaConfig(process.env);
+  const loaded = useMemo(() => loadAutopilotConfig(process.env), []);
+  const autopilotConfig = loaded.config;
+  const configValid = loaded.ok;
   const notifications = useMemo(() => createConsoleNotificationsAdapter(), []);
   const [positionAddress, setPositionAddress] = useState('');
   const [wallet, setWallet] = useState('');
   const [ui, setUi] = useState<UiModel>(buildUiModel({}));
   const [simSummary, setSimSummary] = useState<string>('N/A');
   const [samples, setSamples] = useState<Sample[]>([]);
+  const policyStateRef = useRef<PolicyState>({});
   const [lastSimDebug, setLastSimDebug] = useState<unknown>(null);
   const [attestationDebugPrefix, setAttestationDebugPrefix] = useState<string>('N/A');
   const pollingRef = useRef<number | null>(null);
 
-  const canExecute = Boolean(wallet && positionAddress && ui.canExecute);
+  const canExecute = Boolean(configValid && wallet && positionAddress && ui.canExecute);
 
   useEffect(() => {
     if (pollingRef.current) {
@@ -38,13 +43,13 @@ export default function Home() {
 
     if (!positionAddress) return;
 
-    const connection = new Connection(config.rpcUrl, config.commitment);
+    const connection = new Connection(solanaConfig.rpcUrl, solanaConfig.commitment);
     let cancelled = false;
 
     const tick = async () => {
       try {
-        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), config.cluster);
-        const slot = await connection.getSlot(config.commitment);
+        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), solanaConfig.cluster);
+        const slot = await connection.getSlot(solanaConfig.commitment);
         const unixTs = Math.floor(Date.now() / 1000);
         if (cancelled) return;
         setSamples((prev) => {
@@ -57,7 +62,7 @@ export default function Home() {
     };
 
     void tick();
-    pollingRef.current = window.setInterval(() => void tick(), 2000);
+    pollingRef.current = window.setInterval(() => void tick(), autopilotConfig.policy.cadenceMs);
 
     return () => {
       cancelled = true;
@@ -66,11 +71,32 @@ export default function Home() {
         pollingRef.current = null;
       }
     };
-  }, [positionAddress, config.cluster, config.commitment, config.rpcUrl]);
+  }, [positionAddress, solanaConfig.cluster, solanaConfig.commitment, solanaConfig.rpcUrl, autopilotConfig.policy.cadenceMs]);
 
   return (
     <main className="p-6 font-sans space-y-3">
       <h1 className="text-2xl font-bold">CLMM Autopilot — M6 Shell</h1>
+      {!configValid ? (
+        <div className="rounded border border-red-300 bg-red-50 p-3 text-sm">
+          <div className="font-semibold">Invalid autopilot config</div>
+          <ul className="list-disc pl-5">
+            {loaded.ok ? null : loaded.errors.map((e) => (
+              <li key={`${e.path}:${e.code}`}>
+                {e.path}: {e.message} {e.expected ? `(expected ${e.expected})` : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="rounded border p-3 text-sm">
+        <div className="font-semibold mb-1">Config</div>
+        <div>cadenceMs: {autopilotConfig.policy.cadenceMs}</div>
+        <div>requiredConsecutive: {autopilotConfig.policy.requiredConsecutive}</div>
+        <div>cooldownMs: {autopilotConfig.policy.cooldownMs}</div>
+        <div>maxSlippageBps: {autopilotConfig.execution.maxSlippageBps}</div>
+        <div>quoteFreshnessMs: {autopilotConfig.execution.quoteFreshnessMs}</div>
+      </div>
       <div className="flex gap-2">
         <button
           className="rounded bg-black text-white px-3 py-2"
@@ -98,19 +124,32 @@ export default function Home() {
       <div className="flex gap-2">
         <button
           className="rounded bg-gray-800 text-white px-3 py-2"
-          disabled={!positionAddress}
+          disabled={!configValid || !positionAddress}
           onClick={async () => {
             try {
-              const connection = new Connection(config.rpcUrl, config.commitment);
+              const connection = new Connection(solanaConfig.rpcUrl, solanaConfig.commitment);
               const refreshed = await refreshPositionDecision({
                 connection,
                 position: new PublicKey(positionAddress),
                 samples,
-                slippageBpsCap: 50,
+                config: autopilotConfig,
+                policyState: policyStateRef.current,
                 expectedMinOut: 'N/A',
                 quoteAgeMs: 0,
               });
-              setUi(buildUiModel({ snapshot: refreshed.snapshot, decision: refreshed.decision, quote: refreshed.quote }));
+              policyStateRef.current = refreshed.decision.nextState;
+              setUi(buildUiModel({
+                config: {
+                  policy: autopilotConfig.policy,
+                  execution: {
+                    maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
+                    quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessMs,
+                  },
+                },
+                snapshot: refreshed.snapshot,
+                decision: refreshed.decision,
+                quote: refreshed.quote,
+              }));
             } catch (e) {
               const mapped = mapErrorToUi(e);
               setUi(
@@ -149,10 +188,10 @@ export default function Home() {
               if (!provider) throw new Error('Wallet provider unavailable');
               const authority = new PublicKey(wallet);
               const position = new PublicKey(positionAddress);
-              const connection = new Connection(config.rpcUrl, config.commitment);
+              const connection = new Connection(solanaConfig.rpcUrl, solanaConfig.commitment);
 
               // Build a quote off the current snapshot remove preview (best-effort Phase-1 heuristic).
-              const snapshot = await loadPositionSnapshot(connection, position, config.cluster);
+              const snapshot = await loadPositionSnapshot(connection, position, solanaConfig.cluster);
               const dir = ui.decision?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN';
               if (!snapshot.removePreview) throw new Error(`Remove preview unavailable (${snapshot.removePreviewReasonCode ?? 'DATA_UNAVAILABLE'})`);
 
@@ -165,8 +204,8 @@ export default function Home() {
                 ? (snapshot.tokenMintA.equals(SOL_MINT) ? tokenAOut : tokenBOut)
                 : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
 
-              const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: 50 });
-              const observedSlot = await connection.getSlot(config.commitment);
+              const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.maxSlippageBps });
+              const observedSlot = await connection.getSlot(solanaConfig.commitment);
               const epochNowMs = Date.now();
               const observedUnixTs = Math.floor(epochNowMs / 1000);
               const epoch = unixDaysFromUnixMs(epochNowMs);
@@ -186,11 +225,11 @@ export default function Home() {
                 quoteOutAmount: quote.outAmount,
                 quoteSlippageBps: quote.slippageBps,
                 quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
-                computeUnitLimit: 600000,
-                computeUnitPriceMicroLamports: BigInt(10000),
-                maxSlippageBps: 50,
-                quoteFreshnessMs: BigInt(20000),
-                maxRebuildAttempts: 3,
+                computeUnitLimit: autopilotConfig.execution.computeUnitLimit,
+                computeUnitPriceMicroLamports: BigInt(autopilotConfig.execution.computeUnitPriceMicroLamports),
+                maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
+                quoteFreshnessMs: BigInt(autopilotConfig.execution.quoteFreshnessMs),
+                maxRebuildAttempts: autopilotConfig.execution.maxRebuildAttempts,
               });
               const attestationHash = computeAttestationHash({
                 authority: authority.toBase58(),
@@ -208,11 +247,11 @@ export default function Home() {
                 quoteOutAmount: quote.outAmount,
                 quoteSlippageBps: quote.slippageBps,
                 quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
-                computeUnitLimit: 600000,
-                computeUnitPriceMicroLamports: BigInt(10000),
-                maxSlippageBps: 50,
-                quoteFreshnessMs: BigInt(20000),
-                maxRebuildAttempts: 3,
+                computeUnitLimit: autopilotConfig.execution.computeUnitLimit,
+                computeUnitPriceMicroLamports: BigInt(autopilotConfig.execution.computeUnitPriceMicroLamports),
+                maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
+                quoteFreshnessMs: BigInt(autopilotConfig.execution.quoteFreshnessMs),
+                maxRebuildAttempts: autopilotConfig.execution.maxRebuildAttempts,
               });
               setAttestationDebugPrefix(Buffer.from(attestationHash).toString('hex').slice(0, 12));
 
@@ -222,19 +261,30 @@ export default function Home() {
                 position,
                 samples,
                 quote,
-                slippageBpsCap: 50,
+                config: autopilotConfig,
+                policyState: policyStateRef.current,
                 expectedMinOut: quote.outAmount.toString(),
-                quoteAgeMs: 0,
+                quoteAgeMs: Math.max(0, Date.now() - quote.quotedAtUnixMs),
                 attestationHash,
                 attestationPayloadBytes,
                 onSimulationComplete: (s) => setSimSummary(`${s} — ready for wallet prompt`),
                 signAndSend: async (tx: VersionedTransaction) => (await provider.signAndSendTransaction(tx)).signature,
                 logger: notifications,
               });
+              if (res.refresh?.decision?.nextState) {
+                policyStateRef.current = res.refresh.decision.nextState;
+              }
 
               setLastSimDebug(res.errorDebug ?? null);
               setUi(
                 buildUiModel({
+                  config: {
+                    policy: autopilotConfig.policy,
+                    execution: {
+                      maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
+                      quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessMs,
+                    },
+                  },
                   snapshot: res.refresh?.snapshot,
                   decision: res.refresh?.decision,
                   quote: res.refresh?.quote,
