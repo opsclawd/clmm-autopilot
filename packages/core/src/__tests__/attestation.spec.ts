@@ -3,26 +3,22 @@ import { createHash } from 'node:crypto';
 import { computeAttestationHash, encodeAttestationPayload, hashAttestationPayload } from '../attestation';
 
 const INPUT = {
+  cluster: 'devnet' as const,
   authority: '8qbHbw2BbbTHBW1sbn4j4d93M2D8v1jQ7Rj4tTBW5u7x',
+  position: '11111111111111111111111111111111',
   positionMint: 'CktRuQ3fQY4MReLRUdM8x22VPA7v2ecx2M4HX8QYfF9u',
+  whirlpool: 'So11111111111111111111111111111111111111112',
   epoch: 19770,
   direction: 0 as const,
+  tickCurrent: -1250,
   lowerTickIndex: -1200,
   upperTickIndex: 1200,
-  currentTickIndex: -1250,
-  observedSlot: 312345678n,
-  observedUnixTs: 1708747200n,
+  slippageBpsCap: 50,
   quoteInputMint: 'So11111111111111111111111111111111111111112',
   quoteOutputMint: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
   quoteInAmount: 123456789n,
-  quoteOutAmount: 45670000n,
-  quoteSlippageBps: 50,
+  quoteMinOutAmount: 45441650n,
   quoteQuotedAtUnixMs: 1708747200123n,
-  computeUnitLimit: 600000,
-  computeUnitPriceMicroLamports: 10000n,
-  maxSlippageBps: 50,
-  quoteFreshnessMs: 20000n,
-  maxRebuildAttempts: 3,
 };
 
 describe('attestation encoding/hash', () => {
@@ -38,7 +34,7 @@ describe('attestation encoding/hash', () => {
 
   it('changes hash when one field mutates', () => {
     const base = computeAttestationHash(INPUT);
-    const mutated = computeAttestationHash({ ...INPUT, quoteOutAmount: INPUT.quoteOutAmount + 1n });
+    const mutated = computeAttestationHash({ ...INPUT, quoteMinOutAmount: INPUT.quoteMinOutAmount + 1n });
     expect(Buffer.from(base).equals(Buffer.from(mutated))).toBe(false);
   });
 
@@ -46,8 +42,8 @@ describe('attestation encoding/hash', () => {
     const payload = encodeAttestationPayload(INPUT);
     const hash = computeAttestationHash(INPUT);
 
-    expect(payload.length).toBe(217);
-    expect(Buffer.from(hash).toString('hex')).toBe('6c4ac83dfae26bcc68f3093dc342110bdabead4577fbd4b7903607dfea945b26');
+    expect(payload.length).toBe(236);
+    expect(Buffer.from(hash).toString('hex')).toBe('2b8086da05d1bc475ea1dbe015c6467c9b5b1fa2a6a5fcfffbca48c7a737452a');
   });
 
   it('matches node crypto sha256 reference across payload sizes', () => {

@@ -82,7 +82,8 @@ function canonicalEpoch(unixMs: number): number {
 
 function epochFromPayloadBytes(payload: Uint8Array): number {
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-  return view.getUint32(64, true);
+  // cluster(1) + authority(32) + position(32) + positionMint(32) + whirlpool(32) = 129
+  return view.getUint32(129, true);
 }
 
 function u8At(payload: Uint8Array, offset: number): number {
@@ -93,8 +94,8 @@ function i32leAt(payload: Uint8Array, offset: number): number {
   return new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getInt32(offset, true);
 }
 
-function u32leAt(payload: Uint8Array, offset: number): number {
-  return new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(offset, true);
+function u16leAt(payload: Uint8Array, offset: number): number {
+  return new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint16(offset, true);
 }
 
 function u64leAt(payload: Uint8Array, offset: number): bigint {
@@ -215,10 +216,10 @@ export async function buildExitTransaction(
   if (!config.attestationPayloadBytes || config.attestationPayloadBytes.length === 0) {
     fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes are required', false);
   }
-  if (config.attestationPayloadBytes.length !== 217) {
-    fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes must be canonical fixed-width length (217 bytes)', false, {
+  if (config.attestationPayloadBytes.length !== 236) {
+    fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes must be canonical fixed-width length (236 bytes)', false, {
       got: config.attestationPayloadBytes.length,
-      expected: 217,
+      expected: 236,
     });
   }
   const expected = hashAttestationPayload(config.attestationPayloadBytes);
@@ -234,66 +235,61 @@ export async function buildExitTransaction(
     });
   }
 
-  // Semantic attestation binding (critical fields) to this concrete execution intent.
+  // Semantic attestation binding (M9 canonical payload fields) to this concrete execution intent.
   const payload = config.attestationPayloadBytes;
-  const payloadDirection = u8At(payload, 68);
   const expectedDirection = direction === 'DOWN' ? 0 : 1;
-  if (payloadDirection !== expectedDirection) {
-    failMismatch('direction', expectedDirection, payloadDirection);
+  const expectedCluster = snapshot.cluster === 'devnet' ? 0 : snapshot.cluster === 'mainnet-beta' ? 1 : 2;
+
+  if (u8At(payload, 0) !== expectedCluster) {
+    failMismatch('cluster', expectedCluster, u8At(payload, 0));
   }
-  if (!fieldEq32(payload, 0, config.authority.toBuffer())) {
-    failMismatch('authority', config.authority.toBase58(), hex32At(payload, 0));
+  if (!fieldEq32(payload, 1, config.authority.toBuffer())) {
+    failMismatch('authority', config.authority.toBase58(), hex32At(payload, 1));
   }
 
   assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), snapshot.cluster);
 
   const refreshed = await resolveFreshSnapshotAndQuote(snapshot, config);
-  if (!fieldEq32(payload, 32, refreshed.snapshot.positionMint.toBuffer())) {
-    failMismatch('positionMint', refreshed.snapshot.positionMint.toBase58(), hex32At(payload, 32));
+  if (!fieldEq32(payload, 33, refreshed.snapshot.position.toBuffer())) {
+    failMismatch('position', refreshed.snapshot.position.toBase58(), hex32At(payload, 33));
   }
-  if (i32leAt(payload, 69) !== refreshed.snapshot.lowerTickIndex) {
-    failMismatch('lowerTickIndex', refreshed.snapshot.lowerTickIndex, i32leAt(payload, 69));
+  if (!fieldEq32(payload, 65, refreshed.snapshot.positionMint.toBuffer())) {
+    failMismatch('positionMint', refreshed.snapshot.positionMint.toBase58(), hex32At(payload, 65));
   }
-  if (i32leAt(payload, 73) !== refreshed.snapshot.upperTickIndex) {
-    failMismatch('upperTickIndex', refreshed.snapshot.upperTickIndex, i32leAt(payload, 73));
+  if (!fieldEq32(payload, 97, refreshed.snapshot.whirlpool.toBuffer())) {
+    failMismatch('whirlpool', refreshed.snapshot.whirlpool.toBase58(), hex32At(payload, 97));
   }
-  if (i32leAt(payload, 77) !== refreshed.snapshot.currentTickIndex) {
-    failMismatch('currentTickIndex', refreshed.snapshot.currentTickIndex, i32leAt(payload, 77));
+  if (u8At(payload, 133) !== expectedDirection) {
+    failMismatch('direction', expectedDirection, u8At(payload, 133));
+  }
+  if (i32leAt(payload, 134) !== refreshed.snapshot.currentTickIndex) {
+    failMismatch('tickCurrent', refreshed.snapshot.currentTickIndex, i32leAt(payload, 134));
+  }
+  if (i32leAt(payload, 138) !== refreshed.snapshot.lowerTickIndex) {
+    failMismatch('lowerTickIndex', refreshed.snapshot.lowerTickIndex, i32leAt(payload, 138));
+  }
+  if (i32leAt(payload, 142) !== refreshed.snapshot.upperTickIndex) {
+    failMismatch('upperTickIndex', refreshed.snapshot.upperTickIndex, i32leAt(payload, 142));
+  }
+  if (u16leAt(payload, 146) !== config.maxSlippageBps) {
+    failMismatch('slippageBpsCap', config.maxSlippageBps, u16leAt(payload, 146));
   }
   assertQuoteDirection(direction, refreshed.quote, refreshed.snapshot);
 
-  if (!fieldEq32(payload, 97, refreshed.quote.inputMint.toBuffer())) {
-    failMismatch('quote.inputMint', refreshed.quote.inputMint.toBase58(), hex32At(payload, 97));
+  if (!fieldEq32(payload, 148, refreshed.quote.inputMint.toBuffer())) {
+    failMismatch('quote.inputMint', refreshed.quote.inputMint.toBase58(), hex32At(payload, 148));
   }
-  if (!fieldEq32(payload, 129, refreshed.quote.outputMint.toBuffer())) {
-    failMismatch('quote.outputMint', refreshed.quote.outputMint.toBase58(), hex32At(payload, 129));
+  if (!fieldEq32(payload, 180, refreshed.quote.outputMint.toBuffer())) {
+    failMismatch('quote.outputMint', refreshed.quote.outputMint.toBase58(), hex32At(payload, 180));
   }
-  if (u64leAt(payload, 161) !== refreshed.quote.inAmount) {
-    failMismatch('quote.inAmount', refreshed.quote.inAmount.toString(), u64leAt(payload, 161).toString());
+  if (u64leAt(payload, 212) !== refreshed.quote.inAmount) {
+    failMismatch('quote.inAmount', refreshed.quote.inAmount.toString(), u64leAt(payload, 212).toString());
   }
-  if (u64leAt(payload, 169) !== refreshed.quote.outAmount) {
-    failMismatch('quote.outAmount', refreshed.quote.outAmount.toString(), u64leAt(payload, 169).toString());
+  if (u64leAt(payload, 220) !== refreshed.quote.outAmount) {
+    failMismatch('quote.minOutAmount', refreshed.quote.outAmount.toString(), u64leAt(payload, 220).toString());
   }
-  if (u32leAt(payload, 177) !== refreshed.quote.slippageBps) {
-    failMismatch('quote.slippageBps', refreshed.quote.slippageBps, u32leAt(payload, 177));
-  }
-  if (u64leAt(payload, 181) !== BigInt(refreshed.quote.quotedAtUnixMs)) {
-    failMismatch('quote.quotedAtUnixMs', refreshed.quote.quotedAtUnixMs, Number(u64leAt(payload, 181)));
-  }
-  if (u32leAt(payload, 189) !== config.computeUnitLimit) {
-    failMismatch('computeUnitLimit', config.computeUnitLimit, u32leAt(payload, 189));
-  }
-  if (u64leAt(payload, 193) !== BigInt(config.computeUnitPriceMicroLamports)) {
-    failMismatch('computeUnitPriceMicroLamports', config.computeUnitPriceMicroLamports, Number(u64leAt(payload, 193)));
-  }
-  if (u32leAt(payload, 201) !== config.maxSlippageBps) {
-    failMismatch('maxSlippageBps', config.maxSlippageBps, u32leAt(payload, 201));
-  }
-  if (u64leAt(payload, 205) !== BigInt(config.quoteFreshnessMs)) {
-    failMismatch('quoteFreshnessMs', config.quoteFreshnessMs, Number(u64leAt(payload, 205)));
-  }
-  if (u32leAt(payload, 213) !== config.maxRebuildAttempts) {
-    failMismatch('maxRebuildAttempts', config.maxRebuildAttempts, u32leAt(payload, 213));
+  if (u64leAt(payload, 228) !== BigInt(refreshed.quote.quotedAtUnixMs)) {
+    failMismatch('quote.quotedAtUnixMs', refreshed.quote.quotedAtUnixMs, Number(u64leAt(payload, 228)));
   }
 
   if (refreshed.quote.slippageBps > config.maxSlippageBps) {
