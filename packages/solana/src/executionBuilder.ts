@@ -118,6 +118,10 @@ function fieldEq32(payload: Uint8Array, offset: number, expected: Uint8Array): b
   return bytesEqualConstantTime(got, expected);
 }
 
+function hex32At(payload: Uint8Array, offset: number): string {
+  return Buffer.from(payload.subarray(offset, offset + 32)).toString('hex');
+}
+
 function failMismatch(field: string, expected: unknown, actual: unknown): never {
   fail('MISSING_ATTESTATION_HASH', `attestation payload ${field} mismatch`, false, { expected, actual });
 }
@@ -237,14 +241,14 @@ export async function buildExitTransaction(
     failMismatch('direction', expectedDirection, payloadDirection);
   }
   if (!fieldEq32(payload, 0, config.authority.toBuffer())) {
-    failMismatch('authority', config.authority.toBase58(), 'mismatch');
+    failMismatch('authority', config.authority.toBase58(), hex32At(payload, 0));
   }
 
   assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), snapshot.cluster);
 
   const refreshed = await resolveFreshSnapshotAndQuote(snapshot, config);
   if (!fieldEq32(payload, 32, refreshed.snapshot.positionMint.toBuffer())) {
-    failMismatch('positionMint', refreshed.snapshot.positionMint.toBase58(), 'mismatch');
+    failMismatch('positionMint', refreshed.snapshot.positionMint.toBase58(), hex32At(payload, 32));
   }
   if (i32leAt(payload, 69) !== refreshed.snapshot.lowerTickIndex) {
     failMismatch('lowerTickIndex', refreshed.snapshot.lowerTickIndex, i32leAt(payload, 69));
@@ -258,22 +262,22 @@ export async function buildExitTransaction(
   assertQuoteDirection(direction, refreshed.quote, refreshed.snapshot);
 
   if (!fieldEq32(payload, 97, refreshed.quote.inputMint.toBuffer())) {
-    failMismatch('quote.inputMint', refreshed.quote.inputMint.toBase58(), 'mismatch');
+    failMismatch('quote.inputMint', refreshed.quote.inputMint.toBase58(), hex32At(payload, 97));
   }
   if (!fieldEq32(payload, 129, refreshed.quote.outputMint.toBuffer())) {
-    failMismatch('quote.outputMint', refreshed.quote.outputMint.toBase58(), 'mismatch');
+    failMismatch('quote.outputMint', refreshed.quote.outputMint.toBase58(), hex32At(payload, 129));
   }
-  if (u64leAt(payload, 161) !== config.quote.inAmount) {
-    failMismatch('quote.inAmount', config.quote.inAmount.toString(), u64leAt(payload, 161).toString());
+  if (u64leAt(payload, 161) !== refreshed.quote.inAmount) {
+    failMismatch('quote.inAmount', refreshed.quote.inAmount.toString(), u64leAt(payload, 161).toString());
   }
-  if (u64leAt(payload, 169) !== config.quote.outAmount) {
-    failMismatch('quote.outAmount', config.quote.outAmount.toString(), u64leAt(payload, 169).toString());
+  if (u64leAt(payload, 169) !== refreshed.quote.outAmount) {
+    failMismatch('quote.outAmount', refreshed.quote.outAmount.toString(), u64leAt(payload, 169).toString());
   }
-  if (u32leAt(payload, 177) !== config.quote.slippageBps) {
-    failMismatch('quote.slippageBps', config.quote.slippageBps, u32leAt(payload, 177));
+  if (u32leAt(payload, 177) !== refreshed.quote.slippageBps) {
+    failMismatch('quote.slippageBps', refreshed.quote.slippageBps, u32leAt(payload, 177));
   }
-  if (u64leAt(payload, 181) !== BigInt(config.quote.quotedAtUnixMs)) {
-    failMismatch('quote.quotedAtUnixMs', config.quote.quotedAtUnixMs, Number(u64leAt(payload, 181)));
+  if (u64leAt(payload, 181) !== BigInt(refreshed.quote.quotedAtUnixMs)) {
+    failMismatch('quote.quotedAtUnixMs', refreshed.quote.quotedAtUnixMs, Number(u64leAt(payload, 181)));
   }
   if (u32leAt(payload, 189) !== config.computeUnitLimit) {
     failMismatch('computeUnitLimit', config.computeUnitLimit, u32leAt(payload, 189));

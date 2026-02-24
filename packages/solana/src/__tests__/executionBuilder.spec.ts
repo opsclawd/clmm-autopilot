@@ -183,7 +183,7 @@ describe('buildExitTransaction', () => {
     expect(rebuildSpy).toHaveBeenCalledTimes(0);
   });
 
-  it('stale quote triggers deterministic rebuild path', async () => {
+  it('stale quote triggers deterministic rebuild path and fails attestation mismatch', async () => {
     const rebuiltQuote: ExitQuote = {
       ...buildConfig().quote,
       quotedAtUnixMs: 1_700_000_000_400,
@@ -191,7 +191,7 @@ describe('buildExitTransaction', () => {
     const rebuildSpy = vi.fn(async () => ({ snapshot: baseSnapshot, quote: rebuiltQuote }));
     const config = buildConfig({ quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_990_000 }, rebuildSnapshotAndQuote: rebuildSpy });
 
-    await buildExitTransaction(baseSnapshot, 'DOWN', config);
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', config)).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
     expect(rebuildSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -565,4 +565,65 @@ describe('buildExitTransaction', () => {
       ),
     ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
   });
+
+  it('rejects attestation when rebuilt quote differs from payload-bound quote', async () => {
+    const cfg = buildConfig({
+      quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_000_000 },
+      rebuildSnapshotAndQuote: async () => ({
+        snapshot: baseSnapshot,
+        quote: { ...buildConfig().quote, quotedAtUnixMs: 1_700_000_000_250, inAmount: 999n },
+      }),
+    });
+
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', cfg)).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+  });
+
+  it('rejects mismatches for compute + guardrail fields', async () => {
+    const epochNowMs = 1_700_000_000_500;
+    const base = {
+      authority: buildConfig().authority.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch: Math.floor(epochNowMs / 1000 / 86400),
+      direction: 0 as const,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    };
+
+    for (const mutated of [
+      { ...base, computeUnitLimit: 600_001 },
+      { ...base, computeUnitPriceMicroLamports: 10_001n },
+      { ...base, maxSlippageBps: 51 },
+      { ...base, quoteFreshnessMs: 2_001n },
+      { ...base, maxRebuildAttempts: 4 },
+      { ...base, quoteOutAmount: 457n },
+      { ...base, quoteSlippageBps: 31 },
+    ]) {
+      await expect(
+        buildExitTransaction(
+          baseSnapshot,
+          'DOWN',
+          buildConfig({
+            nowUnixMs: () => epochNowMs,
+            attestationPayloadBytes: encodeAttestationPayload(mutated),
+            attestationHash: computeAttestationHash(mutated),
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+    }
+  });
+
 });
