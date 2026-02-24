@@ -1,14 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
 import { PublicKey } from '@solana/web3.js';
 
-vi.mock('@clmm-autopilot/core', async () => {
+vi.mock('@clmm-autopilot/core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@clmm-autopilot/core')>();
   const SOL = 'So11111111111111111111111111111111111111112';
   const USDC = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
   return {
+    ...actual,
     evaluateRangeBreak: () => ({
       action: 'TRIGGER_DOWN',
       reasonCode: 'BREAK_CONFIRMED',
       debug: { samplesUsed: 3, threshold: 3, cooldownRemainingMs: 0 },
+      nextState: {},
     }),
     unixDaysFromUnixMs: (unixMs: number) => Math.floor(unixMs / 1000 / 86400),
     hashAttestationPayload: (_bytes: Uint8Array) => new Uint8Array(32).fill(1),
@@ -90,7 +94,8 @@ describe('executeOnce underfunded', () => {
       position,
       samples: [{ unixMs: 0, currentTickIndex: 0, lowerTickIndex: 0, upperTickIndex: 0 } as any],
       quote: quote as any,
-      slippageBpsCap: 50,
+      config: DEFAULT_CONFIG,
+      policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
       attestationHash: new Uint8Array(32).fill(1),
