@@ -78,7 +78,7 @@ describe('executeOnce underfunded', () => {
       inAmount: BigInt(1),
       outAmount: BigInt(1),
       slippageBps: 1,
-      quotedAtUnixMs: Date.now(),
+      quotedAtUnixMs: 1,
       raw: { inAmount: '1', outAmount: '1' },
     };
 
@@ -106,6 +106,10 @@ describe('executeOnce underfunded', () => {
         b[77] = 100;
         b.set(new PublicKey('So11111111111111111111111111111111111111112').toBuffer(), 97);
         b.set(new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU').toBuffer(), 129);
+        b[161] = 1; // quoteInAmount
+        b[169] = 1; // quoteOutAmount
+        b[177] = 1; // quoteSlippageBps
+        b[181] = 1; // quoteQuotedAtUnixMs
         b[189] = 0xC0; b[190] = 0x27; b[191] = 0x09; // 600000 LE u32
         b[193] = 0x10; b[194] = 0x27; // 10000 LE u64 low bytes
         b[201] = 50; // maxSlippageBps

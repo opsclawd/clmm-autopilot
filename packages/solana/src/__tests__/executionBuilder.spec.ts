@@ -55,7 +55,7 @@ const attestationPayloadBytes = new Uint8Array(68);
 type SimResult = { err: unknown | null; logs?: string[]; unitsConsumed?: number; innerInstructions?: unknown; returnData?: unknown };
 
 function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
-  const quote: ExitQuote = {
+  const defaultQuote: ExitQuote = {
     inputMint: SOL_MINT,
     outputMint: USDC_MINT,
     inAmount: BigInt(123),
@@ -67,43 +67,20 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
 
   const authority = pk(18);
   const epochNowMs = 1_700_000_000_500;
-  const epoch = Math.floor(epochNowMs / 1000 / 86400);
-  const baseAttestationInput = {
-    authority: authority.toBase58(),
-    positionMint: baseSnapshot.positionMint.toBase58(),
-    epoch,
-    direction: 0 as const,
-    lowerTickIndex: baseSnapshot.lowerTickIndex,
-    upperTickIndex: baseSnapshot.upperTickIndex,
-    currentTickIndex: baseSnapshot.currentTickIndex,
-    observedSlot: 1n,
-    observedUnixTs: 1n,
-    quoteInputMint: SOL_MINT.toBase58(),
-    quoteOutputMint: USDC_MINT.toBase58(),
-    quoteInAmount: 123n,
-    quoteOutAmount: 456n,
-    quoteSlippageBps: 30,
-    quoteQuotedAtUnixMs: 1n,
-    computeUnitLimit: 600_000,
-    computeUnitPriceMicroLamports: 10_000n,
-    maxSlippageBps: 50,
-    quoteFreshnessMs: 2_000n,
-    maxRebuildAttempts: 3,
-  };
 
-  return {
+  const defaults: BuildExitConfig = {
     authority,
     payer: pk(19),
     recentBlockhash: 'EETubP5AKH2uP8WqzU7xYfPqBrM6oTnP3v8igJE6wz7A',
     computeUnitLimit: 600_000,
     computeUnitPriceMicroLamports: 10_000,
-    quote,
+    quote: defaultQuote,
     maxSlippageBps: 50,
     quoteFreshnessMs: 2_000,
     maxRebuildAttempts: 3,
     nowUnixMs: () => epochNowMs,
     receiptEpochUnixMs: epochNowMs,
-    rebuildSnapshotAndQuote: async () => ({ snapshot: baseSnapshot, quote: { ...quote, quotedAtUnixMs: 1_700_000_000_200 } }),
+    rebuildSnapshotAndQuote: async () => ({ snapshot: baseSnapshot, quote: { ...defaultQuote, quotedAtUnixMs: 1_700_000_000_200 } }),
     availableLamports: 5_000_000,
     requirements: {
       rentLamports: 2_039_280,
@@ -113,8 +90,8 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
       bufferLamports: 10_000,
       totalRequiredLamports: 2_039_280 + 20_000 + 5_000 + 10_000,
     },
-    attestationHash: computeAttestationHash(baseAttestationInput),
-    attestationPayloadBytes: encodeAttestationPayload(baseAttestationInput),
+    attestationHash: new Uint8Array(32),
+    attestationPayloadBytes: new Uint8Array(217),
     simulate: async (): Promise<SimResult> => ({ err: null, logs: ['ok'] }),
     buildOrcaExitIxs: () => ({
       conditionalAtaIxs: [ix(21), ix(22)],
@@ -127,8 +104,38 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     buildJupiterSwapIxs: async () => ({ instructions: [ix(33)], lookupTableAddresses: [pk(90)] }),
     buildWsolLifecycleIxs: () => ({ preSwap: [ix(23)], postSwap: [ix(24)], wsolAta: pk(55) }),
     lookupTableAccounts: [] as AddressLookupTableAccount[],
-    ...overrides,
   };
+
+  const merged = { ...defaults, ...overrides } as BuildExitConfig;
+  const epoch = Math.floor(merged.receiptEpochUnixMs / 1000 / 86400);
+  const autoInput = {
+    authority: merged.authority.toBase58(),
+    positionMint: baseSnapshot.positionMint.toBase58(),
+    epoch,
+    direction: 0 as const,
+    lowerTickIndex: baseSnapshot.lowerTickIndex,
+    upperTickIndex: baseSnapshot.upperTickIndex,
+    currentTickIndex: baseSnapshot.currentTickIndex,
+    observedSlot: 1n,
+    observedUnixTs: 1n,
+    quoteInputMint: merged.quote.inputMint.toBase58(),
+    quoteOutputMint: merged.quote.outputMint.toBase58(),
+    quoteInAmount: merged.quote.inAmount,
+    quoteOutAmount: merged.quote.outAmount,
+    quoteSlippageBps: merged.quote.slippageBps,
+    quoteQuotedAtUnixMs: BigInt(merged.quote.quotedAtUnixMs),
+    computeUnitLimit: merged.computeUnitLimit,
+    computeUnitPriceMicroLamports: BigInt(merged.computeUnitPriceMicroLamports),
+    maxSlippageBps: merged.maxSlippageBps,
+    quoteFreshnessMs: BigInt(merged.quoteFreshnessMs),
+    maxRebuildAttempts: merged.maxRebuildAttempts,
+  };
+
+  const hasPayloadOverride = Boolean(overrides && Object.prototype.hasOwnProperty.call(overrides, 'attestationPayloadBytes'));
+  const hasHashOverride = Boolean(overrides && Object.prototype.hasOwnProperty.call(overrides, 'attestationHash'));
+  if (!hasPayloadOverride) merged.attestationPayloadBytes = encodeAttestationPayload(autoInput);
+  if (!hasHashOverride) merged.attestationHash = computeAttestationHash(autoInput);
+  return merged;
 }
 
 describe('buildExitTransaction', () => {
@@ -322,7 +329,7 @@ describe('buildExitTransaction', () => {
       quoteInAmount: 123n,
       quoteOutAmount: 456n,
       quoteSlippageBps: 30,
-      quoteQuotedAtUnixMs: 1n,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
       computeUnitLimit: 600_000,
       computeUnitPriceMicroLamports: 10_000n,
       maxSlippageBps: 50,
@@ -366,7 +373,7 @@ describe('buildExitTransaction', () => {
       quoteInAmount: 123n,
       quoteOutAmount: 456n,
       quoteSlippageBps: 30,
-      quoteQuotedAtUnixMs: 1n,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
       computeUnitLimit: 600_000,
       computeUnitPriceMicroLamports: 10_000n,
       maxSlippageBps: 50,
@@ -388,7 +395,7 @@ describe('buildExitTransaction', () => {
       quoteInAmount: 123n,
       quoteOutAmount: 456n,
       quoteSlippageBps: 30,
-      quoteQuotedAtUnixMs: 1n,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
       computeUnitLimit: 600_000,
       computeUnitPriceMicroLamports: 10_000n,
       maxSlippageBps: 50,
@@ -449,7 +456,7 @@ describe('buildExitTransaction', () => {
       quoteInAmount: 123n,
       quoteOutAmount: 456n,
       quoteSlippageBps: 30,
-      quoteQuotedAtUnixMs: 1n,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
       computeUnitLimit: 600_000,
       computeUnitPriceMicroLamports: 10_000n,
       maxSlippageBps: 50,
@@ -471,7 +478,7 @@ describe('buildExitTransaction', () => {
       quoteInAmount: 123n,
       quoteOutAmount: 456n,
       quoteSlippageBps: 30,
-      quoteQuotedAtUnixMs: 1n,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
       computeUnitLimit: 600_000,
       computeUnitPriceMicroLamports: 10_000n,
       maxSlippageBps: 50,
@@ -502,7 +509,7 @@ describe('buildExitTransaction', () => {
       quoteInAmount: 123n,
       quoteOutAmount: 456n,
       quoteSlippageBps: 30,
-      quoteQuotedAtUnixMs: 1n,
+      quoteQuotedAtUnixMs: 1_700_000_000_000n,
       computeUnitLimit: 600_000,
       computeUnitPriceMicroLamports: 10_000n,
       maxSlippageBps: 50,

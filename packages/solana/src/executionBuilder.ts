@@ -118,6 +118,10 @@ function fieldEq32(payload: Uint8Array, offset: number, expected: Uint8Array): b
   return bytesEqualConstantTime(got, expected);
 }
 
+function failMismatch(field: string, expected: unknown, actual: unknown): never {
+  fail('MISSING_ATTESTATION_HASH', `attestation payload ${field} mismatch`, false, { expected, actual });
+}
+
 function assertQuoteDirection(direction: ExitDirection, quote: ExitQuote, snapshot: PositionSnapshot): void {
   const nonSolMint = snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA;
 
@@ -230,52 +234,61 @@ export async function buildExitTransaction(
   const payloadDirection = u8At(payload, 68);
   const expectedDirection = direction === 'DOWN' ? 0 : 1;
   if (payloadDirection !== expectedDirection) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload direction mismatch', false, {
-      payloadDirection,
-      expectedDirection,
-    });
+    failMismatch('direction', expectedDirection, payloadDirection);
   }
   if (!fieldEq32(payload, 0, config.authority.toBuffer())) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload authority mismatch', false);
+    failMismatch('authority', config.authority.toBase58(), 'mismatch');
   }
 
   assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), snapshot.cluster);
 
   const refreshed = await resolveFreshSnapshotAndQuote(snapshot, config);
   if (!fieldEq32(payload, 32, refreshed.snapshot.positionMint.toBuffer())) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload positionMint mismatch', false);
+    failMismatch('positionMint', refreshed.snapshot.positionMint.toBase58(), 'mismatch');
   }
   if (i32leAt(payload, 69) !== refreshed.snapshot.lowerTickIndex) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload lowerTickIndex mismatch', false);
+    failMismatch('lowerTickIndex', refreshed.snapshot.lowerTickIndex, i32leAt(payload, 69));
   }
   if (i32leAt(payload, 73) !== refreshed.snapshot.upperTickIndex) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload upperTickIndex mismatch', false);
+    failMismatch('upperTickIndex', refreshed.snapshot.upperTickIndex, i32leAt(payload, 73));
   }
   if (i32leAt(payload, 77) !== refreshed.snapshot.currentTickIndex) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload currentTickIndex mismatch', false);
+    failMismatch('currentTickIndex', refreshed.snapshot.currentTickIndex, i32leAt(payload, 77));
   }
   assertQuoteDirection(direction, refreshed.quote, refreshed.snapshot);
 
   if (!fieldEq32(payload, 97, refreshed.quote.inputMint.toBuffer())) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload quote.inputMint mismatch', false);
+    failMismatch('quote.inputMint', refreshed.quote.inputMint.toBase58(), 'mismatch');
   }
   if (!fieldEq32(payload, 129, refreshed.quote.outputMint.toBuffer())) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload quote.outputMint mismatch', false);
+    failMismatch('quote.outputMint', refreshed.quote.outputMint.toBase58(), 'mismatch');
+  }
+  if (u64leAt(payload, 161) !== config.quote.inAmount) {
+    failMismatch('quote.inAmount', config.quote.inAmount.toString(), u64leAt(payload, 161).toString());
+  }
+  if (u64leAt(payload, 169) !== config.quote.outAmount) {
+    failMismatch('quote.outAmount', config.quote.outAmount.toString(), u64leAt(payload, 169).toString());
+  }
+  if (u32leAt(payload, 177) !== config.quote.slippageBps) {
+    failMismatch('quote.slippageBps', config.quote.slippageBps, u32leAt(payload, 177));
+  }
+  if (u64leAt(payload, 181) !== BigInt(config.quote.quotedAtUnixMs)) {
+    failMismatch('quote.quotedAtUnixMs', config.quote.quotedAtUnixMs, Number(u64leAt(payload, 181)));
   }
   if (u32leAt(payload, 189) !== config.computeUnitLimit) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload computeUnitLimit mismatch', false);
+    failMismatch('computeUnitLimit', config.computeUnitLimit, u32leAt(payload, 189));
   }
   if (u64leAt(payload, 193) !== BigInt(config.computeUnitPriceMicroLamports)) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload computeUnitPriceMicroLamports mismatch', false);
+    failMismatch('computeUnitPriceMicroLamports', config.computeUnitPriceMicroLamports, Number(u64leAt(payload, 193)));
   }
   if (u32leAt(payload, 201) !== config.maxSlippageBps) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload maxSlippageBps mismatch', false);
+    failMismatch('maxSlippageBps', config.maxSlippageBps, u32leAt(payload, 201));
   }
   if (u64leAt(payload, 205) !== BigInt(config.quoteFreshnessMs)) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload quoteFreshnessMs mismatch', false);
+    failMismatch('quoteFreshnessMs', config.quoteFreshnessMs, Number(u64leAt(payload, 205)));
   }
   if (u32leAt(payload, 213) !== config.maxRebuildAttempts) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload maxRebuildAttempts mismatch', false);
+    failMismatch('maxRebuildAttempts', config.maxRebuildAttempts, u32leAt(payload, 213));
   }
 
   if (refreshed.quote.slippageBps > config.maxSlippageBps) {
