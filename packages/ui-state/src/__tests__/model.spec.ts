@@ -68,6 +68,7 @@ describe('ui-state', () => {
   it('maps representative canonical errors', () => {
     expect(mapErrorToUi({ code: 'SIMULATION_FAILED' }).title).toBe('Simulation failed');
     expect(mapErrorToUi({ code: 'BLOCKHASH_EXPIRED' }).code).toBe('BLOCKHASH_EXPIRED');
+    expect(mapErrorToUi({ code: 'CONFIG_INVALID' }).title).toBe('Invalid configuration');
   });
 
   it('renders actionable insufficient-fee-buffer details when debug payload is present', () => {

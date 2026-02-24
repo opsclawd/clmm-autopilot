@@ -73,7 +73,7 @@ export default function App() {
         <Text style={{ fontSize: 24, fontWeight: '700' }}>M6 Shell UX</Text>
         {!configValid ? (
           <Text style={{ color: '#b91c1c' }}>
-            {mapErrorToUi({ code: 'RPC_PERMANENT' }).title}: {mapErrorToUi({ code: 'RPC_PERMANENT' }).message}
+            {mapErrorToUi({ code: 'CONFIG_INVALID' }).title}: {mapErrorToUi({ code: 'CONFIG_INVALID' }).message}
           </Text>
         ) : null}
         {!loaded.ok ? loaded.errors.map((e) => (
