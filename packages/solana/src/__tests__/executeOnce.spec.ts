@@ -50,6 +50,7 @@ vi.mock('../receipt', async (importOriginal) => {
 });
 
 import { executeOnce } from '../executeOnce';
+import { loadPositionSnapshot } from '../orcaInspector';
 
 describe('executeOnce', () => {
   it('returns HOLD when decision is HOLD', async () => {
@@ -221,6 +222,58 @@ describe('executeOnce', () => {
 
     expect(res.status).toBe('ERROR');
     expect(res.errorCode).toBe('ALREADY_EXECUTED_THIS_EPOCH');
+    expect(buildExitTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it('returns NOT_SOL_USDC and never reaches tx builder for non-SOL/USDC snapshot', async () => {
+    buildExitTransactionMock.mockClear();
+    vi.mocked(loadPositionSnapshot).mockRejectedValueOnce({
+      code: 'NOT_SOL_USDC',
+      retryable: false,
+      message: 'Position must be SOL/USDC.',
+    });
+
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: vi.fn(async () => null),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2039280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      slippageBpsCap: 50,
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      checkExistingReceipt: async () => false,
+      buildJupiterSwapIxs: vi.fn(async () => ({ instructions: [], lookupTableAddresses: [] })),
+    });
+
+    expect(res.status).toBe('ERROR');
+    expect(res.errorCode).toBe('NOT_SOL_USDC');
     expect(buildExitTransactionMock).not.toHaveBeenCalled();
   });
 });
