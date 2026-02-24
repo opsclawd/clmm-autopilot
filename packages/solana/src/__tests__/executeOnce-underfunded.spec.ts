@@ -94,7 +94,13 @@ describe('executeOnce underfunded', () => {
       expectedMinOut: '0',
       quoteAgeMs: 0,
       attestationHash: new Uint8Array(32).fill(1),
-      attestationPayloadBytes: new Uint8Array(68),
+      attestationPayloadBytes: (() => {
+        const b = new Uint8Array(217);
+        b.set(authority.toBuffer(), 0);
+        b.set(new PublicKey(new Uint8Array(32).fill(12)).toBuffer(), 32);
+        // epoch = 0, direction = 0 already zeroed.
+        return b;
+      })(),
       buildJupiterSwapIxs: vi.fn(async () => ({ instructions: [], lookupTableAddresses: [] })),
       signAndSend: vi.fn(async () => 'sig'),
       nowUnixMs: () => 0,

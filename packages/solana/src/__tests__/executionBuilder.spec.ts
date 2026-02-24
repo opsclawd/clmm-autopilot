@@ -306,11 +306,38 @@ describe('buildExitTransaction', () => {
       ),
     ).rejects.toMatchObject({ code: 'NOT_SOL_USDC' });
 
+    const epochNowMs = 1_700_000_000_500;
+    const upInput = {
+      authority: buildConfig().authority.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch: Math.floor(epochNowMs / 1000 / 86400),
+      direction: 1 as const,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    };
+
     await expect(
       buildExitTransaction(
         baseSnapshot,
         'UP',
         buildConfig({
+          nowUnixMs: () => epochNowMs,
+          attestationPayloadBytes: encodeAttestationPayload(upInput),
+          attestationHash: computeAttestationHash(upInput),
           quote: {
             ...buildConfig().quote,
             inputMint: SOL_MINT,
@@ -376,6 +403,10 @@ describe('buildExitTransaction', () => {
 
   it('rejects missing/zero/mismatched attestation hash', async () => {
     await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationPayloadBytes: undefined as unknown as Uint8Array }))).rejects.toMatchObject({
+      code: 'MISSING_ATTESTATION_HASH',
+    });
+
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ attestationPayloadBytes: new Uint8Array(67) }))).rejects.toMatchObject({
       code: 'MISSING_ATTESTATION_HASH',
     });
 
@@ -449,6 +480,59 @@ describe('buildExitTransaction', () => {
         baseSnapshot,
         'DOWN',
         buildConfig({ nowUnixMs: () => epochNowMs, attestationHash: badEpochHash, attestationPayloadBytes: badEpochPayload }),
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+
+    const mismatchAuthorityInput = {
+      authority: pk(99).toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      epoch: Math.floor(epochNowMs / 1000 / 86400),
+      direction: 0 as const,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      currentTickIndex: baseSnapshot.currentTickIndex,
+      observedSlot: 1n,
+      observedUnixTs: 1n,
+      quoteInputMint: SOL_MINT.toBase58(),
+      quoteOutputMint: USDC_MINT.toBase58(),
+      quoteInAmount: 123n,
+      quoteOutAmount: 456n,
+      quoteSlippageBps: 30,
+      quoteQuotedAtUnixMs: 1n,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000n,
+      maxSlippageBps: 50,
+      quoteFreshnessMs: 2_000n,
+      maxRebuildAttempts: 3,
+    };
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({
+          nowUnixMs: () => epochNowMs,
+          attestationPayloadBytes: encodeAttestationPayload(mismatchAuthorityInput),
+          attestationHash: computeAttestationHash(mismatchAuthorityInput),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
+
+    const mismatchDirectionInput = {
+      ...mismatchAuthorityInput,
+      authority: buildConfig().authority.toBase58(),
+      direction: 1 as const,
+    };
+
+    await expect(
+      buildExitTransaction(
+        baseSnapshot,
+        'DOWN',
+        buildConfig({
+          nowUnixMs: () => epochNowMs,
+          attestationPayloadBytes: encodeAttestationPayload(mismatchDirectionInput),
+          attestationHash: computeAttestationHash(mismatchDirectionInput),
+        }),
       ),
     ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
   });

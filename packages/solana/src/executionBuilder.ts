@@ -80,9 +80,25 @@ function canonicalEpoch(unixMs: number): number {
 }
 
 function epochFromPayloadBytes(payload: Uint8Array): number {
-  if (payload.length < 68) throw new Error('attestationPayloadBytes too short to read epoch');
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   return view.getUint32(64, true);
+}
+
+function u8At(payload: Uint8Array, offset: number): number {
+  return payload[offset] ?? 0;
+}
+
+function bytesEqualConstantTime(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+function fieldEq32(payload: Uint8Array, offset: number, expected: Uint8Array): boolean {
+  if (expected.length !== 32) return false;
+  const got = payload.subarray(offset, offset + 32);
+  return bytesEqualConstantTime(got, expected);
 }
 
 function assertQuoteDirection(direction: ExitDirection, quote: ExitQuote, snapshot: PositionSnapshot): void {
@@ -173,8 +189,14 @@ export async function buildExitTransaction(
   if (!config.attestationPayloadBytes || config.attestationPayloadBytes.length === 0) {
     fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes are required', false);
   }
+  if (config.attestationPayloadBytes.length < 217) {
+    fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes must be canonical fixed-width length (>=217 bytes)', false, {
+      got: config.attestationPayloadBytes.length,
+      min: 217,
+    });
+  }
   const expected = hashAttestationPayload(config.attestationPayloadBytes);
-  if (Buffer.from(expected).compare(Buffer.from(config.attestationHash)) !== 0) {
+  if (!bytesEqualConstantTime(expected, config.attestationHash)) {
     fail('MISSING_ATTESTATION_HASH', 'attestationHash must equal sha256(attestationPayloadBytes)', false);
   }
   const payloadEpoch = epochFromPayloadBytes(config.attestationPayloadBytes);
@@ -186,9 +208,26 @@ export async function buildExitTransaction(
     });
   }
 
+  // Semantic attestation binding (critical fields) to this concrete execution intent.
+  const payload = config.attestationPayloadBytes;
+  const payloadDirection = u8At(payload, 68);
+  const expectedDirection = direction === 'DOWN' ? 0 : 1;
+  if (payloadDirection !== expectedDirection) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload direction mismatch', false, {
+      payloadDirection,
+      expectedDirection,
+    });
+  }
+  if (!fieldEq32(payload, 0, config.authority.toBuffer())) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload authority mismatch', false);
+  }
+
   assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), snapshot.cluster);
 
   const refreshed = await resolveFreshSnapshotAndQuote(snapshot, config);
+  if (!fieldEq32(payload, 32, refreshed.snapshot.positionMint.toBuffer())) {
+    fail('MISSING_ATTESTATION_HASH', 'attestation payload positionMint mismatch', false);
+  }
   assertQuoteDirection(direction, refreshed.quote, refreshed.snapshot);
 
   if (refreshed.quote.slippageBps > config.maxSlippageBps) {
