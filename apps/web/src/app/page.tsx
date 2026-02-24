@@ -25,7 +25,7 @@ export default function Home() {
   const [lastSimDebug, setLastSimDebug] = useState<unknown>(null);
   const pollingRef = useRef<number | null>(null);
 
-  const canExecute = Boolean(wallet && positionAddress && ui.decision?.decision !== 'HOLD');
+  const canExecute = Boolean(wallet && positionAddress && ui.canExecute);
 
   useEffect(() => {
     if (pollingRef.current) {
@@ -41,7 +41,7 @@ export default function Home() {
 
     const tick = async () => {
       try {
-        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress));
+        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), config.cluster);
         const slot = await connection.getSlot(config.commitment);
         const unixTs = Math.floor(Date.now() / 1000);
         if (cancelled) return;
@@ -64,7 +64,7 @@ export default function Home() {
         pollingRef.current = null;
       }
     };
-  }, [positionAddress, config.commitment, config.rpcUrl]);
+  }, [positionAddress, config.cluster, config.commitment, config.rpcUrl]);
 
   return (
     <main className="p-6 font-sans space-y-3">
@@ -111,7 +111,27 @@ export default function Home() {
               setUi(buildUiModel({ snapshot: refreshed.snapshot, decision: refreshed.decision, quote: refreshed.quote }));
             } catch (e) {
               const mapped = mapErrorToUi(e);
-              setUi(buildUiModel({ lastError: `${mapped.code}: ${mapped.message}` }));
+              setUi(
+                buildUiModel({
+                  decision:
+                    mapped.code === 'NOT_SOL_USDC'
+                      ? { decision: 'HOLD', reasonCode: 'NOT_SOL_USDC', samplesUsed: 0, threshold: 0, cooldownRemainingMs: 0 }
+                      : undefined,
+                  snapshot:
+                    mapped.code === 'NOT_SOL_USDC' && positionAddress
+                      ? {
+                          positionAddress,
+                          currentTick: 0,
+                          lowerTick: 0,
+                          upperTick: 0,
+                          inRange: false,
+                          pairLabel: 'UNSUPPORTED',
+                          pairValid: false,
+                        }
+                      : undefined,
+                  lastError: `${mapped.code}: ${mapped.message}`,
+                }),
+              );
             }
           }}
         >
@@ -130,7 +150,7 @@ export default function Home() {
               const connection = new Connection(config.rpcUrl, config.commitment);
 
               // Build a quote off the current snapshot remove preview (best-effort Phase-1 heuristic).
-              const snapshot = await loadPositionSnapshot(connection, position);
+              const snapshot = await loadPositionSnapshot(connection, position, config.cluster);
               const dir = ui.decision?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN';
               if (!snapshot.removePreview) throw new Error(`Remove preview unavailable (${snapshot.removePreviewReasonCode ?? 'DATA_UNAVAILABLE'})`);
 
@@ -198,6 +218,8 @@ export default function Home() {
         <div>slippage cap: {ui.quote?.slippageBpsCap ?? 'N/A'}</div>
         <div>expected minOut: {ui.quote?.expectedMinOut ?? 'N/A'}</div>
         <div>quote age (ms): {ui.quote?.quoteAgeMs ?? 'N/A'}</div>
+        <div>pair: {ui.snapshot?.pairLabel ?? 'N/A'}</div>
+        <div>pair valid: {ui.snapshot?.pairValid === undefined ? 'N/A' : ui.snapshot?.pairValid ? 'yes' : 'no'}</div>
         <div>samples buffered: {samples.length}</div>
         <div>simulate summary: {simSummary}</div>
       </section>

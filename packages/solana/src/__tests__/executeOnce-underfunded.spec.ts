@@ -2,12 +2,22 @@ import { describe, expect, it, vi } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 
 vi.mock('@clmm-autopilot/core', async () => {
+  const SOL = 'So11111111111111111111111111111111111111112';
+  const USDC = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
   return {
     evaluateRangeBreak: () => ({
       action: 'TRIGGER_DOWN',
       reasonCode: 'BREAK_CONFIRMED',
       debug: { samplesUsed: 3, threshold: 3, cooldownRemainingMs: 0 },
     }),
+    assertSolUsdcPair: (mintA: string, mintB: string) => {
+      if (!((mintA === SOL && mintB === USDC) || (mintA === USDC && mintB === SOL))) {
+        const err = new Error('Unsupported pair') as Error & { code: 'NOT_SOL_USDC'; retryable: false };
+        err.code = 'NOT_SOL_USDC';
+        err.retryable = false;
+        throw err;
+      }
+    },
   };
 });
 
@@ -17,6 +27,9 @@ vi.mock('../orcaInspector', async () => {
   const USDC_MINT = new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
   return {
     loadPositionSnapshot: async () => ({
+      cluster: 'devnet',
+      pairLabel: 'SOL/USDC',
+      pairValid: true,
       whirlpool: new PublicKey(new Uint8Array(32).fill(10)),
       position: new PublicKey(new Uint8Array(32).fill(11)),
       positionMint: new PublicKey(new Uint8Array(32).fill(12)),

@@ -8,6 +8,8 @@ import {
 
 const TOKEN_PROGRAM_V1 = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_PROGRAM_2022 = new PublicKey('TokenzQdBNbLqP5VEhdkA6Ww2c47QhN7f6vYfP2D4W3');
+const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
+const USDC_MINT = new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
 
 function mkPositionData(args: {
   whirlpool: PublicKey;
@@ -82,8 +84,8 @@ describe('loadPositionSnapshot', () => {
     const position = Keypair.generate().publicKey;
     const whirlpool = Keypair.generate().publicKey;
     const positionMint = Keypair.generate().publicKey;
-    const tokenMintA = Keypair.generate().publicKey;
-    const tokenMintB = Keypair.generate().publicKey;
+    const tokenMintA = SOL_MINT;
+    const tokenMintB = USDC_MINT;
     const tokenVaultA = Keypair.generate().publicKey;
     const tokenVaultB = Keypair.generate().publicKey;
 
@@ -121,6 +123,8 @@ describe('loadPositionSnapshot', () => {
     expect(snapshot.tokenVaultB.toBase58()).toBe(tokenVaultB.toBase58());
     expect(snapshot.tokenProgramA.toBase58()).toBe(TOKEN_PROGRAM_V1.toBase58());
     expect(snapshot.tokenProgramB.toBase58()).toBe(TOKEN_PROGRAM_2022.toBase58());
+    expect(snapshot.pairLabel).toBe('SOL/USDC');
+    expect(snapshot.pairValid).toBe(true);
     expect(snapshot.removePreview).toEqual({ tokenAOut: 123n, tokenBOut: 456n });
     expect(snapshot.removePreviewReasonCode).toBeNull();
   });
@@ -130,8 +134,8 @@ describe('loadPositionSnapshot', () => {
     const position = Keypair.generate().publicKey;
     const whirlpool = Keypair.generate().publicKey;
     const positionMint = Keypair.generate().publicKey;
-    const tokenMintA = Keypair.generate().publicKey;
-    const tokenMintB = Keypair.generate().publicKey;
+    const tokenMintA = SOL_MINT;
+    const tokenMintB = USDC_MINT;
 
     const accounts = new Map<string, { data: Buffer; owner?: PublicKey }>();
     accounts.set(
@@ -167,8 +171,8 @@ describe('loadPositionSnapshot', () => {
     const position = Keypair.generate().publicKey;
     const whirlpool = Keypair.generate().publicKey;
     const positionMint = Keypair.generate().publicKey;
-    const tokenMintA = Keypair.generate().publicKey;
-    const tokenMintB = Keypair.generate().publicKey;
+    const tokenMintA = SOL_MINT;
+    const tokenMintB = USDC_MINT;
 
     const accounts = new Map<string, { data: Buffer; owner?: PublicKey }>();
     accounts.set(
@@ -196,11 +200,75 @@ describe('loadPositionSnapshot', () => {
     expect(snapshot.removePreviewReasonCode).toBe('QUOTE_UNAVAILABLE');
   });
 
+  it('returns NOT_SOL_USDC for non-SOL/USDC pools', async () => {
+    clearTickArrayCache();
+    const position = Keypair.generate().publicKey;
+    const whirlpool = Keypair.generate().publicKey;
+    const positionMint = Keypair.generate().publicKey;
+    const tokenMintA = Keypair.generate().publicKey;
+    const tokenMintB = Keypair.generate().publicKey;
+
+    const accounts = new Map<string, { data: Buffer; owner?: PublicKey }>();
+    accounts.set(
+      position.toBase58(),
+      { data: mkPositionData({ whirlpool, positionMint, liquidity: 1n, lowerTickIndex: 120, upperTickIndex: 200 }) },
+    );
+    accounts.set(
+      whirlpool.toBase58(),
+      {
+        data: mkWhirlpoolData({
+          tickSpacing: 1,
+          currentTickIndex: 150,
+          tokenMintA,
+          tokenVaultA: Keypair.generate().publicKey,
+          tokenMintB,
+          tokenVaultB: Keypair.generate().publicKey,
+        }),
+      },
+    );
+    accounts.set(tokenMintA.toBase58(), { data: mkMintData(6), owner: TOKEN_PROGRAM_V1 });
+    accounts.set(tokenMintB.toBase58(), { data: mkMintData(9), owner: TOKEN_PROGRAM_V1 });
+
+    await expect(loadPositionSnapshot(mockConn({ accounts }), position)).rejects.toMatchObject({ code: 'NOT_SOL_USDC' });
+  });
+
   it('returns normalized typed error when position is missing', async () => {
     clearTickArrayCache();
     const position = Keypair.generate().publicKey;
     await expect(loadPositionSnapshot(mockConn({ accounts: new Map() }), position)).rejects.toMatchObject({
       code: 'INVALID_POSITION',
+    });
+  });
+
+  it('honors explicit cluster override for pair validation', async () => {
+    clearTickArrayCache();
+    const position = Keypair.generate().publicKey;
+    const whirlpool = Keypair.generate().publicKey;
+    const positionMint = Keypair.generate().publicKey;
+
+    const accounts = new Map<string, { data: Buffer; owner?: PublicKey }>();
+    accounts.set(
+      position.toBase58(),
+      { data: mkPositionData({ whirlpool, positionMint, liquidity: 1n, lowerTickIndex: 120, upperTickIndex: 200 }) },
+    );
+    accounts.set(
+      whirlpool.toBase58(),
+      {
+        data: mkWhirlpoolData({
+          tickSpacing: 1,
+          currentTickIndex: 150,
+          tokenMintA: SOL_MINT,
+          tokenVaultA: Keypair.generate().publicKey,
+          tokenMintB: USDC_MINT,
+          tokenVaultB: Keypair.generate().publicKey,
+        }),
+      },
+    );
+    accounts.set(SOL_MINT.toBase58(), { data: mkMintData(9), owner: TOKEN_PROGRAM_V1 });
+    accounts.set(USDC_MINT.toBase58(), { data: mkMintData(6), owner: TOKEN_PROGRAM_V1 });
+
+    await expect(loadPositionSnapshot(mockConn({ accounts }), position, 'mainnet-beta')).rejects.toMatchObject({
+      code: 'NOT_SOL_USDC',
     });
   });
 
@@ -213,8 +281,8 @@ describe('loadPositionSnapshot', () => {
     const position = Keypair.generate().publicKey;
     const whirlpool = Keypair.generate().publicKey;
     const positionMint = Keypair.generate().publicKey;
-    const tokenMintA = Keypair.generate().publicKey;
-    const tokenMintB = Keypair.generate().publicKey;
+    const tokenMintA = SOL_MINT;
+    const tokenMintB = USDC_MINT;
 
     const accounts = new Map<string, { data: Buffer; owner?: PublicKey }>();
     accounts.set(
@@ -279,8 +347,8 @@ describe('loadPositionSnapshot', () => {
     const position = Keypair.generate().publicKey;
     const whirlpool = Keypair.generate().publicKey;
     const positionMint = Keypair.generate().publicKey;
-    const tokenMintA = Keypair.generate().publicKey;
-    const tokenMintB = Keypair.generate().publicKey;
+    const tokenMintA = SOL_MINT;
+    const tokenMintB = USDC_MINT;
 
     const accounts = new Map<string, { data: Buffer; owner?: PublicKey }>();
     accounts.set(

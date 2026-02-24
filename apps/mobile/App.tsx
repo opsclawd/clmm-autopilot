@@ -9,6 +9,7 @@ import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-sta
 import { runMwaSignAndSendVersionedTransaction, runMwaSignMessageSmoke } from './src/mwaSmoke';
 
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
+const CLUSTER = 'devnet' as const;
 
 type Sample = { slot: number; unixTs: number; currentTickIndex: number };
 
@@ -21,7 +22,7 @@ export default function App() {
   const [samples, setSamples] = useState<Sample[]>([]);
   const monitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const canExecute = Boolean(wallet && positionAddress && ui.decision?.decision !== 'HOLD');
+  const canExecute = Boolean(wallet && positionAddress && ui.canExecute);
 
   const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
 
@@ -37,7 +38,7 @@ export default function App() {
     let cancelled = false;
     const poll = async () => {
       try {
-        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress));
+        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), CLUSTER);
         const slot = await connection.getSlot('confirmed');
         const unixTs = Math.floor(Date.now() / 1000);
         if (cancelled) return;
@@ -80,7 +81,7 @@ export default function App() {
           disabled={!positionAddress}
           onPress={async () => {
             try {
-              const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress));
+              const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), CLUSTER);
               const slot = await connection.getSlot('confirmed');
               const unixTs = Math.floor(Date.now() / 1000);
               const nextSamples = [...samples, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }].slice(-90);
@@ -97,7 +98,27 @@ export default function App() {
               setUi(buildUiModel({ snapshot: r.snapshot, decision: r.decision, quote: r.quote }));
             } catch (e) {
               const mapped = mapErrorToUi(e);
-              setUi(buildUiModel({ lastError: `${mapped.code}: ${mapped.message}` }));
+              setUi(
+                buildUiModel({
+                  decision:
+                    mapped.code === 'NOT_SOL_USDC'
+                      ? { decision: 'HOLD', reasonCode: 'NOT_SOL_USDC', samplesUsed: 0, threshold: 0, cooldownRemainingMs: 0 }
+                      : undefined,
+                  snapshot:
+                    mapped.code === 'NOT_SOL_USDC' && positionAddress
+                      ? {
+                          positionAddress,
+                          currentTick: 0,
+                          lowerTick: 0,
+                          upperTick: 0,
+                          inRange: false,
+                          pairLabel: 'UNSUPPORTED',
+                          pairValid: false,
+                        }
+                      : undefined,
+                  lastError: `${mapped.code}: ${mapped.message}`,
+                }),
+              );
             }
           }}
         />
@@ -109,7 +130,7 @@ export default function App() {
             try {
               const authority = new PublicKey(wallet);
               const position = new PublicKey(positionAddress);
-              const snapshot = await loadPositionSnapshot(connection, position);
+              const snapshot = await loadPositionSnapshot(connection, position, CLUSTER);
               const dir = ui.decision?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN';
               if (!snapshot.removePreview) throw new Error(`Remove preview unavailable (${snapshot.removePreviewReasonCode ?? 'DATA_UNAVAILABLE'})`);
 
@@ -171,6 +192,8 @@ export default function App() {
         <Text>slippage cap: {ui.quote?.slippageBpsCap ?? 'N/A'}</Text>
         <Text>expected minOut: {ui.quote?.expectedMinOut ?? 'N/A'}</Text>
         <Text>quote age (ms): {ui.quote?.quoteAgeMs ?? 'N/A'}</Text>
+        <Text>pair: {ui.snapshot?.pairLabel ?? 'N/A'}</Text>
+        <Text>pair valid: {ui.snapshot?.pairValid === undefined ? 'N/A' : ui.snapshot?.pairValid ? 'yes' : 'no'}</Text>
         <Text>samples buffered: {samples.length}</Text>
         <Text>simulate summary: {simSummary}</Text>
 

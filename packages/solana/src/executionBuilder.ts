@@ -7,6 +7,7 @@ import {
   type TransactionInstruction,
 } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { assertSolUsdcPair } from '@clmm-autopilot/core';
 import { buildCreateAtaIdempotentIx, SOL_MINT } from './ata';
 import { fetchJupiterSwapIxs, type JupiterQuote, type JupiterSwapIxs } from './jupiter';
 import type { PositionSnapshot } from './orcaInspector';
@@ -158,6 +159,8 @@ export async function buildExitTransaction(
   if (config.attestationHash.length !== 32) {
     fail('DATA_UNAVAILABLE', 'attestationHash must be exactly 32 bytes', false);
   }
+
+  assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), snapshot.cluster);
 
   const refreshed = await resolveFreshSnapshotAndQuote(snapshot, config);
   assertQuoteDirection(direction, refreshed.quote, refreshed.snapshot);
