@@ -29,6 +29,9 @@ importers:
 
   apps/mobile:
     dependencies:
+      '@clmm-autopilot/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@clmm-autopilot/notifications':
         specifier: workspace:*
         version: link:../../packages/notifications
