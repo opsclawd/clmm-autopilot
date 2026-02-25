@@ -1,3 +1,5 @@
+> ⚠️ Legacy runbook (M6). For current harness operations use `docs/runbook.md` (M12).
+
 # M6 Devnet E2E Runbook (Web + Mobile)
 
 ## Prerequisites

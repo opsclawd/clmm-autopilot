@@ -18,6 +18,7 @@ import { deriveReceiptPda, fetchReceiptByPda, type ReceiptAccount } from './rece
 export type HarnessDecision = 'HOLD' | 'TRIGGER_DOWN' | 'TRIGGER_UP';
 
 type HarnessEnv = Record<string, string | undefined>;
+type HarnessError = Error & { code?: string };
 
 type HarnessLogger = (entry: Record<string, unknown>) => void;
 
@@ -43,9 +44,15 @@ function log(logger: HarnessLogger, step: string, fields: Record<string, unknown
   logger({ ts: new Date().toISOString(), step, ...fields });
 }
 
+function codedError(code: string, message: string): HarnessError {
+  const err = new Error(message) as HarnessError;
+  err.code = code;
+  return err;
+}
+
 function parseRequiredEnv(env: HarnessEnv, key: 'RPC_URL' | 'AUTHORITY_KEYPAIR' | 'POSITION_ADDRESS'): string {
   const value = env[key]?.trim();
-  if (!value) throw new Error(`Missing required env: ${key}`);
+  if (!value) throw codedError('CONFIG_INVALID', `Missing required env: ${key}`);
   return value;
 }
 
@@ -54,11 +61,15 @@ function parseAuthority(secretKeyJson: string): Keypair {
   try {
     raw = JSON.parse(secretKeyJson);
   } catch {
-    throw new Error('AUTHORITY_KEYPAIR must point to a JSON keypair file (u8 array)');
+    throw codedError('INVALID_KEYPAIR', 'AUTHORITY_KEYPAIR must point to a JSON keypair file (u8 array)');
   }
-  if (!Array.isArray(raw)) throw new Error('AUTHORITY_KEYPAIR file must contain a JSON array');
+  if (!Array.isArray(raw)) throw codedError('INVALID_KEYPAIR', 'AUTHORITY_KEYPAIR file must contain a JSON array');
   const bytes = Uint8Array.from(raw.map((v) => Number(v)));
-  return Keypair.fromSecretKey(bytes);
+  try {
+    return Keypair.fromSecretKey(bytes);
+  } catch {
+    throw codedError('INVALID_KEYPAIR', 'AUTHORITY_KEYPAIR contains invalid key material');
+  }
 }
 
 async function loadAuthorityFromPath(path: string): Promise<Keypair> {
@@ -67,10 +78,13 @@ async function loadAuthorityFromPath(path: string): Promise<Keypair> {
 }
 
 function buildSamples(currentTickIndex: number, unixTs: number, latestSlot: number): Sample[] {
+  const s0 = Math.max(0, latestSlot - 2);
+  const s1 = Math.max(0, latestSlot - 1);
+  const s2 = Math.max(0, latestSlot);
   return [
-    { slot: latestSlot - 2, unixTs: unixTs - 4, currentTickIndex },
-    { slot: latestSlot - 1, unixTs: unixTs - 2, currentTickIndex },
-    { slot: latestSlot, unixTs, currentTickIndex },
+    { slot: s0, unixTs: unixTs - 4, currentTickIndex },
+    { slot: s1, unixTs: unixTs - 2, currentTickIndex },
+    { slot: s2, unixTs, currentTickIndex },
   ];
 }
 
@@ -267,7 +281,7 @@ export async function runDevnetE2E(
   log(logger, 'tx.send-confirm.ok', { signature: result.txSignature, receiptPda: result.receiptPda });
 
   const fetchedReceipt = await deps.fetchReceiptByPda(connection, new PublicKey(result.receiptPda));
-  if (!fetchedReceipt) throw new Error('Receipt was not found after confirmed send');
+  if (!fetchedReceipt) throw codedError('DATA_UNAVAILABLE', 'Receipt was not found after confirmed send');
 
   verifyReceipt(fetchedReceipt, {
     authority: authority.publicKey,

@@ -7,12 +7,17 @@ import { runDevnetE2E } from '../e2eDevnet';
 
 const SOL = new PublicKey('So11111111111111111111111111111111111111112');
 const USDC = new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
+const NOT_USDC = new PublicKey('Es9vMFrzaCERmJfrF4H2FYD8fYF8f3L7hPwrKyYVJZZW');
 
-async function makeEnv(): Promise<{ env: Record<string, string>; cleanup: () => Promise<void> }> {
+async function makeEnv(secret?: string): Promise<{ env: Record<string, string>; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), 'm12-e2e-'));
   const keyPath = join(dir, 'authority.json');
-  const kp = Keypair.generate();
-  await writeFile(keyPath, JSON.stringify(Array.from(kp.secretKey)));
+  if (secret !== undefined) {
+    await writeFile(keyPath, secret);
+  } else {
+    const kp = Keypair.generate();
+    await writeFile(keyPath, JSON.stringify(Array.from(kp.secretKey)));
+  }
 
   return {
     env: {
@@ -21,6 +26,36 @@ async function makeEnv(): Promise<{ env: Record<string, string>; cleanup: () => 
       POSITION_ADDRESS: new PublicKey(new Uint8Array(32).fill(7)).toBase58(),
     },
     cleanup: () => rm(dir, { recursive: true, force: true }),
+  };
+}
+
+function mockSnapshot(positionAddress: string, overrides: Partial<any> = {}) {
+  return {
+    cluster: 'devnet',
+    pairLabel: 'SOL/USDC',
+    pairValid: true,
+    whirlpool: new PublicKey(new Uint8Array(32).fill(1)),
+    position: new PublicKey(positionAddress),
+    positionMint: new PublicKey(new Uint8Array(32).fill(2)),
+    currentTickIndex: -50,
+    lowerTickIndex: -10,
+    upperTickIndex: 10,
+    tickSpacing: 1,
+    inRange: false,
+    liquidity: BigInt(1),
+    tokenMintA: SOL,
+    tokenMintB: USDC,
+    tokenDecimalsA: 9,
+    tokenDecimalsB: 6,
+    tokenVaultA: new PublicKey(new Uint8Array(32).fill(3)),
+    tokenVaultB: new PublicKey(new Uint8Array(32).fill(4)),
+    tickArrayLower: new PublicKey(new Uint8Array(32).fill(5)),
+    tickArrayUpper: new PublicKey(new Uint8Array(32).fill(6)),
+    tokenProgramA: new PublicKey(new Uint8Array(32).fill(8)),
+    tokenProgramB: new PublicKey(new Uint8Array(32).fill(9)),
+    removePreview: { tokenAOut: BigInt(1000), tokenBOut: BigInt(1000) },
+    removePreviewReasonCode: null,
+    ...overrides,
   };
 }
 
@@ -35,9 +70,10 @@ describe('runDevnetE2E refusals', () => {
 
     await expect(
       runDevnetE2E(env, () => {}, {
-        loadPositionSnapshot: vi.fn(async () => {
-          throw Object.assign(new Error('Position must be SOL/USDC.'), { code: 'NOT_SOL_USDC' });
-        }) as any,
+        loadPositionSnapshot: vi.fn(async () => mockSnapshot(env.POSITION_ADDRESS, {
+          tokenMintB: NOT_USDC,
+          pairLabel: 'SOL/USDT',
+        })) as any,
         fetchJupiterQuote: vi.fn() as any,
         executeOnce: executeOnce as any,
         fetchReceiptByPda: vi.fn() as any,
@@ -56,32 +92,7 @@ describe('runDevnetE2E refusals', () => {
 
     await expect(
       runDevnetE2E(env, () => {}, {
-        loadPositionSnapshot: vi.fn(async () => ({
-          cluster: 'devnet',
-          pairLabel: 'SOL/USDC',
-          pairValid: true,
-          whirlpool: new PublicKey(new Uint8Array(32).fill(1)),
-          position: new PublicKey(env.POSITION_ADDRESS),
-          positionMint: new PublicKey(new Uint8Array(32).fill(2)),
-          currentTickIndex: -50,
-          lowerTickIndex: -10,
-          upperTickIndex: 10,
-          tickSpacing: 1,
-          inRange: false,
-          liquidity: BigInt(1),
-          tokenMintA: SOL,
-          tokenMintB: USDC,
-          tokenDecimalsA: 9,
-          tokenDecimalsB: 6,
-          tokenVaultA: new PublicKey(new Uint8Array(32).fill(3)),
-          tokenVaultB: new PublicKey(new Uint8Array(32).fill(4)),
-          tickArrayLower: new PublicKey(new Uint8Array(32).fill(5)),
-          tickArrayUpper: new PublicKey(new Uint8Array(32).fill(6)),
-          tokenProgramA: new PublicKey(new Uint8Array(32).fill(8)),
-          tokenProgramB: new PublicKey(new Uint8Array(32).fill(9)),
-          removePreview: { tokenAOut: BigInt(1000), tokenBOut: BigInt(1000) },
-          removePreviewReasonCode: null,
-        })) as any,
+        loadPositionSnapshot: vi.fn(async () => mockSnapshot(env.POSITION_ADDRESS)) as any,
         fetchJupiterQuote: vi.fn(async () => ({
           inputMint: SOL,
           outputMint: USDC,
@@ -108,6 +119,21 @@ describe('runDevnetE2E refusals', () => {
     ).rejects.toMatchObject({ code: 'ALREADY_EXECUTED_THIS_EPOCH' });
 
     expect(executeOnce).not.toHaveBeenCalled();
+    await cleanup();
+  });
+
+  it('returns CONFIG_INVALID when env is missing', async () => {
+    const { env, cleanup } = await makeEnv();
+    delete env.RPC_URL;
+
+    await expect(runDevnetE2E(env, () => {})).rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+    await cleanup();
+  });
+
+  it('returns INVALID_KEYPAIR when keypair JSON is malformed', async () => {
+    const { env, cleanup } = await makeEnv('{not valid json');
+
+    await expect(runDevnetE2E(env, () => {})).rejects.toMatchObject({ code: 'INVALID_KEYPAIR' });
     await cleanup();
   });
 });
