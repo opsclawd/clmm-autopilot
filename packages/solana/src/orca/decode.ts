@@ -32,11 +32,28 @@ function parseOrThrow<T>(
   parser: (address: PublicKey, accountData: AccountInfo<Buffer>) => T | null,
   accountName: string,
 ): T {
-  const parsed = parser(DUMMY_ADDRESS, asAccountInfo(data));
-  if (!parsed) {
-    throw decodeFailed(`Failed to decode Orca ${accountName} account`);
+  try {
+    const parsed = parser(DUMMY_ADDRESS, asAccountInfo(data));
+    if (!parsed) {
+      throw decodeFailed(`Failed to decode Orca ${accountName} account`, {
+        accountName,
+        dataLen: data.length,
+        discriminatorHex: data.subarray(0, 8).toString('hex'),
+      });
+    }
+    return parsed;
+  } catch (error) {
+    if (typeof error === 'object' && error && 'code' in error && (error as { code?: string }).code === 'ORCA_DECODE_FAILED') {
+      throw error;
+    }
+
+    throw decodeFailed(`Failed to decode Orca ${accountName} account`, {
+      accountName,
+      dataLen: data.length,
+      discriminatorHex: data.subarray(0, 8).toString('hex'),
+      cause: error instanceof Error ? error.message : String(error),
+    });
   }
-  return parsed;
 }
 
 export function decodeWhirlpoolAccount(data: Buffer): WhirlpoolData {
