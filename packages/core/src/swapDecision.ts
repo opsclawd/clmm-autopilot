@@ -1,0 +1,30 @@
+import type { AutopilotConfig } from './config';
+
+export const SWAP_OK = 0;
+export const SWAP_SKIP_DUST_SOL = 1;
+export const SWAP_SKIP_DUST_USDC = 2;
+
+export type SwapReasonCode = typeof SWAP_OK | typeof SWAP_SKIP_DUST_SOL | typeof SWAP_SKIP_DUST_USDC;
+
+export type SwapDecision = {
+  execute: boolean;
+  reasonCode: SwapReasonCode;
+};
+
+export function decideSwap(
+  exposure: bigint,
+  direction: 'DOWN' | 'UP',
+  config: { execution: Pick<AutopilotConfig['execution'], 'minSolLamportsToSwap' | 'minUsdcMinorToSwap'> },
+): SwapDecision {
+  if (direction === 'DOWN') {
+    if (exposure < BigInt(config.execution.minSolLamportsToSwap)) {
+      return { execute: false, reasonCode: SWAP_SKIP_DUST_SOL };
+    }
+    return { execute: true, reasonCode: SWAP_OK };
+  }
+
+  if (exposure < BigInt(config.execution.minUsdcMinorToSwap)) {
+    return { execute: false, reasonCode: SWAP_SKIP_DUST_USDC };
+  }
+  return { execute: true, reasonCode: SWAP_OK };
+}

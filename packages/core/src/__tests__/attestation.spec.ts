@@ -19,6 +19,9 @@ const INPUT = {
   quoteInAmount: 123456789n,
   quoteMinOutAmount: 45441650n,
   quoteQuotedAtUnixMs: 1708747200123n,
+  swapPlanned: 1,
+  swapExecuted: 1,
+  swapReasonCode: 0,
 };
 
 describe('attestation encoding/hash', () => {
@@ -42,8 +45,8 @@ describe('attestation encoding/hash', () => {
     const payload = encodeAttestationPayload(INPUT);
     const hash = computeAttestationHash(INPUT);
 
-    expect(payload.length).toBe(236);
-    expect(Buffer.from(hash).toString('hex')).toBe('2b8086da05d1bc475ea1dbe015c6467c9b5b1fa2a6a5fcfffbca48c7a737452a');
+    expect(payload.length).toBe(240);
+    expect(Buffer.from(hash).toString('hex')).toBe('1a45a55e4a919d945716569a3f2ef47315d779982462fdf2b14dae0ad796ee45');
   });
 
   it('matches node crypto sha256 reference across payload sizes', () => {

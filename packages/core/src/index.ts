@@ -5,6 +5,7 @@ export * from './policy';
 export * from './mints';
 export * from './attestation';
 export * from './epoch';
+export * from './swapDecision';
 
 export function clamp(value: number, min: number, max: number): number {
   if (min > max) throw new Error('min must be <= max');

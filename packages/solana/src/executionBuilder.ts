@@ -7,7 +7,12 @@ import {
   type TransactionInstruction,
 } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
-import { assertSolUsdcPair, hashAttestationPayload, unixDaysFromUnixMs } from '@clmm-autopilot/core';
+import {
+  assertSolUsdcPair,
+  decideSwap,
+  hashAttestationPayload,
+  unixDaysFromUnixMs,
+} from '@clmm-autopilot/core';
 import { buildCreateAtaIdempotentIx, SOL_MINT } from './ata';
 import { fetchJupiterSwapIxs, type JupiterQuote, type JupiterSwapIxs } from './jupiter';
 import type { PositionSnapshot } from './orcaInspector';
@@ -39,6 +44,8 @@ export type BuildExitConfig = {
   quoteFreshnessMs: number;
   nowUnixMs: () => number;
   receiptEpochUnixMs: number;
+  minSolLamportsToSwap: number;
+  minUsdcMinorToSwap: number;
 
   // Cost guardrails.
   availableLamports: number;
@@ -185,10 +192,10 @@ export async function buildExitTransaction(
   if (!config.attestationPayloadBytes || config.attestationPayloadBytes.length === 0) {
     fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes are required', false);
   }
-  if (config.attestationPayloadBytes.length !== 236) {
-    fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes must be canonical fixed-width length (236 bytes)', false, {
+  if (config.attestationPayloadBytes.length !== 240) {
+    fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes must be canonical fixed-width length (240 bytes)', false, {
       got: config.attestationPayloadBytes.length,
-      expected: 236,
+      expected: 240,
     });
   }
   const expected = hashAttestationPayload(config.attestationPayloadBytes);
@@ -269,6 +276,26 @@ export async function buildExitTransaction(
     failMismatch('quote.quotedAtUnixMs', quote.quotedAtUnixMs, Number(u64leAt(payload, 228)));
   }
 
+  const swapDecision = decideSwap(quote.inAmount, direction, {
+    execution: {
+      minSolLamportsToSwap: config.minSolLamportsToSwap,
+      minUsdcMinorToSwap: config.minUsdcMinorToSwap,
+    },
+  });
+  const expectedSwapPlanned = 1;
+  const expectedSwapExecuted = swapDecision.execute ? 1 : 0;
+  const expectedSwapReasonCode = swapDecision.reasonCode;
+
+  if (u8At(payload, 236) !== expectedSwapPlanned) {
+    failMismatch('swapPlanned', expectedSwapPlanned, u8At(payload, 236));
+  }
+  if (u8At(payload, 237) !== expectedSwapExecuted) {
+    failMismatch('swapExecuted', expectedSwapExecuted, u8At(payload, 237));
+  }
+  if (u16leAt(payload, 238) !== expectedSwapReasonCode) {
+    failMismatch('swapReasonCode', expectedSwapReasonCode, u16leAt(payload, 238));
+  }
+
   if (quote.slippageBps > config.slippageBpsCap) {
     fail('SLIPPAGE_EXCEEDED', 'Quote slippage exceeds configured cap', false);
   }
@@ -284,7 +311,6 @@ export async function buildExitTransaction(
       if (!quote.raw) throw new Error('quote.raw required for default Jupiter swap builder');
       return fetchJupiterSwapIxs({ quote: quote as JupiterQuote, userPublicKey: authority, wrapAndUnwrapSol: false });
     });
-  const jup = await buildJup({ quote, authority: config.authority });
 
   const buildWsol =
     config.buildWsolLifecycleIxs ??
@@ -297,12 +323,16 @@ export async function buildExitTransaction(
         wrapLamports: quote.inputMint.equals(SOL_MINT) ? quote.inAmount : undefined,
       }));
 
-  const wsolLifecycle = buildWsol({ quote, authority: config.authority, payer: config.payer });
-  const wsolRequired = quote.inputMint.equals(SOL_MINT) || quote.outputMint.equals(SOL_MINT);
+  const shouldExecuteSwap = swapDecision.execute;
+  const jup = shouldExecuteSwap ? await buildJup({ quote, authority: config.authority }) : { instructions: [], lookupTableAddresses: [] };
+  const wsolRequired = shouldExecuteSwap && (quote.inputMint.equals(SOL_MINT) || quote.outputMint.equals(SOL_MINT));
+  const wsolLifecycle = shouldExecuteSwap
+    ? buildWsol({ quote, authority: config.authority, payer: config.payer })
+    : { preSwap: [], postSwap: [], wsolAta: undefined };
 
   // Ensure Jupiter input/output ATAs exist (idempotent). If the mint is the pool mint, we use the pool's token program.
   const jupiterAtaIxs: TransactionInstruction[] = [];
-  if (!quote.inputMint.equals(SOL_MINT)) {
+  if (shouldExecuteSwap && !quote.inputMint.equals(SOL_MINT)) {
     jupiterAtaIxs.push(
       buildCreateAtaIdempotentIx({
         payer: config.payer,
@@ -312,7 +342,7 @@ export async function buildExitTransaction(
       }).ix,
     );
   }
-  if (!quote.outputMint.equals(SOL_MINT)) {
+  if (shouldExecuteSwap && !quote.outputMint.equals(SOL_MINT)) {
     jupiterAtaIxs.push(
       buildCreateAtaIdempotentIx({
         payer: config.payer,

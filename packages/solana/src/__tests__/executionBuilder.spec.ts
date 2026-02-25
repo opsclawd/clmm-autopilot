@@ -6,7 +6,7 @@ import {
   type AddressLookupTableAccount,
   type VersionedTransaction,
 } from '@solana/web3.js';
-import { computeAttestationHash, encodeAttestationPayload } from '@clmm-autopilot/core';
+import { SWAP_OK, SWAP_SKIP_DUST_SOL, SWAP_SKIP_DUST_USDC, computeAttestationHash, encodeAttestationPayload } from '@clmm-autopilot/core';
 import { buildExitTransaction, type BuildExitConfig, type ExitQuote } from '../executionBuilder';
 
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
@@ -72,6 +72,8 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     quoteFreshnessMs: 2_000,
     nowUnixMs: () => epochNowMs,
     receiptEpochUnixMs: epochNowMs,
+    minSolLamportsToSwap: 0,
+    minUsdcMinorToSwap: 0,
     availableLamports: 5_000_000,
     requirements: {
       rentLamports: 2_039_280,
@@ -82,7 +84,7 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
       totalRequiredLamports: 2_039_280 + 20_000 + 5_000 + 10_000,
     },
     attestationHash: new Uint8Array(32),
-    attestationPayloadBytes: new Uint8Array(236),
+    attestationPayloadBytes: new Uint8Array(240),
     simulate: async (): Promise<SimResult> => ({ err: null, logs: ['ok'] }),
     buildOrcaExitIxs: () => ({
       conditionalAtaIxs: [ix(21), ix(22)],
@@ -116,6 +118,9 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     quoteInAmount: merged.quote.inAmount,
     quoteMinOutAmount: merged.quote.outAmount,
     quoteQuotedAtUnixMs: BigInt(merged.quote.quotedAtUnixMs),
+    swapPlanned: 1,
+    swapExecuted: 1,
+    swapReasonCode: SWAP_OK,
   };
 
   const hasPayloadOverride = Boolean(overrides && Object.prototype.hasOwnProperty.call(overrides, 'attestationPayloadBytes'));
@@ -150,7 +155,7 @@ describe('buildExitTransaction', () => {
       buildExitTransaction(
         baseSnapshot,
         'DOWN',
-        buildConfig({ attestationHash: new Uint8Array(32).fill(7), attestationPayloadBytes: new Uint8Array(236).fill(1) }),
+        buildConfig({ attestationHash: new Uint8Array(32).fill(7), attestationPayloadBytes: new Uint8Array(240).fill(1) }),
       ),
     ).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
   });
@@ -176,6 +181,9 @@ describe('buildExitTransaction', () => {
       quoteInAmount: cfg.quote.inAmount,
       quoteMinOutAmount: cfg.quote.outAmount,
       quoteQuotedAtUnixMs: BigInt(cfg.quote.quotedAtUnixMs),
+      swapPlanned: 1,
+      swapExecuted: 1,
+      swapReasonCode: SWAP_OK,
     }) }))).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
   });
 
@@ -198,5 +206,157 @@ describe('buildExitTransaction', () => {
   it('when returnVersioned=true compiles to v0 message', async () => {
     const tx = (await buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({ returnVersioned: true }))) as VersionedTransaction;
     expect(tx.message.version).toBe(0);
+  });
+
+  it('dust SOL exposure (DOWN) omits Jupiter and keeps receipt', async () => {
+    const dustQuote = {
+      ...buildConfig().quote,
+      inAmount: 99n,
+      outAmount: 0n,
+      quotedAtUnixMs: 1_700_000_000_000,
+      raw: undefined,
+    };
+    const cfg = buildConfig({
+      quote: dustQuote,
+      minSolLamportsToSwap: 100,
+      buildJupiterSwapIxs: async () => {
+        throw new Error('jupiter should not be called for dust skip');
+      },
+      buildWsolLifecycleIxs: () => ({ preSwap: [ix(77)], postSwap: [ix(78)], wsolAta: pk(79) }),
+      attestationPayloadBytes: encodeAttestationPayload({
+        cluster: 'devnet',
+        authority: pk(18).toBase58(),
+        position: baseSnapshot.position.toBase58(),
+        positionMint: baseSnapshot.positionMint.toBase58(),
+        whirlpool: baseSnapshot.whirlpool.toBase58(),
+        epoch: Math.floor(1_700_000_000_500 / 1000 / 86400),
+        direction: 0,
+        tickCurrent: baseSnapshot.currentTickIndex,
+        lowerTickIndex: baseSnapshot.lowerTickIndex,
+        upperTickIndex: baseSnapshot.upperTickIndex,
+        slippageBpsCap: 50,
+        quoteInputMint: dustQuote.inputMint.toBase58(),
+        quoteOutputMint: dustQuote.outputMint.toBase58(),
+        quoteInAmount: dustQuote.inAmount,
+        quoteMinOutAmount: dustQuote.outAmount,
+        quoteQuotedAtUnixMs: BigInt(dustQuote.quotedAtUnixMs),
+        swapPlanned: 1,
+        swapExecuted: 0,
+        swapReasonCode: SWAP_SKIP_DUST_SOL,
+      }),
+    });
+    cfg.attestationHash = computeAttestationHash({
+      cluster: 'devnet',
+      authority: pk(18).toBase58(),
+      position: baseSnapshot.position.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      whirlpool: baseSnapshot.whirlpool.toBase58(),
+      epoch: Math.floor(1_700_000_000_500 / 1000 / 86400),
+      direction: 0,
+      tickCurrent: baseSnapshot.currentTickIndex,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      slippageBpsCap: 50,
+      quoteInputMint: dustQuote.inputMint.toBase58(),
+      quoteOutputMint: dustQuote.outputMint.toBase58(),
+      quoteInAmount: dustQuote.inAmount,
+      quoteMinOutAmount: dustQuote.outAmount,
+      quoteQuotedAtUnixMs: BigInt(dustQuote.quotedAtUnixMs),
+      swapPlanned: 1,
+      swapExecuted: 0,
+      swapReasonCode: SWAP_SKIP_DUST_SOL,
+    });
+
+    const msg = (await buildExitTransaction(baseSnapshot, 'DOWN', cfg)) as TransactionMessage;
+    expect(msg.instructions.some((i) => i.programId.equals(pk(33)))).toBe(false);
+    expect(msg.instructions.some((i) => i.data.length === 77)).toBe(true);
+
+    const execHash = computeAttestationHash({
+      cluster: 'devnet',
+      authority: pk(18).toBase58(),
+      position: baseSnapshot.position.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      whirlpool: baseSnapshot.whirlpool.toBase58(),
+      epoch: Math.floor(1_700_000_000_500 / 1000 / 86400),
+      direction: 0,
+      tickCurrent: baseSnapshot.currentTickIndex,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      slippageBpsCap: 50,
+      quoteInputMint: dustQuote.inputMint.toBase58(),
+      quoteOutputMint: dustQuote.outputMint.toBase58(),
+      quoteInAmount: dustQuote.inAmount,
+      quoteMinOutAmount: dustQuote.outAmount,
+      quoteQuotedAtUnixMs: BigInt(dustQuote.quotedAtUnixMs),
+      swapPlanned: 1,
+      swapExecuted: 1,
+      swapReasonCode: SWAP_OK,
+    });
+    expect(Buffer.from(execHash).equals(Buffer.from(cfg.attestationHash))).toBe(false);
+  });
+
+  it('dust USDC exposure (UP) omits Jupiter and keeps receipt', async () => {
+    const dustQuote = {
+      ...buildConfig().quote,
+      inputMint: USDC_MINT,
+      outputMint: SOL_MINT,
+      inAmount: 49n,
+      outAmount: 0n,
+      quotedAtUnixMs: 1_700_000_000_000,
+      raw: undefined,
+    };
+    const cfg = buildConfig({
+      quote: dustQuote,
+      minUsdcMinorToSwap: 50,
+      buildJupiterSwapIxs: async () => {
+        throw new Error('jupiter should not be called for dust skip');
+      },
+      attestationPayloadBytes: encodeAttestationPayload({
+        cluster: 'devnet',
+        authority: pk(18).toBase58(),
+        position: baseSnapshot.position.toBase58(),
+        positionMint: baseSnapshot.positionMint.toBase58(),
+        whirlpool: baseSnapshot.whirlpool.toBase58(),
+        epoch: Math.floor(1_700_000_000_500 / 1000 / 86400),
+        direction: 1,
+        tickCurrent: baseSnapshot.currentTickIndex,
+        lowerTickIndex: baseSnapshot.lowerTickIndex,
+        upperTickIndex: baseSnapshot.upperTickIndex,
+        slippageBpsCap: 50,
+        quoteInputMint: dustQuote.inputMint.toBase58(),
+        quoteOutputMint: dustQuote.outputMint.toBase58(),
+        quoteInAmount: dustQuote.inAmount,
+        quoteMinOutAmount: dustQuote.outAmount,
+        quoteQuotedAtUnixMs: BigInt(dustQuote.quotedAtUnixMs),
+        swapPlanned: 1,
+        swapExecuted: 0,
+        swapReasonCode: SWAP_SKIP_DUST_USDC,
+      }),
+    });
+    cfg.attestationHash = computeAttestationHash({
+      cluster: 'devnet',
+      authority: pk(18).toBase58(),
+      position: baseSnapshot.position.toBase58(),
+      positionMint: baseSnapshot.positionMint.toBase58(),
+      whirlpool: baseSnapshot.whirlpool.toBase58(),
+      epoch: Math.floor(1_700_000_000_500 / 1000 / 86400),
+      direction: 1,
+      tickCurrent: baseSnapshot.currentTickIndex,
+      lowerTickIndex: baseSnapshot.lowerTickIndex,
+      upperTickIndex: baseSnapshot.upperTickIndex,
+      slippageBpsCap: 50,
+      quoteInputMint: dustQuote.inputMint.toBase58(),
+      quoteOutputMint: dustQuote.outputMint.toBase58(),
+      quoteInAmount: dustQuote.inAmount,
+      quoteMinOutAmount: dustQuote.outAmount,
+      quoteQuotedAtUnixMs: BigInt(dustQuote.quotedAtUnixMs),
+      swapPlanned: 1,
+      swapExecuted: 0,
+      swapReasonCode: SWAP_SKIP_DUST_USDC,
+    });
+
+    const msg = (await buildExitTransaction(baseSnapshot, 'UP', cfg)) as TransactionMessage;
+    expect(msg.instructions.some((i) => i.programId.equals(pk(33)))).toBe(false);
+    expect(msg.instructions.some((i) => i.data.length === 77)).toBe(true);
   });
 });

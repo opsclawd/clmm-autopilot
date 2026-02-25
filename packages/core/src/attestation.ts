@@ -26,6 +26,10 @@ export type AttestationInput = {
   quoteInAmount: bigint; // u64 LE
   quoteMinOutAmount: bigint; // u64 LE
   quoteQuotedAtUnixMs: bigint; // u64 LE
+
+  swapPlanned: number; // u8
+  swapExecuted: number; // u8
+  swapReasonCode: number; // u16 LE
 };
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -238,6 +242,10 @@ export function encodeAttestationPayload(input: AttestationInput): Uint8Array {
     u64le(input.quoteInAmount),
     u64le(input.quoteMinOutAmount),
     u64le(input.quoteQuotedAtUnixMs),
+
+    u8(input.swapPlanned),
+    u8(input.swapExecuted),
+    u16le(input.swapReasonCode),
   ]);
 }
 
