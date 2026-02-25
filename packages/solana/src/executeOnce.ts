@@ -1,4 +1,4 @@
-import { evaluateRangeBreak, type AutopilotConfig, type PolicyState, type Sample, unixDaysFromUnixMs } from '@clmm-autopilot/core';
+import { decideSwap, evaluateRangeBreak, type AutopilotConfig, type PolicyState, type Sample, unixDaysFromUnixMs } from '@clmm-autopilot/core';
 import { Connection, PublicKey, VersionedTransaction, type AddressLookupTableAccount } from '@solana/web3.js';
 import { buildExitTransaction, type ExitDirection, type ExitQuote } from './executionBuilder';
 import { computeExecutionRequirements } from './requirements';
@@ -190,21 +190,6 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       params.logger?.notify?.('quote rebuilt', { reasonCode: rebuildCheck.reasonCode ?? 'QUOTE_STALE' });
     }
 
-    // Dust thresholds (avoid building/simulating/sending meaningless swaps).
-    const isSolInput = quote.inputMint.toBase58() === 'So11111111111111111111111111111111111111112';
-    if (isSolInput && quote.inAmount < BigInt(params.config.execution.minSolLamportsToSwap)) {
-      return {
-        status: 'HOLD',
-        refresh: refreshed,
-      };
-    }
-    if (!isSolInput && quote.inAmount < BigInt(params.config.execution.minUsdcMinorToSwap)) {
-      return {
-        status: 'HOLD',
-        refresh: refreshed,
-      };
-    }
-
     const epochSourceMs = nowUnixMs();
     const epoch = unixDaysFromUnixMs(epochSourceMs);
     const [receiptPda] = deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch });
@@ -230,11 +215,19 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, params.config.execution);
 
     const buildTx = async (recentBlockhash: string) => {
-      const buildSwapIxs = params.buildJupiterSwapIxs ?? fetchJupiterSwapIxs;
-      const swap = await buildSwapIxs({ quote: quote as any, userPublicKey: params.authority, wrapAndUnwrapSol: false });
-      const lookupTableAccounts = await loadLookupTables(params.connection, swap.lookupTableAddresses);
+      const direction = refreshed.decision.decision === 'TRIGGER_UP' ? ('UP' as ExitDirection) : ('DOWN' as ExitDirection);
+      let lookupTableAccounts: AddressLookupTableAccount[] = [];
+      let cachedSwap: Awaited<ReturnType<typeof fetchJupiterSwapIxs>> | null = null;
 
-      return buildExitTransaction(snapshot, refreshed.decision.decision === 'TRIGGER_UP' ? 'UP' : ('DOWN' as ExitDirection), {
+      const swapDecision = decideSwap(quote.inAmount, direction, params.config);
+
+      if (swapDecision.execute) {
+        const buildSwapIxs = params.buildJupiterSwapIxs ?? fetchJupiterSwapIxs;
+        cachedSwap = await buildSwapIxs({ quote: quote as any, userPublicKey: params.authority, wrapAndUnwrapSol: false });
+        lookupTableAccounts = await loadLookupTables(params.connection, cachedSwap.lookupTableAddresses);
+      }
+
+      return buildExitTransaction(snapshot, direction, {
         authority: params.authority,
         payer: params.authority,
         recentBlockhash,
@@ -245,6 +238,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         quoteFreshnessMs: params.config.execution.quoteFreshnessMs,
         nowUnixMs,
         receiptEpochUnixMs: epochSourceMs,
+        minSolLamportsToSwap: params.config.execution.minSolLamportsToSwap,
+        minUsdcMinorToSwap: params.config.execution.minUsdcMinorToSwap,
         availableLamports,
         requirements: await computeExecutionRequirements({
           connection: params.connection,
@@ -272,8 +267,12 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             returnData: sim.value.returnData ?? undefined,
           };
         },
-        // Provide cached Jupiter swap so ordering is stable.
-        buildJupiterSwapIxs: async () => swap,
+        buildJupiterSwapIxs: async () => {
+          if (!cachedSwap) {
+            throw new Error('buildJupiterSwapIxs should not be called for dust-skip executions');
+          }
+          return cachedSwap;
+        },
       });
     };
 

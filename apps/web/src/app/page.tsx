@@ -3,7 +3,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createConsoleNotificationsAdapter } from '@clmm-autopilot/notifications';
 import { executeOnce, fetchJupiterQuote, loadPositionSnapshot, loadSolanaConfig, refreshPositionDecision } from '@clmm-autopilot/solana';
-import { computeAttestationHash, encodeAttestationPayload, unixDaysFromUnixMs, type PolicyState } from '@clmm-autopilot/core';
+import {
+  SWAP_OK,
+  SWAP_SKIP_DUST_SOL,
+  SWAP_SKIP_DUST_USDC,
+  computeAttestationHash,
+  decideSwap,
+  encodeAttestationPayload,
+  unixDaysFromUnixMs,
+  type PolicyState,
+} from '@clmm-autopilot/core';
 import { loadAutopilotConfig } from '../config';
 import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-state';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
@@ -30,6 +39,7 @@ export default function Home() {
   const policyStateRef = useRef<PolicyState>({});
   const [lastSimDebug, setLastSimDebug] = useState<unknown>(null);
   const [attestationDebugPrefix, setAttestationDebugPrefix] = useState<string>('N/A');
+  const [swapPlanSummary, setSwapPlanSummary] = useState<string>('N/A');
   const pollingRef = useRef<number | null>(null);
 
   const canExecute = Boolean(configValid && wallet && positionAddress && ui.canExecute);
@@ -205,7 +215,27 @@ export default function Home() {
                 ? (snapshot.tokenMintA.equals(SOL_MINT) ? tokenAOut : tokenBOut)
                 : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
 
-              const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.slippageBpsCap });
+              const swapDecision = decideSwap(amount, dir, autopilotConfig);
+              const reasonLabel =
+                swapDecision.reasonCode === SWAP_OK
+                  ? 'SWAP_OK'
+                  : swapDecision.reasonCode === SWAP_SKIP_DUST_SOL
+                    ? 'SWAP_SKIP_DUST_SOL'
+                    : swapDecision.reasonCode === SWAP_SKIP_DUST_USDC
+                      ? 'SWAP_SKIP_DUST_USDC'
+                      : 'UNKNOWN_SWAP_REASON';
+              setSwapPlanSummary(`${swapDecision.execute ? 'execute' : 'skip'} (${reasonLabel})`);
+
+              const quote = swapDecision.execute
+                ? await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.slippageBpsCap })
+                : {
+                    inputMint,
+                    outputMint,
+                    inAmount: amount,
+                    outAmount: BigInt(0),
+                    slippageBps: autopilotConfig.execution.slippageBpsCap,
+                    quotedAtUnixMs: Date.now(),
+                  };
               const epochNowMs = Date.now();
               const epoch = unixDaysFromUnixMs(epochNowMs);
               const attestationInput = {
@@ -225,6 +255,9 @@ export default function Home() {
                 quoteInAmount: quote.inAmount,
                 quoteMinOutAmount: quote.outAmount,
                 quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
+                swapPlanned: 1,
+                swapExecuted: swapDecision.execute ? 1 : 0,
+                swapReasonCode: swapDecision.reasonCode,
               };
               const attestationPayloadBytes = encodeAttestationPayload(attestationInput);
               const attestationHash = computeAttestationHash(attestationInput);
@@ -299,6 +332,7 @@ export default function Home() {
         <div>pair valid: {ui.snapshot?.pairValid === undefined ? 'N/A' : ui.snapshot?.pairValid ? 'yes' : 'no'}</div>
         <div>samples buffered: {samples.length}</div>
         <div>simulate summary: {simSummary}</div>
+        <div>swap plan: {swapPlanSummary}</div>
         <div>attestation hash (prefix): {attestationDebugPrefix}</div>
       </section>
 

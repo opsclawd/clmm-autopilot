@@ -5,7 +5,16 @@ import { Button, SafeAreaView, ScrollView, Text, TextInput } from 'react-native'
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { createConsoleNotificationsAdapter } from '@clmm-autopilot/notifications';
 import { executeOnce, fetchJupiterQuote, loadPositionSnapshot, refreshPositionDecision } from '@clmm-autopilot/solana';
-import { computeAttestationHash, encodeAttestationPayload, unixDaysFromUnixMs, type PolicyState } from '@clmm-autopilot/core';
+import {
+  SWAP_OK,
+  SWAP_SKIP_DUST_SOL,
+  decideSwap,
+  encodeAttestationPayload,
+  SWAP_SKIP_DUST_USDC,
+  computeAttestationHash,
+  unixDaysFromUnixMs,
+  type PolicyState,
+} from '@clmm-autopilot/core';
 import { loadAutopilotConfig } from './src/config';
 import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-state';
 import { runMwaSignAndSendVersionedTransaction, runMwaSignMessageSmoke } from './src/mwaSmoke';
@@ -26,6 +35,7 @@ export default function App() {
   const [samples, setSamples] = useState<Sample[]>([]);
   const policyStateRef = useRef<PolicyState>({});
   const [attestationDebugPrefix, setAttestationDebugPrefix] = useState('N/A');
+  const [swapPlanSummary, setSwapPlanSummary] = useState('N/A');
   const monitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const canExecute = Boolean(configValid && wallet && positionAddress && ui.canExecute);
@@ -177,7 +187,25 @@ export default function App() {
                 ? (snapshot.tokenMintA.equals(SOL_MINT) ? tokenAOut : tokenBOut)
                 : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
 
-              const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.slippageBpsCap });
+              const swapDecision = decideSwap(amount, dir, autopilotConfig);
+              const reasonLabel =
+                swapDecision.reasonCode === SWAP_OK
+                  ? 'SWAP_OK'
+                  : swapDecision.reasonCode === SWAP_SKIP_DUST_SOL
+                    ? 'SWAP_SKIP_DUST_SOL'
+                    : 'SWAP_SKIP_DUST_USDC';
+              setSwapPlanSummary(`${swapDecision.execute ? 'execute' : 'skip'} (${reasonLabel})`);
+
+              const quote = swapDecision.execute
+                ? await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.slippageBpsCap })
+                : {
+                    inputMint,
+                    outputMint,
+                    inAmount: amount,
+                    outAmount: 0n,
+                    slippageBps: autopilotConfig.execution.slippageBpsCap,
+                    quotedAtUnixMs: Date.now(),
+                  };
               const epochNowMs = Date.now();
               const epoch = unixDaysFromUnixMs(epochNowMs);
               const attestationInput = {
@@ -197,6 +225,9 @@ export default function App() {
                 quoteInAmount: quote.inAmount,
                 quoteMinOutAmount: quote.outAmount,
                 quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
+                swapPlanned: 1,
+                swapExecuted: swapDecision.execute ? 1 : 0,
+                swapReasonCode: swapDecision.reasonCode,
               };
               const attestationPayloadBytes = encodeAttestationPayload(attestationInput);
               const attestationHash = computeAttestationHash(attestationInput);
@@ -263,6 +294,7 @@ export default function App() {
         <Text>pair valid: {ui.snapshot?.pairValid === undefined ? 'N/A' : ui.snapshot?.pairValid ? 'yes' : 'no'}</Text>
         <Text>samples buffered: {samples.length}</Text>
         <Text>simulate summary: {simSummary}</Text>
+        <Text>swap plan: {swapPlanSummary}</Text>
         <Text>attestation hash (prefix): {attestationDebugPrefix}</Text>
 
         <Text>tx signature: {ui.execution?.sendSig ?? 'N/A'}</Text>
