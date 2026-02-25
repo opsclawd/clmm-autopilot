@@ -48,7 +48,7 @@ export default function Home() {
 
     const tick = async () => {
       try {
-        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), solanaConfig.cluster);
+        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), autopilotConfig.cluster);
         const slot = await connection.getSlot(solanaConfig.commitment);
         const unixTs = Math.floor(Date.now() / 1000);
         if (cancelled) return;
@@ -71,7 +71,7 @@ export default function Home() {
         pollingRef.current = null;
       }
     };
-  }, [positionAddress, solanaConfig.cluster, solanaConfig.commitment, solanaConfig.rpcUrl, autopilotConfig.policy.cadenceMs]);
+  }, [positionAddress, autopilotConfig.cluster, solanaConfig.commitment, solanaConfig.rpcUrl, autopilotConfig.policy.cadenceMs]);
 
   return (
     <main className="p-6 font-sans space-y-3">
@@ -95,7 +95,7 @@ export default function Home() {
         <div>cadenceMs: {autopilotConfig.policy.cadenceMs}</div>
         <div>requiredConsecutive: {autopilotConfig.policy.requiredConsecutive}</div>
         <div>cooldownMs: {autopilotConfig.policy.cooldownMs}</div>
-        <div>maxSlippageBps: {autopilotConfig.execution.maxSlippageBps}</div>
+        <div>slippageBpsCap: {autopilotConfig.execution.slippageBpsCap}</div>
         <div>quoteFreshnessMs: {autopilotConfig.execution.quoteFreshnessMs}</div>
       </div>
       <div className="flex gap-2">
@@ -143,7 +143,7 @@ export default function Home() {
                 config: {
                   policy: autopilotConfig.policy,
                   execution: {
-                    maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
+                    slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
                     quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessMs,
                   },
                 },
@@ -192,7 +192,7 @@ export default function Home() {
               const connection = new Connection(solanaConfig.rpcUrl, solanaConfig.commitment);
 
               // Build a quote off the current snapshot remove preview (best-effort Phase-1 heuristic).
-              const snapshot = await loadPositionSnapshot(connection, position, solanaConfig.cluster);
+              const snapshot = await loadPositionSnapshot(connection, position, autopilotConfig.cluster);
               const dir = ui.decision?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN';
               if (!snapshot.removePreview) throw new Error(`Remove preview unavailable (${snapshot.removePreviewReasonCode ?? 'DATA_UNAVAILABLE'})`);
 
@@ -205,11 +205,11 @@ export default function Home() {
                 ? (snapshot.tokenMintA.equals(SOL_MINT) ? tokenAOut : tokenBOut)
                 : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
 
-              const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.maxSlippageBps });
+              const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.slippageBpsCap });
               const epochNowMs = Date.now();
               const epoch = unixDaysFromUnixMs(epochNowMs);
               const attestationInput = {
-                cluster: solanaConfig.cluster,
+                cluster: autopilotConfig.cluster,
                 authority: authority.toBase58(),
                 position: snapshot.position.toBase58(),
                 positionMint: snapshot.positionMint.toBase58(),
@@ -219,7 +219,7 @@ export default function Home() {
                 tickCurrent: snapshot.currentTickIndex,
                 lowerTickIndex: snapshot.lowerTickIndex,
                 upperTickIndex: snapshot.upperTickIndex,
-                slippageBpsCap: autopilotConfig.execution.maxSlippageBps,
+                slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
                 quoteInputMint: quote.inputMint.toBase58(),
                 quoteOutputMint: quote.outputMint.toBase58(),
                 quoteInAmount: quote.inAmount,
@@ -256,7 +256,7 @@ export default function Home() {
                   config: {
                     policy: autopilotConfig.policy,
                     execution: {
-                      maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
+                      slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
                       quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessMs,
                     },
                   },

@@ -5,7 +5,7 @@ export type UiConfig = {
     cooldownMs: number;
   };
   execution: {
-    maxSlippageBps: number;
+    slippageBpsCap: number;
     quoteFreshnessMs: number;
   };
 };
