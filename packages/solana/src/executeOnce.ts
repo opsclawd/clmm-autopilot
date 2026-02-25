@@ -327,10 +327,10 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     );
 
     let receipt = null;
-    for (let i = 0; i < 6; i += 1) {
+    for (let i = 0; i < params.config.execution.receiptPollMaxAttempts; i += 1) {
       receipt = await fetchReceiptByPda(params.connection, receiptPda);
       if (receipt) break;
-      await sleep(500);
+      await sleep(params.config.execution.receiptPollIntervalMs);
     }
 
     return {

@@ -35,6 +35,10 @@ export type AutopilotConfig = {
     maxRetries: number;
     retryBackoffMs: number[];
 
+    /** Receipt polling after send/confirm. */
+    receiptPollMaxAttempts: number;
+    receiptPollIntervalMs: number;
+
     /** Minimum swap thresholds (minor units). */
     minSolLamportsToSwap: number;
     minUsdcMinorToSwap: number;
@@ -67,6 +71,10 @@ export const DEFAULT_CONFIG: AutopilotConfig = {
     // Retry model.
     maxRetries: 3,
     retryBackoffMs: [250, 750, 2_000],
+
+    // Receipt polling.
+    receiptPollMaxAttempts: 6,
+    receiptPollIntervalMs: 500,
 
     // Dust thresholds.
     minSolLamportsToSwap: 0, // default disabled
@@ -312,6 +320,20 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
       ),
       maxRetries: readIntField(errors, executionIn, 'maxRetries', 'execution.maxRetries', DEFAULT_CONFIG.execution.maxRetries),
       retryBackoffMs,
+      receiptPollMaxAttempts: readIntField(
+        errors,
+        executionIn,
+        'receiptPollMaxAttempts',
+        'execution.receiptPollMaxAttempts',
+        DEFAULT_CONFIG.execution.receiptPollMaxAttempts,
+      ),
+      receiptPollIntervalMs: readIntField(
+        errors,
+        executionIn,
+        'receiptPollIntervalMs',
+        'execution.receiptPollIntervalMs',
+        DEFAULT_CONFIG.execution.receiptPollIntervalMs,
+      ),
       minSolLamportsToSwap: readIntField(
         errors,
         executionIn,
@@ -406,6 +428,16 @@ export function validateConfig(input: unknown): ValidateConfigResult {
   } else {
     const msg = validateBackoffSchedule(e.retryBackoffMs);
     if (msg) pushBackoff(errors, 'execution.retryBackoffMs', msg, e.retryBackoffMs);
+  }
+
+  if (!Number.isInteger(e.receiptPollMaxAttempts)) pushType(errors, 'execution.receiptPollMaxAttempts', 'integer', e.receiptPollMaxAttempts);
+  else if (e.receiptPollMaxAttempts < 1 || e.receiptPollMaxAttempts > 100) {
+    pushRange(errors, 'execution.receiptPollMaxAttempts', '1..100', e.receiptPollMaxAttempts);
+  }
+
+  if (!Number.isInteger(e.receiptPollIntervalMs)) pushType(errors, 'execution.receiptPollIntervalMs', 'integer', e.receiptPollIntervalMs);
+  else if (e.receiptPollIntervalMs < 1 || e.receiptPollIntervalMs > 60_000) {
+    pushRange(errors, 'execution.receiptPollIntervalMs', '1..60000', e.receiptPollIntervalMs);
   }
 
   if (!Number.isInteger(e.minSolLamportsToSwap)) pushType(errors, 'execution.minSolLamportsToSwap', 'integer', e.minSolLamportsToSwap);

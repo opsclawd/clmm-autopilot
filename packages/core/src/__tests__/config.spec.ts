@@ -88,6 +88,15 @@ describe('validateConfig', () => {
     }
   });
 
+  it('rejects invalid receipt polling config', () => {
+    const res = validateConfig({ execution: { receiptPollMaxAttempts: 0, receiptPollIntervalMs: -1 } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.errors.some((e) => e.path === 'execution.receiptPollMaxAttempts')).toBe(true);
+      expect(res.errors.some((e) => e.path === 'execution.receiptPollIntervalMs')).toBe(true);
+    }
+  });
+
   it('accepts numeric strings (normalize)', () => {
     const res = validateConfig({ policy: { cadenceMs: '2000' }, execution: { slippageBpsCap: '50' } });
     expect(res.ok).toBe(true);
