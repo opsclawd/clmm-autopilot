@@ -17,6 +17,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "e2e:devnet": "pnpm -C packages/solana e2e:devnet",
+    "positions:devnet": "node ./scripts/find-devnet-whirlpool-positions.mjs",
     "check:anchor-tooling": "node ./scripts/check-anchor-tooling.mjs"
   },
   "devDependencies": {
