@@ -16,6 +16,7 @@
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
+    "e2e:devnet": "pnpm -C packages/solana e2e:devnet",
     "check:anchor-tooling": "node ./scripts/check-anchor-tooling.mjs"
   },
   "devDependencies": {
