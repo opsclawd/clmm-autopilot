@@ -21,6 +21,7 @@ type HarnessEnv = Record<string, string | undefined>;
 type HarnessError = Error & { code?: string };
 
 const RECEIPT_MISMATCH_CODE = 'RECEIPT_MISMATCH';
+const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 
 type HarnessLogger = (entry: Record<string, unknown>) => void;
 
@@ -110,10 +111,10 @@ function getQuoteMintsAndAmount(snapshot: PositionSnapshot, decision: Exclude<Ha
   direction: 'DOWN' | 'UP';
 } {
   if (!snapshot.removePreview) {
-    throw Object.assign(new Error('Remove preview unavailable for quote sizing'), { code: 'DATA_UNAVAILABLE' });
+    throw codedError('DATA_UNAVAILABLE', 'Remove preview unavailable for quote sizing');
   }
 
-  const aIsSol = snapshot.tokenMintA.toBase58() === 'So11111111111111111111111111111111111111112';
+  const aIsSol = snapshot.tokenMintA.equals(SOL_MINT);
   const direction = decision === 'TRIGGER_UP' ? 'UP' : 'DOWN';
 
   if (direction === 'DOWN') {
