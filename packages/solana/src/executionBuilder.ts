@@ -30,18 +30,15 @@ export type BuildExitConfig = {
   payer: PublicKey;
   recentBlockhash: string;
 
-  computeUnitLimit: number;
-  computeUnitPriceMicroLamports: number;
+  computeUnitLimit?: number;
+  computeUnitPriceMicroLamports?: number;
 
   // Quote + guardrails.
   quote: ExitQuote;
-  maxSlippageBps: number;
+  slippageBpsCap: number;
   quoteFreshnessMs: number;
-  maxRebuildAttempts: number;
-  rebuildWindowMs: number;
   nowUnixMs: () => number;
   receiptEpochUnixMs: number;
-  rebuildSnapshotAndQuote?: () => Promise<{ snapshot: PositionSnapshot; quote: ExitQuote }>;
 
   // Cost guardrails.
   availableLamports: number;
@@ -161,39 +158,11 @@ function enforceFeeBuffer(cfg: BuildExitConfig): void {
 }
 
 function buildComputeBudgetIxs(cfg: BuildExitConfig): TransactionInstruction[] {
+  if (cfg.computeUnitLimit === undefined || cfg.computeUnitPriceMicroLamports === undefined) return [];
   return [
     ComputeBudgetProgram.setComputeUnitLimit({ units: cfg.computeUnitLimit }),
     ComputeBudgetProgram.setComputeUnitPrice({ microLamports: cfg.computeUnitPriceMicroLamports }),
   ];
-}
-
-async function resolveFreshSnapshotAndQuote(
-  snapshot: PositionSnapshot,
-  config: BuildExitConfig,
-): Promise<{ snapshot: PositionSnapshot; quote: ExitQuote }> {
-  const start = config.nowUnixMs();
-  let currentSnapshot = snapshot;
-  let currentQuote = config.quote;
-  let attempts = 0;
-
-  while (config.nowUnixMs() - currentQuote.quotedAtUnixMs > config.quoteFreshnessMs) {
-    if (!config.rebuildSnapshotAndQuote) {
-      fail('QUOTE_STALE', 'Quote is stale and no rebuild function was provided', true);
-    }
-    if (attempts >= config.maxRebuildAttempts) {
-      fail('QUOTE_STALE', 'Quote is stale and rebuild attempts exhausted', true);
-    }
-    if (config.nowUnixMs() - start > config.rebuildWindowMs) {
-      fail('QUOTE_STALE', `Quote is stale and rebuild window exceeded ${config.rebuildWindowMs}ms`, true);
-    }
-
-    const rebuilt = await config.rebuildSnapshotAndQuote();
-    currentSnapshot = rebuilt.snapshot;
-    currentQuote = rebuilt.quote;
-    attempts += 1;
-  }
-
-  return { snapshot: currentSnapshot, quote: currentQuote };
 }
 
 function tokenProgramForMint(mint: PublicKey, snapshot: PositionSnapshot): PublicKey {
@@ -249,57 +218,65 @@ export async function buildExitTransaction(
 
   assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), snapshot.cluster);
 
-  const refreshed = await resolveFreshSnapshotAndQuote(snapshot, config);
-  if (!fieldEq32(payload, 33, refreshed.snapshot.position.toBuffer())) {
-    failMismatch('position', refreshed.snapshot.position.toBase58(), hex32At(payload, 33));
+  const quote = config.quote;
+  if (config.nowUnixMs() - quote.quotedAtUnixMs > config.quoteFreshnessMs) {
+    fail('QUOTE_STALE', 'Quote is stale', true, {
+      quoteAgeMs: config.nowUnixMs() - quote.quotedAtUnixMs,
+      quoteFreshnessMs: config.quoteFreshnessMs,
+    });
   }
-  if (!fieldEq32(payload, 65, refreshed.snapshot.positionMint.toBuffer())) {
-    failMismatch('positionMint', refreshed.snapshot.positionMint.toBase58(), hex32At(payload, 65));
+
+  if (!fieldEq32(payload, 33, snapshot.position.toBuffer())) {
+    failMismatch('position', snapshot.position.toBase58(), hex32At(payload, 33));
   }
-  if (!fieldEq32(payload, 97, refreshed.snapshot.whirlpool.toBuffer())) {
-    failMismatch('whirlpool', refreshed.snapshot.whirlpool.toBase58(), hex32At(payload, 97));
+  if (!fieldEq32(payload, 65, snapshot.positionMint.toBuffer())) {
+    failMismatch('positionMint', snapshot.positionMint.toBase58(), hex32At(payload, 65));
+  }
+  if (!fieldEq32(payload, 97, snapshot.whirlpool.toBuffer())) {
+    failMismatch('whirlpool', snapshot.whirlpool.toBase58(), hex32At(payload, 97));
   }
   if (u8At(payload, 133) !== expectedDirection) {
     failMismatch('direction', expectedDirection, u8At(payload, 133));
   }
-  if (i32leAt(payload, 134) !== refreshed.snapshot.currentTickIndex) {
-    failMismatch('tickCurrent', refreshed.snapshot.currentTickIndex, i32leAt(payload, 134));
+  if (i32leAt(payload, 134) !== snapshot.currentTickIndex) {
+    failMismatch('tickCurrent', snapshot.currentTickIndex, i32leAt(payload, 134));
   }
-  if (i32leAt(payload, 138) !== refreshed.snapshot.lowerTickIndex) {
-    failMismatch('lowerTickIndex', refreshed.snapshot.lowerTickIndex, i32leAt(payload, 138));
+  if (i32leAt(payload, 138) !== snapshot.lowerTickIndex) {
+    failMismatch('lowerTickIndex', snapshot.lowerTickIndex, i32leAt(payload, 138));
   }
-  if (i32leAt(payload, 142) !== refreshed.snapshot.upperTickIndex) {
-    failMismatch('upperTickIndex', refreshed.snapshot.upperTickIndex, i32leAt(payload, 142));
+  if (i32leAt(payload, 142) !== snapshot.upperTickIndex) {
+    failMismatch('upperTickIndex', snapshot.upperTickIndex, i32leAt(payload, 142));
   }
-  if (u16leAt(payload, 146) !== config.maxSlippageBps) {
-    failMismatch('slippageBpsCap', config.maxSlippageBps, u16leAt(payload, 146));
-  }
-  assertQuoteDirection(direction, refreshed.quote, refreshed.snapshot);
-
-  if (!fieldEq32(payload, 148, refreshed.quote.inputMint.toBuffer())) {
-    failMismatch('quote.inputMint', refreshed.quote.inputMint.toBase58(), hex32At(payload, 148));
-  }
-  if (!fieldEq32(payload, 180, refreshed.quote.outputMint.toBuffer())) {
-    failMismatch('quote.outputMint', refreshed.quote.outputMint.toBase58(), hex32At(payload, 180));
-  }
-  if (u64leAt(payload, 212) !== refreshed.quote.inAmount) {
-    failMismatch('quote.inAmount', refreshed.quote.inAmount.toString(), u64leAt(payload, 212).toString());
-  }
-  if (u64leAt(payload, 220) !== refreshed.quote.outAmount) {
-    failMismatch('quote.minOutAmount', refreshed.quote.outAmount.toString(), u64leAt(payload, 220).toString());
-  }
-  if (u64leAt(payload, 228) !== BigInt(refreshed.quote.quotedAtUnixMs)) {
-    failMismatch('quote.quotedAtUnixMs', refreshed.quote.quotedAtUnixMs, Number(u64leAt(payload, 228)));
+  if (u16leAt(payload, 146) !== config.slippageBpsCap) {
+    failMismatch('slippageBpsCap', config.slippageBpsCap, u16leAt(payload, 146));
   }
 
-  if (refreshed.quote.slippageBps > config.maxSlippageBps) {
+  assertQuoteDirection(direction, quote, snapshot);
+
+  if (!fieldEq32(payload, 148, quote.inputMint.toBuffer())) {
+    failMismatch('quote.inputMint', quote.inputMint.toBase58(), hex32At(payload, 148));
+  }
+  if (!fieldEq32(payload, 180, quote.outputMint.toBuffer())) {
+    failMismatch('quote.outputMint', quote.outputMint.toBase58(), hex32At(payload, 180));
+  }
+  if (u64leAt(payload, 212) !== quote.inAmount) {
+    failMismatch('quote.inAmount', quote.inAmount.toString(), u64leAt(payload, 212).toString());
+  }
+  if (u64leAt(payload, 220) !== quote.outAmount) {
+    failMismatch('quote.minOutAmount', quote.outAmount.toString(), u64leAt(payload, 220).toString());
+  }
+  if (u64leAt(payload, 228) !== BigInt(quote.quotedAtUnixMs)) {
+    failMismatch('quote.quotedAtUnixMs', quote.quotedAtUnixMs, Number(u64leAt(payload, 228)));
+  }
+
+  if (quote.slippageBps > config.slippageBpsCap) {
     fail('SLIPPAGE_EXCEEDED', 'Quote slippage exceeds configured cap', false);
   }
 
   enforceFeeBuffer(config);
 
   const buildOrca = config.buildOrcaExitIxs ?? buildOrcaExitIxs;
-  const orca = buildOrca({ snapshot: refreshed.snapshot, authority: config.authority, payer: config.payer });
+  const orca = buildOrca({ snapshot, authority: config.authority, payer: config.payer });
 
   const buildJup =
     config.buildJupiterSwapIxs ??
@@ -307,7 +284,7 @@ export async function buildExitTransaction(
       if (!quote.raw) throw new Error('quote.raw required for default Jupiter swap builder');
       return fetchJupiterSwapIxs({ quote: quote as JupiterQuote, userPublicKey: authority, wrapAndUnwrapSol: false });
     });
-  const jup = await buildJup({ quote: refreshed.quote, authority: config.authority });
+  const jup = await buildJup({ quote, authority: config.authority });
 
   const buildWsol =
     config.buildWsolLifecycleIxs ??
@@ -320,35 +297,35 @@ export async function buildExitTransaction(
         wrapLamports: quote.inputMint.equals(SOL_MINT) ? quote.inAmount : undefined,
       }));
 
-  const wsolLifecycle = buildWsol({ quote: refreshed.quote, authority: config.authority, payer: config.payer });
-  const wsolRequired = refreshed.quote.inputMint.equals(SOL_MINT) || refreshed.quote.outputMint.equals(SOL_MINT);
+  const wsolLifecycle = buildWsol({ quote, authority: config.authority, payer: config.payer });
+  const wsolRequired = quote.inputMint.equals(SOL_MINT) || quote.outputMint.equals(SOL_MINT);
 
   // Ensure Jupiter input/output ATAs exist (idempotent). If the mint is the pool mint, we use the pool's token program.
   const jupiterAtaIxs: TransactionInstruction[] = [];
-  if (!refreshed.quote.inputMint.equals(SOL_MINT)) {
+  if (!quote.inputMint.equals(SOL_MINT)) {
     jupiterAtaIxs.push(
       buildCreateAtaIdempotentIx({
         payer: config.payer,
         owner: config.authority,
-        mint: refreshed.quote.inputMint,
-        tokenProgramId: tokenProgramForMint(refreshed.quote.inputMint, refreshed.snapshot),
+        mint: quote.inputMint,
+        tokenProgramId: tokenProgramForMint(quote.inputMint, snapshot),
       }).ix,
     );
   }
-  if (!refreshed.quote.outputMint.equals(SOL_MINT)) {
+  if (!quote.outputMint.equals(SOL_MINT)) {
     jupiterAtaIxs.push(
       buildCreateAtaIdempotentIx({
         payer: config.payer,
         owner: config.authority,
-        mint: refreshed.quote.outputMint,
-        tokenProgramId: tokenProgramForMint(refreshed.quote.outputMint, refreshed.snapshot),
+        mint: quote.outputMint,
+        tokenProgramId: tokenProgramForMint(quote.outputMint, snapshot),
       }).ix,
     );
   }
 
   const receiptIx = buildRecordExecutionIx({
     authority: config.authority,
-    positionMint: refreshed.snapshot.positionMint,
+    positionMint: snapshot.positionMint,
     epoch: canonicalEpoch(config.receiptEpochUnixMs),
     direction: direction === 'DOWN' ? 0 : 1,
     attestationHash: config.attestationHash,

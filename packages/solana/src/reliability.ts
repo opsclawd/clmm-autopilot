@@ -12,7 +12,9 @@ export type ShouldRebuildConfig = {
   nowUnixMs: number;
   latestSlot?: number;
   quoteFreshnessMs: number;
-  maxSlotDrift: number;
+  quoteFreshnessSlots: number;
+  /** If undefined, caller should treat it as 1 * tickSpacing. */
+  rebuildTickDelta?: number;
 };
 
 export function shouldRebuild(
@@ -23,7 +25,7 @@ export function shouldRebuild(
   const staleByTime = config.nowUnixMs - quote.quotedAtUnixMs > config.quoteFreshnessMs;
   const staleBySlot =
     typeof quote.quotedAtSlot === 'number' && typeof config.latestSlot === 'number'
-      ? config.latestSlot - quote.quotedAtSlot > config.maxSlotDrift
+      ? config.latestSlot - quote.quotedAtSlot > config.quoteFreshnessSlots
       : false;
 
   if (staleByTime || staleBySlot) {
@@ -39,7 +41,8 @@ export function shouldRebuild(
 
   if (typeof quote.quoteTickIndex === 'number') {
     const moved = Math.abs(latestSnapshot.currentTickIndex - quote.quoteTickIndex);
-    if (moved >= latestSnapshot.tickSpacing * 1) {
+    const delta = config.rebuildTickDelta ?? latestSnapshot.tickSpacing;
+    if (moved >= delta) {
       return { rebuild: true, reasonCode: 'TICK_MOVED' };
     }
   }
@@ -50,10 +53,10 @@ export function shouldRebuild(
 export async function withBoundedRetry<T>(
   fn: () => Promise<T>,
   sleep: (ms: number) => Promise<void>,
-  cfg: Pick<AutopilotConfig['reliability'], 'fetchMaxAttempts' | 'retryBackoffMs'>,
+  cfg: Pick<AutopilotConfig['execution'], 'maxRetries' | 'retryBackoffMs'>,
 ): Promise<T> {
   let lastError: unknown;
-  const maxAttempts = cfg.fetchMaxAttempts;
+  const maxAttempts = cfg.maxRetries;
   const backoffs = cfg.retryBackoffMs;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
