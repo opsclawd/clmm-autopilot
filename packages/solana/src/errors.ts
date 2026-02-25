@@ -14,6 +14,7 @@ const CANONICAL_CODES: CanonicalErrorCode[] = [
   'INSUFFICIENT_FEE_BUFFER',
   'BLOCKHASH_EXPIRED',
   'MISSING_ATTESTATION_HASH',
+  'ORCA_DECODE_FAILED',
 ];
 
 function isCanonicalCode(value: unknown): value is CanonicalErrorCode {

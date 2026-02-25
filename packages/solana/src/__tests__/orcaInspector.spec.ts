@@ -1,5 +1,33 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Keypair, PublicKey } from '@solana/web3.js';
+
+vi.mock('../orca/decode', () => ({
+  decodePositionAccount: (data: Buffer) => ({
+    whirlpool: new PublicKey(data.subarray(8, 40)),
+    positionMint: new PublicKey(data.subarray(40, 72)),
+    liquidity: {
+      toString: () => {
+        const lo = data.readBigUInt64LE(72);
+        const hi = data.readBigUInt64LE(80);
+        return (lo + (hi << 64n)).toString();
+      },
+    },
+    tickLowerIndex: data.readInt32LE(88),
+    tickUpperIndex: data.readInt32LE(92),
+  }),
+  decodeWhirlpoolAccount: (data: Buffer) => ({
+    tickSpacing: data.readUInt16LE(41),
+    tickCurrentIndex: data.readInt32LE(85),
+    tokenMintA: new PublicKey(data.subarray(101, 133)),
+    tokenVaultA: new PublicKey(data.subarray(133, 165)),
+    tokenMintB: new PublicKey(data.subarray(181, 213)),
+    tokenVaultB: new PublicKey(data.subarray(213, 245)),
+  }),
+}));
+
+import * as orcaDecode from '../orca/decode';
 import {
   __setRemovePreviewQuoteFnForTests,
   clearTickArrayCache,
@@ -374,5 +402,28 @@ describe('loadPositionSnapshot', () => {
     await expect(loadPositionSnapshot(mockConn({ accounts }), position)).rejects.toMatchObject({
       code: 'DATA_UNAVAILABLE',
     });
+  });
+
+  it('propagates ORCA_DECODE_FAILED when decoder fails', async () => {
+    clearTickArrayCache();
+    const position = Keypair.generate().publicKey;
+    const accounts = new Map<string, { data: Buffer; owner?: PublicKey }>();
+    accounts.set(position.toBase58(), { data: Buffer.alloc(16) });
+
+    const spy = vi.spyOn(orcaDecode, 'decodePositionAccount').mockImplementationOnce(() => {
+      throw { code: 'ORCA_DECODE_FAILED', message: 'bad position bytes', retryable: false };
+    });
+
+    await expect(loadPositionSnapshot(mockConn({ accounts }), position)).rejects.toMatchObject({
+      code: 'ORCA_DECODE_FAILED',
+    });
+
+    spy.mockRestore();
+  });
+
+  it('inspector delegates Orca account decode to orca/decode module', () => {
+    const src = readFileSync(resolve(__dirname, '..', 'orcaInspector.ts'), 'utf8');
+    expect(src).toContain("from './orca/decode'");
+    expect(src).not.toMatch(/readUInt16LE|readInt32LE|readBigUInt64LE|subarray\(\d+, \d+\)/);
   });
 });
