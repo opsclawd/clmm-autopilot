@@ -1,4 +1,4 @@
-import { evaluateRangeBreak, type AutopilotConfig, type PolicyState, type Sample, unixDaysFromUnixMs } from '@clmm-autopilot/core';
+import { decideSwap, evaluateRangeBreak, type AutopilotConfig, type PolicyState, type Sample, unixDaysFromUnixMs } from '@clmm-autopilot/core';
 import { Connection, PublicKey, VersionedTransaction, type AddressLookupTableAccount } from '@solana/web3.js';
 import { buildExitTransaction, type ExitDirection, type ExitQuote } from './executionBuilder';
 import { computeExecutionRequirements } from './requirements';
@@ -219,11 +219,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       let lookupTableAccounts: AddressLookupTableAccount[] = [];
       let cachedSwap: Awaited<ReturnType<typeof fetchJupiterSwapIxs>> | null = null;
 
-      const isDustSkip =
-        (direction === 'DOWN' && quote.inAmount < BigInt(params.config.execution.minSolLamportsToSwap)) ||
-        (direction === 'UP' && quote.inAmount < BigInt(params.config.execution.minUsdcMinorToSwap));
+      const swapDecision = decideSwap(quote.inAmount, direction, params.config);
 
-      if (!isDustSkip) {
+      if (swapDecision.execute) {
         const buildSwapIxs = params.buildJupiterSwapIxs ?? fetchJupiterSwapIxs;
         cachedSwap = await buildSwapIxs({ quote: quote as any, userPublicKey: params.authority, wrapAndUnwrapSol: false });
         lookupTableAccounts = await loadLookupTables(params.connection, cachedSwap.lookupTableAddresses);

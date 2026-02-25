@@ -8,6 +8,7 @@ import {
 } from '@solana/web3.js';
 import { SWAP_OK, SWAP_SKIP_DUST_SOL, SWAP_SKIP_DUST_USDC, computeAttestationHash, encodeAttestationPayload } from '@clmm-autopilot/core';
 import { buildExitTransaction, type BuildExitConfig, type ExitQuote } from '../executionBuilder';
+import { RECEIPT_PROGRAM_ID } from '../receipt';
 
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 const USDC_MINT = new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
@@ -269,7 +270,7 @@ describe('buildExitTransaction', () => {
 
     const msg = (await buildExitTransaction(baseSnapshot, 'DOWN', cfg)) as TransactionMessage;
     expect(msg.instructions.some((i) => i.programId.equals(pk(33)))).toBe(false);
-    expect(msg.instructions.some((i) => i.data.length === 77)).toBe(true);
+    expect(msg.instructions.some((i) => i.programId.equals(RECEIPT_PROGRAM_ID))).toBe(true);
 
     const execHash = computeAttestationHash({
       cluster: 'devnet',
@@ -357,6 +358,6 @@ describe('buildExitTransaction', () => {
 
     const msg = (await buildExitTransaction(baseSnapshot, 'UP', cfg)) as TransactionMessage;
     expect(msg.instructions.some((i) => i.programId.equals(pk(33)))).toBe(false);
-    expect(msg.instructions.some((i) => i.data.length === 77)).toBe(true);
+    expect(msg.instructions.some((i) => i.programId.equals(RECEIPT_PROGRAM_ID))).toBe(true);
   });
 });

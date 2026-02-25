@@ -6,6 +6,7 @@ import { executeOnce, fetchJupiterQuote, loadPositionSnapshot, loadSolanaConfig,
 import {
   SWAP_OK,
   SWAP_SKIP_DUST_SOL,
+  SWAP_SKIP_DUST_USDC,
   computeAttestationHash,
   decideSwap,
   encodeAttestationPayload,
@@ -220,7 +221,9 @@ export default function Home() {
                   ? 'SWAP_OK'
                   : swapDecision.reasonCode === SWAP_SKIP_DUST_SOL
                     ? 'SWAP_SKIP_DUST_SOL'
-                    : 'SWAP_SKIP_DUST_USDC';
+                    : swapDecision.reasonCode === SWAP_SKIP_DUST_USDC
+                      ? 'SWAP_SKIP_DUST_USDC'
+                      : 'UNKNOWN_SWAP_REASON';
               setSwapPlanSummary(`${swapDecision.execute ? 'execute' : 'skip'} (${reasonLabel})`);
 
               const quote = swapDecision.execute
