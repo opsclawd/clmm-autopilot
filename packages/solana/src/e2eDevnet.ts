@@ -20,6 +20,8 @@ export type HarnessDecision = 'HOLD' | 'TRIGGER_DOWN' | 'TRIGGER_UP';
 type HarnessEnv = Record<string, string | undefined>;
 type HarnessError = Error & { code?: string };
 
+const RECEIPT_MISMATCH_CODE = 'RECEIPT_MISMATCH';
+
 type HarnessLogger = (entry: Record<string, unknown>) => void;
 
 type HarnessDeps = {
@@ -64,7 +66,16 @@ function parseAuthority(secretKeyJson: string): Keypair {
     throw codedError('INVALID_KEYPAIR', 'AUTHORITY_KEYPAIR must point to a JSON keypair file (u8 array)');
   }
   if (!Array.isArray(raw)) throw codedError('INVALID_KEYPAIR', 'AUTHORITY_KEYPAIR file must contain a JSON array');
-  const bytes = Uint8Array.from(raw.map((v) => Number(v)));
+  if (raw.length !== 64) throw codedError('INVALID_KEYPAIR', 'AUTHORITY_KEYPAIR must be a 64-byte secretKey array');
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const n = raw[i];
+    if (!Number.isInteger(n) || n < 0 || n > 255) {
+      throw codedError('INVALID_KEYPAIR', `AUTHORITY_KEYPAIR contains invalid byte at index ${i}`);
+    }
+  }
+
+  const bytes = Uint8Array.from(raw as number[]);
   try {
     return Keypair.fromSecretKey(bytes);
   } catch {
@@ -129,12 +140,12 @@ function verifyReceipt(receipt: ReceiptAccount, expected: {
   direction: 0 | 1;
   attestationHashHex: string;
 }): void {
-  if (!receipt.authority.equals(expected.authority)) throw new Error('Receipt authority mismatch');
-  if (!receipt.positionMint.equals(expected.positionMint)) throw new Error('Receipt position_mint mismatch');
-  if (receipt.epoch !== expected.epoch) throw new Error('Receipt epoch mismatch');
-  if (receipt.direction !== expected.direction) throw new Error('Receipt direction mismatch');
+  if (!receipt.authority.equals(expected.authority)) throw codedError(RECEIPT_MISMATCH_CODE, 'Receipt authority mismatch');
+  if (!receipt.positionMint.equals(expected.positionMint)) throw codedError(RECEIPT_MISMATCH_CODE, 'Receipt position_mint mismatch');
+  if (receipt.epoch !== expected.epoch) throw codedError(RECEIPT_MISMATCH_CODE, 'Receipt epoch mismatch');
+  if (receipt.direction !== expected.direction) throw codedError(RECEIPT_MISMATCH_CODE, 'Receipt direction mismatch');
   const receiptHashHex = Buffer.from(receipt.attestationHash).toString('hex');
-  if (receiptHashHex !== expected.attestationHashHex) throw new Error('Receipt stored_hash mismatch vs local attestation hash');
+  if (receiptHashHex !== expected.attestationHashHex) throw codedError(RECEIPT_MISMATCH_CODE, 'Receipt stored_hash mismatch vs local attestation hash');
 }
 
 export async function runDevnetE2E(
@@ -147,7 +158,12 @@ export async function runDevnetE2E(
   const positionAddress = parseRequiredEnv(env, 'POSITION_ADDRESS');
 
   const authority = await loadAuthorityFromPath(authorityPath);
-  const position = new PublicKey(positionAddress);
+  let position: PublicKey;
+  try {
+    position = new PublicKey(positionAddress);
+  } catch {
+    throw codedError('CONFIG_INVALID', 'POSITION_ADDRESS must be a valid base58 public key');
+  }
   const connection = new Connection(rpcUrl, 'confirmed');
 
   const config: AutopilotConfig = { ...DEFAULT_CONFIG, cluster: 'devnet' };
@@ -181,15 +197,6 @@ export async function runDevnetE2E(
     return;
   }
 
-  const quotePlan = getQuoteMintsAndAmount(snapshot, policy.action);
-  log(logger, 'quote.fetch.start', { direction: quotePlan.direction, amount: quotePlan.amount.toString() });
-  const quote = await deps.fetchJupiterQuote({
-    inputMint: quotePlan.inputMint,
-    outputMint: quotePlan.outputMint,
-    amount: quotePlan.amount,
-    slippageBps: config.execution.slippageBpsCap,
-  });
-
   const epoch = unixDaysFromUnixTs(unixTs);
   const [receiptPda] = deriveReceiptPda({
     authority: authority.publicKey,
@@ -204,6 +211,15 @@ export async function runDevnetE2E(
     throw err;
   }
   log(logger, 'idempotency.check.ok', { receiptPda: receiptPda.toBase58(), epoch });
+
+  const quotePlan = getQuoteMintsAndAmount(snapshot, policy.action);
+  log(logger, 'quote.fetch.start', { direction: quotePlan.direction, amount: quotePlan.amount.toString() });
+  const quote = await deps.fetchJupiterQuote({
+    inputMint: quotePlan.inputMint,
+    outputMint: quotePlan.outputMint,
+    amount: quotePlan.amount,
+    slippageBps: config.execution.slippageBpsCap,
+  });
 
   const swapDecision = decideSwap(quote.inAmount, quotePlan.direction, config);
   const attestationPayload = encodeAttestationPayload({

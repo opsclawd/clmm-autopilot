@@ -130,6 +130,22 @@ describe('runDevnetE2E refusals', () => {
     await cleanup();
   });
 
+
+  it('returns INVALID_KEYPAIR when keypair bytes are out of range', async () => {
+    const bad = JSON.stringify(new Array(64).fill(0).map((v, i) => (i === 10 ? 999 : v)));
+    const { env, cleanup } = await makeEnv(bad);
+
+    await expect(runDevnetE2E(env, () => {})).rejects.toMatchObject({ code: 'INVALID_KEYPAIR' });
+    await cleanup();
+  });
+
+  it('returns CONFIG_INVALID when POSITION_ADDRESS is malformed', async () => {
+    const { env, cleanup } = await makeEnv();
+    env.POSITION_ADDRESS = 'not-a-pubkey';
+
+    await expect(runDevnetE2E(env, () => {})).rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+    await cleanup();
+  });
   it('returns INVALID_KEYPAIR when keypair JSON is malformed', async () => {
     const { env, cleanup } = await makeEnv('{not valid json');
 

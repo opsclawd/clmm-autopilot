@@ -71,3 +71,8 @@ Logs are JSON (structured) and failure exits non-zero.
 - `NOT_SOL_USDC`
   - **Cause:** Position is not the canonical SOL/USDC pair.
   - **Action:** Use a SOL/USDC position only.
+
+- `RECEIPT_MISMATCH`
+  - **Cause:** Confirmed receipt fields/hash differ from locally computed expectations.
+  - **Action:** Stop automation for this position, inspect tx + receipt PDA on explorer, and rerun with fresh quote once mismatch root cause is understood.
+
