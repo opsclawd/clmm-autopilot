@@ -18,8 +18,8 @@ Structured log steps include:
 
 - `snapshot.fetch.start|ok`
 - `policy.evaluate.ok`
-- `quote.fetch.start`
 - `idempotency.check.ok`
+- `quote.fetch.start`
 - `tx.build-sim-send.start`
 - `tx.simulate.ok`
 - `tx.send-confirm.ok`

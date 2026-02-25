@@ -178,8 +178,8 @@ export async function runDevnetE2E(
     pair: snapshot.pairLabel,
   });
 
-  const nowMs = deps.nowMs();
-  const unixTs = Math.floor(nowMs / 1000);
+  const runStartedMs = deps.nowMs();
+  const unixTs = Math.floor(runStartedMs / 1000);
   const latestSlot = await deps.getSlot(connection);
   const samples = buildSamples(snapshot.currentTickIndex, unixTs, latestSlot);
 
@@ -280,7 +280,7 @@ export async function runDevnetE2E(
     quoteContext: { quoteTickIndex: snapshot.currentTickIndex, quotedAtSlot: latestSlot },
     attestationHash,
     attestationPayloadBytes: attestationPayload,
-    nowUnixMs: () => nowMs,
+    nowUnixMs: () => deps.nowMs(),
     signAndSend: async (tx: VersionedTransaction) => {
       tx.sign([authority]);
       return connection.sendRawTransaction(tx.serialize(), { maxRetries: 1 });

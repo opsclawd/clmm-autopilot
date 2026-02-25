@@ -152,4 +152,106 @@ describe('runDevnetE2E refusals', () => {
     await expect(runDevnetE2E(env, () => {})).rejects.toMatchObject({ code: 'INVALID_KEYPAIR' });
     await cleanup();
   });
+
+  it('returns DATA_UNAVAILABLE when removePreview is missing', async () => {
+    const { env, cleanup } = await makeEnv();
+    const executeOnce = vi.fn();
+    const fetchJupiterQuote = vi.fn();
+
+    await expect(
+      runDevnetE2E(env, () => {}, {
+        loadPositionSnapshot: vi.fn(async () => mockSnapshot(env.POSITION_ADDRESS, { removePreview: null })) as any,
+        fetchJupiterQuote: fetchJupiterQuote as any,
+        executeOnce: executeOnce as any,
+        fetchReceiptByPda: vi.fn(async () => null) as any,
+        getSlot: vi.fn(async () => 123),
+        nowMs: () => 1_700_000_000_000,
+      }),
+    ).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE' });
+
+    expect(fetchJupiterQuote).not.toHaveBeenCalled();
+    expect(executeOnce).not.toHaveBeenCalled();
+    await cleanup();
+  });
+
+  it('returns DATA_UNAVAILABLE when receipt is missing after confirmed send', async () => {
+    const { env, cleanup } = await makeEnv();
+    const fetchReceiptByPda = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+
+    await expect(
+      runDevnetE2E(env, () => {}, {
+        loadPositionSnapshot: vi.fn(async () => mockSnapshot(env.POSITION_ADDRESS)) as any,
+        fetchJupiterQuote: vi.fn(async () => ({
+          inputMint: SOL,
+          outputMint: USDC,
+          inAmount: BigInt(1000),
+          outAmount: BigInt(1000),
+          slippageBps: 50,
+          quotedAtUnixMs: 1_700_000_000_000,
+          raw: {},
+        })) as any,
+        executeOnce: vi.fn(async () => ({
+          status: 'EXECUTED',
+          txSignature: 'sig-1',
+          receiptPda: new PublicKey(new Uint8Array(32).fill(12)).toBase58(),
+        })) as any,
+        fetchReceiptByPda: fetchReceiptByPda as any,
+        getSlot: vi.fn(async () => 123),
+        nowMs: () => 1_700_000_000_000,
+      }),
+    ).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE' });
+
+    await cleanup();
+  });
+
+  it('returns RECEIPT_MISMATCH when fetched receipt hash does not match local hash', async () => {
+    const { env, cleanup } = await makeEnv();
+    const authority = Keypair.fromSecretKey(
+      Uint8Array.from(JSON.parse(await (await import('node:fs/promises')).readFile(env.AUTHORITY_KEYPAIR, 'utf8'))),
+    ).publicKey;
+    const snapshot = mockSnapshot(env.POSITION_ADDRESS);
+
+    const fetchReceiptByPda = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        authority,
+        positionMint: snapshot.positionMint,
+        epoch: Math.floor((1_700_000_000_000 / 1000) / 86400),
+        direction: 0,
+        attestationHash: new Uint8Array(32).fill(99),
+        slot: BigInt(1),
+        unixTs: BigInt(1),
+        bump: 255,
+      });
+
+    await expect(
+      runDevnetE2E(env, () => {}, {
+        loadPositionSnapshot: vi.fn(async () => snapshot) as any,
+        fetchJupiterQuote: vi.fn(async () => ({
+          inputMint: SOL,
+          outputMint: USDC,
+          inAmount: BigInt(1000),
+          outAmount: BigInt(1000),
+          slippageBps: 50,
+          quotedAtUnixMs: 1_700_000_000_000,
+          raw: {},
+        })) as any,
+        executeOnce: vi.fn(async () => ({
+          status: 'EXECUTED',
+          txSignature: 'sig-2',
+          receiptPda: new PublicKey(new Uint8Array(32).fill(12)).toBase58(),
+        })) as any,
+        fetchReceiptByPda: fetchReceiptByPda as any,
+        getSlot: vi.fn(async () => 123),
+        nowMs: () => 1_700_000_000_000,
+      }),
+    ).rejects.toMatchObject({ code: 'RECEIPT_MISMATCH' });
+
+    await cleanup();
+  });
+
 });
