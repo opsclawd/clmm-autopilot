@@ -207,9 +207,7 @@ export async function runDevnetE2E(
 
   const existing = await deps.fetchReceiptByPda(connection, receiptPda);
   if (existing) {
-    const err = new Error('Execution receipt already exists for this epoch');
-    (err as Error & { code?: string }).code = 'ALREADY_EXECUTED_THIS_EPOCH';
-    throw err;
+    throw codedError('ALREADY_EXECUTED_THIS_EPOCH', 'Execution receipt already exists for this epoch');
   }
   log(logger, 'idempotency.check.ok', { receiptPda: receiptPda.toBase58(), epoch });
 
@@ -290,9 +288,7 @@ export async function runDevnetE2E(
   });
 
   if (result.status !== 'EXECUTED' || !result.txSignature || !result.receiptPda) {
-    const err = new Error(result.errorMessage ?? 'Execution failed');
-    (err as Error & { code?: string }).code = result.errorCode;
-    throw err;
+    throw codedError(result.errorCode ?? 'EXECUTION_FAILED', result.errorMessage ?? 'Execution failed');
   }
 
   log(logger, 'tx.send-confirm.ok', { signature: result.txSignature, receiptPda: result.receiptPda });
