@@ -10,3 +10,4 @@ export * from './reliability';
 export * from './simErrors';
 export * from './executeOnce';
 export * from './requirements';
+export * from './orca/decode';

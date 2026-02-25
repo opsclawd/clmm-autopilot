@@ -11,6 +11,7 @@ export type CanonicalCode =
   | 'INSUFFICIENT_FEE_BUFFER'
   | 'BLOCKHASH_EXPIRED'
   | 'MISSING_ATTESTATION_HASH'
+  | 'ORCA_DECODE_FAILED'
   | 'CONFIG_INVALID';
 
 export type UiError = {
@@ -33,6 +34,7 @@ const messages: Record<CanonicalCode, Omit<UiError, 'code'>> = {
   INSUFFICIENT_FEE_BUFFER: { title: 'Insufficient fee buffer', message: 'Insufficient lamports after fee buffer reserve.' },
   BLOCKHASH_EXPIRED: { title: 'Blockhash expired', message: 'Refresh and rebuild transaction.' },
   MISSING_ATTESTATION_HASH: { title: 'Missing attestation hash', message: 'Execution attestation hash is missing or invalid.' },
+  ORCA_DECODE_FAILED: { title: 'Orca decode failed', message: 'Unable to decode required Orca account data.' },
   CONFIG_INVALID: { title: 'Invalid configuration', message: 'Autopilot configuration is invalid. Fix config values before execution.' },
 };
 
