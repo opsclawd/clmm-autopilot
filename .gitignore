@@ -8,6 +8,7 @@ apps/web/out
 # env
 .env
 .env.*
+!.env.example
 
 # logs
 npm-debug.log*

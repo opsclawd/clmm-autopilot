@@ -7,7 +7,8 @@
   "scripts": {
     "test": "vitest run",
     "lint": "echo \"(solana) lint handled at repo root\"",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "e2e:devnet": "vite-node src/e2eDevnet.cli.ts"
   },
   "devDependencies": {
     "@types/bn.js": "^5.2.0",
