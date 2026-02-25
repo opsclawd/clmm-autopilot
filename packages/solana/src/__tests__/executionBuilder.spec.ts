@@ -136,7 +136,7 @@ describe('buildExitTransaction', () => {
     const result = await buildExitTransaction(baseSnapshot, 'DOWN', buildConfig());
     expect(result).toBeInstanceOf(TransactionMessage);
     const msg = result as TransactionMessage;
-    expect(msg.instructions[msg.instructions.length - 1].data.length).toBe(77);
+    expect(msg.instructions[msg.instructions.length - 1].programId.equals(RECEIPT_PROGRAM_ID)).toBe(true);
   });
 
   it('accepts matching canonical payload hash + epoch', async () => {
