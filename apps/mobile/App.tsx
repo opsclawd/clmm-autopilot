@@ -11,7 +11,6 @@ import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-sta
 import { runMwaSignAndSendVersionedTransaction, runMwaSignMessageSmoke } from './src/mwaSmoke';
 
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
-const CLUSTER = 'devnet' as const;
 
 type Sample = { slot: number; unixTs: number; currentTickIndex: number };
 
@@ -45,7 +44,7 @@ export default function App() {
     let cancelled = false;
     const poll = async () => {
       try {
-        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), CLUSTER);
+        const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), autopilotConfig.cluster);
         const slot = await connection.getSlot('confirmed');
         const unixTs = Math.floor(Date.now() / 1000);
         if (cancelled) return;
@@ -85,7 +84,7 @@ export default function App() {
           cadenceMs={autopilotConfig.policy.cadenceMs} requiredConsecutive={autopilotConfig.policy.requiredConsecutive} cooldownMs={autopilotConfig.policy.cooldownMs}
         </Text>
         <Text style={{ fontSize: 12, color: "#111" }}>
-          maxSlippageBps={autopilotConfig.execution.maxSlippageBps} quoteFreshnessMs={autopilotConfig.execution.quoteFreshnessMs}
+          slippageBpsCap={autopilotConfig.execution.slippageBpsCap} quoteFreshnessMs={autopilotConfig.execution.quoteFreshnessMs}
         </Text>
         <Button
           title={wallet ? 'Wallet Connected' : 'Connect Wallet'}
@@ -104,7 +103,7 @@ export default function App() {
           disabled={!configValid || !positionAddress}
           onPress={async () => {
             try {
-              const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), CLUSTER);
+              const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), autopilotConfig.cluster);
               const slot = await connection.getSlot('confirmed');
               const unixTs = Math.floor(Date.now() / 1000);
               const nextSamples = [...samples, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }].slice(-90);
@@ -124,7 +123,7 @@ export default function App() {
                 config: {
                   policy: autopilotConfig.policy,
                   execution: {
-                    maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
+                    slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
                     quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessMs,
                   },
                 },
@@ -166,7 +165,7 @@ export default function App() {
             try {
               const authority = new PublicKey(wallet);
               const position = new PublicKey(positionAddress);
-              const snapshot = await loadPositionSnapshot(connection, position, CLUSTER);
+              const snapshot = await loadPositionSnapshot(connection, position, autopilotConfig.cluster);
               const dir = ui.decision?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN';
               if (!snapshot.removePreview) throw new Error(`Remove preview unavailable (${snapshot.removePreviewReasonCode ?? 'DATA_UNAVAILABLE'})`);
 
@@ -178,11 +177,11 @@ export default function App() {
                 ? (snapshot.tokenMintA.equals(SOL_MINT) ? tokenAOut : tokenBOut)
                 : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
 
-              const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.maxSlippageBps });
+              const quote = await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.slippageBpsCap });
               const epochNowMs = Date.now();
               const epoch = unixDaysFromUnixMs(epochNowMs);
               const attestationInput = {
-                cluster: CLUSTER,
+                cluster: autopilotConfig.cluster,
                 authority: authority.toBase58(),
                 position: snapshot.position.toBase58(),
                 positionMint: snapshot.positionMint.toBase58(),
@@ -192,7 +191,7 @@ export default function App() {
                 tickCurrent: snapshot.currentTickIndex,
                 lowerTickIndex: snapshot.lowerTickIndex,
                 upperTickIndex: snapshot.upperTickIndex,
-                slippageBpsCap: autopilotConfig.execution.maxSlippageBps,
+                slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
                 quoteInputMint: quote.inputMint.toBase58(),
                 quoteOutputMint: quote.outputMint.toBase58(),
                 quoteInAmount: quote.inAmount,
@@ -225,7 +224,7 @@ export default function App() {
                   config: {
                     policy: autopilotConfig.policy,
                     execution: {
-                      maxSlippageBps: autopilotConfig.execution.maxSlippageBps,
+                      slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
                       quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessMs,
                     },
                   },

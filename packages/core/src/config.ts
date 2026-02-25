@@ -1,48 +1,84 @@
+export type Cluster = 'devnet' | 'mainnet-beta' | 'localnet';
+
 export type AutopilotConfig = {
+  /** Canonical Solana cluster that the autopilot is operating against. */
+  cluster: Cluster;
+
   policy: {
     cadenceMs: number;
     requiredConsecutive: number;
     cooldownMs: number;
   };
+
   execution: {
-    maxSlippageBps: number;
-    quoteFreshnessMs: number;
-    maxRebuildAttempts: number;
-    rebuildWindowMs: number;
-    computeUnitLimit: number;
-    computeUnitPriceMicroLamports: number;
-    txFeeLamports: number;
+    /** Maximum allowed slippage for the swap (basis points). */
+    slippageBpsCap: number;
+
+    /** Extra lamports reserved as a safety buffer beyond projected costs. */
     feeBufferLamports: number;
-  };
-  reliability: {
-    fetchMaxAttempts: number;
+
+    /** Expected base network fee strategy, in lamports. */
+    txFeeLamports: number;
+
+    /** Optional compute budget overrides. When omitted, no compute budget ix is added. */
+    computeUnitLimit?: number;
+    computeUnitPriceMicroLamports?: number;
+
+    /** Quote freshness guardrails. */
+    quoteFreshnessMs: number;
+    quoteFreshnessSlots: number;
+
+    /** If undefined, defaults to 1 * tickSpacing (computed at runtime). */
+    rebuildTickDelta?: number;
+
+    /** Retry model shared across runtime fetch/sim/build paths. */
+    maxRetries: number;
     retryBackoffMs: number[];
-    maxSlotDrift: number;
-    sendMaxAttempts: number;
+
+    /** Receipt polling after send/confirm. */
+    receiptPollMaxAttempts: number;
+    receiptPollIntervalMs: number;
+
+    /** Minimum swap thresholds (minor units). */
+    minSolLamportsToSwap: number;
+    minUsdcMinorToSwap: number;
   };
 };
 
 export const DEFAULT_CONFIG: AutopilotConfig = {
+  cluster: 'devnet',
   policy: {
     cadenceMs: 2_000,
     requiredConsecutive: 3,
     cooldownMs: 90_000,
   },
   execution: {
-    maxSlippageBps: 50,
-    quoteFreshnessMs: 20_000,
-    maxRebuildAttempts: 3,
-    rebuildWindowMs: 15_000,
-    computeUnitLimit: 600_000,
-    computeUnitPriceMicroLamports: 10_000,
+    slippageBpsCap: 50,
+
+    // Fee/cost guardrails.
     txFeeLamports: 20_000,
     feeBufferLamports: 10_000_000,
-  },
-  reliability: {
-    fetchMaxAttempts: 3,
+
+    // Compute budget defaults (explicit; can be unset by config override).
+    computeUnitLimit: 600_000,
+    computeUnitPriceMicroLamports: 10_000,
+
+    // Quote rebuild guards.
+    quoteFreshnessMs: 20_000,
+    quoteFreshnessSlots: 8,
+    rebuildTickDelta: undefined,
+
+    // Retry model.
+    maxRetries: 3,
     retryBackoffMs: [250, 750, 2_000],
-    maxSlotDrift: 8,
-    sendMaxAttempts: 2,
+
+    // Receipt polling.
+    receiptPollMaxAttempts: 6,
+    receiptPollIntervalMs: 500,
+
+    // Dust thresholds.
+    minSolLamportsToSwap: 0, // default disabled
+    minUsdcMinorToSwap: 0, // default disabled
   },
 };
 
@@ -120,6 +156,35 @@ function readIntField(
   return Math.trunc(n);
 }
 
+function readOptionalIntField(
+  errors: ConfigError[],
+  source: Record<string, unknown>,
+  key: string,
+  path: string,
+  fallback: number | undefined,
+): number | undefined {
+  if (!(key in source)) return fallback;
+  const raw = source[key];
+  if (raw === undefined || raw === null) return undefined;
+  const n = coerceNumber(raw);
+  if (n === undefined) {
+    pushType(errors, path, 'number/integer | undefined', raw);
+    return fallback;
+  }
+  return Math.trunc(n);
+}
+
+function validateBackoffSchedule(schedule: number[]): string | null {
+  if (!Array.isArray(schedule) || schedule.length === 0) return 'Backoff schedule must be a non-empty array';
+  for (const v of schedule) {
+    if (!Number.isInteger(v) || v <= 0) return 'Backoff schedule entries must be positive integers';
+  }
+  for (let i = 1; i < schedule.length; i += 1) {
+    if (schedule[i] <= schedule[i - 1]) return 'Backoff schedule must be strictly increasing';
+  }
+  return null;
+}
+
 function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
   if (input === undefined) return { ok: true, value: DEFAULT_CONFIG };
   if (!isRecord(input)) {
@@ -138,9 +203,17 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
   }
 
   const errors: ConfigError[] = [];
+
+  const clusterRaw = input.cluster;
+  const cluster =
+    clusterRaw === undefined
+      ? DEFAULT_CONFIG.cluster
+      : typeof clusterRaw === 'string'
+        ? (clusterRaw as Cluster)
+        : (pushType(errors, 'cluster', "'devnet' | 'mainnet-beta' | 'localnet'", clusterRaw), DEFAULT_CONFIG.cluster);
+
   const policyInRaw = input.policy;
   const executionInRaw = input.execution;
-  const reliabilityInRaw = input.reliability;
 
   const policyIn =
     policyInRaw === undefined
@@ -154,25 +227,19 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
       : isRecord(executionInRaw)
         ? executionInRaw
         : (pushType(errors, 'execution', 'object', executionInRaw), {});
-  const reliabilityIn =
-    reliabilityInRaw === undefined
-      ? {}
-      : isRecord(reliabilityInRaw)
-        ? reliabilityInRaw
-        : (pushType(errors, 'reliability', 'object', reliabilityInRaw), {});
 
-  const retryRaw = reliabilityIn.retryBackoffMs;
-  let retryBackoffMs = DEFAULT_CONFIG.reliability.retryBackoffMs;
+  const retryRaw = executionIn.retryBackoffMs;
+  let retryBackoffMs = DEFAULT_CONFIG.execution.retryBackoffMs;
   if (retryRaw !== undefined) {
     if (!Array.isArray(retryRaw)) {
-      pushType(errors, 'reliability.retryBackoffMs', 'number[]', retryRaw);
+      pushType(errors, 'execution.retryBackoffMs', 'number[]', retryRaw);
     } else {
       const converted: number[] = [];
       for (let i = 0; i < retryRaw.length; i += 1) {
         const item = retryRaw[i];
         const n = coerceNumber(item);
         if (n === undefined) {
-          pushType(errors, `reliability.retryBackoffMs[${i}]`, 'number/integer', item);
+          pushType(errors, `execution.retryBackoffMs[${i}]`, 'number/integer', item);
           continue;
         }
         converted.push(Math.trunc(n));
@@ -182,6 +249,7 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
   }
 
   const normalized: AutopilotConfig = {
+    cluster,
     policy: {
       cadenceMs: readIntField(errors, policyIn, 'cadenceMs', 'policy.cadenceMs', DEFAULT_CONFIG.policy.cadenceMs),
       requiredConsecutive: readIntField(
@@ -194,54 +262,12 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
       cooldownMs: readIntField(errors, policyIn, 'cooldownMs', 'policy.cooldownMs', DEFAULT_CONFIG.policy.cooldownMs),
     },
     execution: {
-      maxSlippageBps: readIntField(
+      slippageBpsCap: readIntField(
         errors,
         executionIn,
-        'maxSlippageBps',
-        'execution.maxSlippageBps',
-        DEFAULT_CONFIG.execution.maxSlippageBps,
-      ),
-      quoteFreshnessMs: readIntField(
-        errors,
-        executionIn,
-        'quoteFreshnessMs',
-        'execution.quoteFreshnessMs',
-        DEFAULT_CONFIG.execution.quoteFreshnessMs,
-      ),
-      maxRebuildAttempts: readIntField(
-        errors,
-        executionIn,
-        'maxRebuildAttempts',
-        'execution.maxRebuildAttempts',
-        DEFAULT_CONFIG.execution.maxRebuildAttempts,
-      ),
-      rebuildWindowMs: readIntField(
-        errors,
-        executionIn,
-        'rebuildWindowMs',
-        'execution.rebuildWindowMs',
-        DEFAULT_CONFIG.execution.rebuildWindowMs,
-      ),
-      computeUnitLimit: readIntField(
-        errors,
-        executionIn,
-        'computeUnitLimit',
-        'execution.computeUnitLimit',
-        DEFAULT_CONFIG.execution.computeUnitLimit,
-      ),
-      computeUnitPriceMicroLamports: readIntField(
-        errors,
-        executionIn,
-        'computeUnitPriceMicroLamports',
-        'execution.computeUnitPriceMicroLamports',
-        DEFAULT_CONFIG.execution.computeUnitPriceMicroLamports,
-      ),
-      txFeeLamports: readIntField(
-        errors,
-        executionIn,
-        'txFeeLamports',
-        'execution.txFeeLamports',
-        DEFAULT_CONFIG.execution.txFeeLamports,
+        'slippageBpsCap',
+        'execution.slippageBpsCap',
+        DEFAULT_CONFIG.execution.slippageBpsCap,
       ),
       feeBufferLamports: readIntField(
         errors,
@@ -250,29 +276,77 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
         'execution.feeBufferLamports',
         DEFAULT_CONFIG.execution.feeBufferLamports,
       ),
-    },
-    reliability: {
-      fetchMaxAttempts: readIntField(
+      txFeeLamports: readIntField(
         errors,
-        reliabilityIn,
-        'fetchMaxAttempts',
-        'reliability.fetchMaxAttempts',
-        DEFAULT_CONFIG.reliability.fetchMaxAttempts,
+        executionIn,
+        'txFeeLamports',
+        'execution.txFeeLamports',
+        DEFAULT_CONFIG.execution.txFeeLamports,
       ),
+      computeUnitLimit: readOptionalIntField(
+        errors,
+        executionIn,
+        'computeUnitLimit',
+        'execution.computeUnitLimit',
+        DEFAULT_CONFIG.execution.computeUnitLimit,
+      ),
+      computeUnitPriceMicroLamports: readOptionalIntField(
+        errors,
+        executionIn,
+        'computeUnitPriceMicroLamports',
+        'execution.computeUnitPriceMicroLamports',
+        DEFAULT_CONFIG.execution.computeUnitPriceMicroLamports,
+      ),
+      quoteFreshnessMs: readIntField(
+        errors,
+        executionIn,
+        'quoteFreshnessMs',
+        'execution.quoteFreshnessMs',
+        DEFAULT_CONFIG.execution.quoteFreshnessMs,
+      ),
+      quoteFreshnessSlots: readIntField(
+        errors,
+        executionIn,
+        'quoteFreshnessSlots',
+        'execution.quoteFreshnessSlots',
+        DEFAULT_CONFIG.execution.quoteFreshnessSlots,
+      ),
+      rebuildTickDelta: readOptionalIntField(
+        errors,
+        executionIn,
+        'rebuildTickDelta',
+        'execution.rebuildTickDelta',
+        DEFAULT_CONFIG.execution.rebuildTickDelta,
+      ),
+      maxRetries: readIntField(errors, executionIn, 'maxRetries', 'execution.maxRetries', DEFAULT_CONFIG.execution.maxRetries),
       retryBackoffMs,
-      maxSlotDrift: readIntField(
+      receiptPollMaxAttempts: readIntField(
         errors,
-        reliabilityIn,
-        'maxSlotDrift',
-        'reliability.maxSlotDrift',
-        DEFAULT_CONFIG.reliability.maxSlotDrift,
+        executionIn,
+        'receiptPollMaxAttempts',
+        'execution.receiptPollMaxAttempts',
+        DEFAULT_CONFIG.execution.receiptPollMaxAttempts,
       ),
-      sendMaxAttempts: readIntField(
+      receiptPollIntervalMs: readIntField(
         errors,
-        reliabilityIn,
-        'sendMaxAttempts',
-        'reliability.sendMaxAttempts',
-        DEFAULT_CONFIG.reliability.sendMaxAttempts,
+        executionIn,
+        'receiptPollIntervalMs',
+        'execution.receiptPollIntervalMs',
+        DEFAULT_CONFIG.execution.receiptPollIntervalMs,
+      ),
+      minSolLamportsToSwap: readIntField(
+        errors,
+        executionIn,
+        'minSolLamportsToSwap',
+        'execution.minSolLamportsToSwap',
+        DEFAULT_CONFIG.execution.minSolLamportsToSwap,
+      ),
+      minUsdcMinorToSwap: readIntField(
+        errors,
+        executionIn,
+        'minUsdcMinorToSwap',
+        'execution.minUsdcMinorToSwap',
+        DEFAULT_CONFIG.execution.minUsdcMinorToSwap,
       ),
     },
   };
@@ -281,22 +355,17 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
   return { ok: true, value: normalized };
 }
 
-function validateBackoffSchedule(schedule: number[]): string | null {
-  if (!Array.isArray(schedule) || schedule.length === 0) return 'Backoff schedule must be a non-empty array';
-  for (const v of schedule) {
-    if (!Number.isInteger(v) || v <= 0) return 'Backoff schedule entries must be positive integers';
-  }
-  for (let i = 1; i < schedule.length; i += 1) {
-    if (schedule[i] <= schedule[i - 1]) return 'Backoff schedule must be strictly increasing';
-  }
-  return null;
-}
-
 export function validateConfig(input: unknown): ValidateConfigResult {
   const normalized = normalizeAutopilotConfig(input);
   if (!normalized.ok) return normalized;
 
   const errors: ConfigError[] = [];
+
+  const allowedClusters = new Set<Cluster>(['devnet', 'mainnet-beta', 'localnet']);
+  if (!allowedClusters.has(normalized.value.cluster)) {
+    pushRange(errors, 'cluster', "'devnet' | 'mainnet-beta' | 'localnet'", normalized.value.cluster);
+  }
+
   const p = normalized.value.policy;
   if (!Number.isInteger(p.cadenceMs)) pushType(errors, 'policy.cadenceMs', 'integer', p.cadenceMs);
   else if (p.cadenceMs <= 0) pushRange(errors, 'policy.cadenceMs', '> 0', p.cadenceMs);
@@ -308,23 +377,42 @@ export function validateConfig(input: unknown): ValidateConfigResult {
   else if (p.cooldownMs < 0) pushRange(errors, 'policy.cooldownMs', '>= 0', p.cooldownMs);
 
   const e = normalized.value.execution;
-  if (!Number.isInteger(e.maxSlippageBps)) pushType(errors, 'execution.maxSlippageBps', 'integer', e.maxSlippageBps);
-  else if (e.maxSlippageBps < 0 || e.maxSlippageBps > 50) pushRange(errors, 'execution.maxSlippageBps', '0..50 (bps)', e.maxSlippageBps);
+
+  if (!Number.isInteger(e.slippageBpsCap)) pushType(errors, 'execution.slippageBpsCap', 'integer', e.slippageBpsCap);
+  else if (e.slippageBpsCap < 0 || e.slippageBpsCap > 50) pushRange(errors, 'execution.slippageBpsCap', '0..50 (bps)', e.slippageBpsCap);
 
   if (!Number.isInteger(e.quoteFreshnessMs)) pushType(errors, 'execution.quoteFreshnessMs', 'integer', e.quoteFreshnessMs);
   else if (e.quoteFreshnessMs <= 0) pushRange(errors, 'execution.quoteFreshnessMs', '> 0', e.quoteFreshnessMs);
 
-  if (!Number.isInteger(e.maxRebuildAttempts)) pushType(errors, 'execution.maxRebuildAttempts', 'integer', e.maxRebuildAttempts);
-  else if (e.maxRebuildAttempts < 0 || e.maxRebuildAttempts > 10) pushRange(errors, 'execution.maxRebuildAttempts', '0..10', e.maxRebuildAttempts);
+  if (!Number.isInteger(e.quoteFreshnessSlots)) pushType(errors, 'execution.quoteFreshnessSlots', 'integer', e.quoteFreshnessSlots);
+  else if (e.quoteFreshnessSlots < 0 || e.quoteFreshnessSlots > 1_000) pushRange(errors, 'execution.quoteFreshnessSlots', '0..1000', e.quoteFreshnessSlots);
 
-  if (!Number.isInteger(e.rebuildWindowMs)) pushType(errors, 'execution.rebuildWindowMs', 'integer', e.rebuildWindowMs);
-  else if (e.rebuildWindowMs <= 0) pushRange(errors, 'execution.rebuildWindowMs', '> 0', e.rebuildWindowMs);
+  if (e.rebuildTickDelta !== undefined) {
+    if (!Number.isInteger(e.rebuildTickDelta)) pushType(errors, 'execution.rebuildTickDelta', 'integer | undefined', e.rebuildTickDelta);
+    else if (e.rebuildTickDelta <= 0) pushRange(errors, 'execution.rebuildTickDelta', '> 0', e.rebuildTickDelta);
+  }
 
-  if (!Number.isInteger(e.computeUnitLimit)) pushType(errors, 'execution.computeUnitLimit', 'integer', e.computeUnitLimit);
-  else if (e.computeUnitLimit <= 0) pushRange(errors, 'execution.computeUnitLimit', '> 0', e.computeUnitLimit);
+  if (e.computeUnitLimit !== undefined) {
+    if (!Number.isInteger(e.computeUnitLimit)) pushType(errors, 'execution.computeUnitLimit', 'integer | undefined', e.computeUnitLimit);
+    else if (e.computeUnitLimit <= 0) pushRange(errors, 'execution.computeUnitLimit', '> 0', e.computeUnitLimit);
+  }
 
-  if (!Number.isInteger(e.computeUnitPriceMicroLamports)) pushType(errors, 'execution.computeUnitPriceMicroLamports', 'integer', e.computeUnitPriceMicroLamports);
-  else if (e.computeUnitPriceMicroLamports < 0) pushRange(errors, 'execution.computeUnitPriceMicroLamports', '>= 0', e.computeUnitPriceMicroLamports);
+  if (e.computeUnitPriceMicroLamports !== undefined) {
+    if (!Number.isInteger(e.computeUnitPriceMicroLamports)) pushType(errors, 'execution.computeUnitPriceMicroLamports', 'integer | undefined', e.computeUnitPriceMicroLamports);
+    else if (e.computeUnitPriceMicroLamports < 0) pushRange(errors, 'execution.computeUnitPriceMicroLamports', '>= 0', e.computeUnitPriceMicroLamports);
+  }
+
+  // If one compute budget value is set, require the other so fee estimation + tx shaping stay aligned.
+  const computeLimitSet = e.computeUnitLimit !== undefined;
+  const computePriceSet = e.computeUnitPriceMicroLamports !== undefined;
+  if (computeLimitSet !== computePriceSet) {
+    pushRange(
+      errors,
+      'execution.computeUnitLimit',
+      'computeUnitLimit and computeUnitPriceMicroLamports must both be set or both be unset',
+      { computeUnitLimit: e.computeUnitLimit, computeUnitPriceMicroLamports: e.computeUnitPriceMicroLamports },
+    );
+  }
 
   if (!Number.isInteger(e.txFeeLamports)) pushType(errors, 'execution.txFeeLamports', 'integer', e.txFeeLamports);
   else if (e.txFeeLamports < 0) pushRange(errors, 'execution.txFeeLamports', '>= 0', e.txFeeLamports);
@@ -332,22 +420,31 @@ export function validateConfig(input: unknown): ValidateConfigResult {
   if (!Number.isInteger(e.feeBufferLamports)) pushType(errors, 'execution.feeBufferLamports', 'integer', e.feeBufferLamports);
   else if (e.feeBufferLamports < 0) pushRange(errors, 'execution.feeBufferLamports', '>= 0', e.feeBufferLamports);
 
-  const r = normalized.value.reliability;
-  if (!Number.isInteger(r.fetchMaxAttempts)) pushType(errors, 'reliability.fetchMaxAttempts', 'integer', r.fetchMaxAttempts);
-  else if (r.fetchMaxAttempts <= 0 || r.fetchMaxAttempts > 10) pushRange(errors, 'reliability.fetchMaxAttempts', '1..10', r.fetchMaxAttempts);
+  if (!Number.isInteger(e.maxRetries)) pushType(errors, 'execution.maxRetries', 'integer', e.maxRetries);
+  else if (e.maxRetries < 1 || e.maxRetries > 10) pushRange(errors, 'execution.maxRetries', '1..10', e.maxRetries);
 
-  if (!Array.isArray(r.retryBackoffMs)) {
-    pushType(errors, 'reliability.retryBackoffMs', 'number[]', r.retryBackoffMs);
+  if (!Array.isArray(e.retryBackoffMs)) {
+    pushType(errors, 'execution.retryBackoffMs', 'number[]', e.retryBackoffMs);
   } else {
-    const msg = validateBackoffSchedule(r.retryBackoffMs);
-    if (msg) pushBackoff(errors, 'reliability.retryBackoffMs', msg, r.retryBackoffMs);
+    const msg = validateBackoffSchedule(e.retryBackoffMs);
+    if (msg) pushBackoff(errors, 'execution.retryBackoffMs', msg, e.retryBackoffMs);
   }
 
-  if (!Number.isInteger(r.maxSlotDrift)) pushType(errors, 'reliability.maxSlotDrift', 'integer', r.maxSlotDrift);
-  else if (r.maxSlotDrift < 0 || r.maxSlotDrift > 128) pushRange(errors, 'reliability.maxSlotDrift', '0..128', r.maxSlotDrift);
+  if (!Number.isInteger(e.receiptPollMaxAttempts)) pushType(errors, 'execution.receiptPollMaxAttempts', 'integer', e.receiptPollMaxAttempts);
+  else if (e.receiptPollMaxAttempts < 1 || e.receiptPollMaxAttempts > 100) {
+    pushRange(errors, 'execution.receiptPollMaxAttempts', '1..100', e.receiptPollMaxAttempts);
+  }
 
-  if (!Number.isInteger(r.sendMaxAttempts)) pushType(errors, 'reliability.sendMaxAttempts', 'integer', r.sendMaxAttempts);
-  else if (r.sendMaxAttempts < 1 || r.sendMaxAttempts > 3) pushRange(errors, 'reliability.sendMaxAttempts', '1..3', r.sendMaxAttempts);
+  if (!Number.isInteger(e.receiptPollIntervalMs)) pushType(errors, 'execution.receiptPollIntervalMs', 'integer', e.receiptPollIntervalMs);
+  else if (e.receiptPollIntervalMs < 1 || e.receiptPollIntervalMs > 60_000) {
+    pushRange(errors, 'execution.receiptPollIntervalMs', '1..60000', e.receiptPollIntervalMs);
+  }
+
+  if (!Number.isInteger(e.minSolLamportsToSwap)) pushType(errors, 'execution.minSolLamportsToSwap', 'integer', e.minSolLamportsToSwap);
+  else if (e.minSolLamportsToSwap < 0) pushRange(errors, 'execution.minSolLamportsToSwap', '>= 0', e.minSolLamportsToSwap);
+
+  if (!Number.isInteger(e.minUsdcMinorToSwap)) pushType(errors, 'execution.minUsdcMinorToSwap', 'integer', e.minUsdcMinorToSwap);
+  else if (e.minUsdcMinorToSwap < 0) pushRange(errors, 'execution.minUsdcMinorToSwap', '>= 0', e.minUsdcMinorToSwap);
 
   if (errors.length) return { ok: false, errors };
   return normalized;

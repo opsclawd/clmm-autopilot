@@ -1,7 +1,6 @@
 import { evaluateRangeBreak, type AutopilotConfig, type PolicyState, type Sample, unixDaysFromUnixMs } from '@clmm-autopilot/core';
 import { Connection, PublicKey, VersionedTransaction, type AddressLookupTableAccount } from '@solana/web3.js';
 import { buildExitTransaction, type ExitDirection, type ExitQuote } from './executionBuilder';
-import { loadSolanaConfig } from './config';
 import { computeExecutionRequirements } from './requirements';
 import { fetchJupiterSwapIxs } from './jupiter';
 import { normalizeSolanaError } from './errors';
@@ -49,8 +48,7 @@ export type RefreshResult = {
 };
 
 export async function refreshPositionDecision(params: RefreshParams): Promise<RefreshResult> {
-  const cluster = loadSolanaConfig(process.env).cluster;
-  const snapshot = await loadPositionSnapshot(params.connection, params.position, cluster);
+  const snapshot = await loadPositionSnapshot(params.connection, params.position, params.config.cluster);
   const decision = evaluateRangeBreak(
     params.samples,
     { lowerTickIndex: snapshot.lowerTickIndex, upperTickIndex: snapshot.upperTickIndex },
@@ -77,7 +75,7 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
       nextState: decision.nextState,
     },
     quote: {
-      slippageBpsCap: params.config.execution.maxSlippageBps,
+      slippageBpsCap: params.config.execution.slippageBpsCap,
       expectedMinOut: params.expectedMinOut,
       quoteAgeMs: params.quoteAgeMs,
     },
@@ -143,18 +141,22 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
 
   try {
-    const cluster = loadSolanaConfig(process.env).cluster;
-    const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, params.config.reliability);
+    const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, params.config.execution);
     params.logger?.notify?.('snapshot fetched', { position: params.position.toBase58() });
 
     if (refreshed.decision.decision === 'HOLD') {
       return { status: 'HOLD', refresh: refreshed };
     }
 
-    let snapshot = await withBoundedRetry(() => loadPositionSnapshot(params.connection, params.position, cluster), sleep, params.config.reliability);
+    let snapshot = await withBoundedRetry(
+      () => loadPositionSnapshot(params.connection, params.position, params.config.cluster),
+      sleep,
+      params.config.execution,
+    );
     let quote = params.quote;
     let quoteContext = params.quoteContext;
-    const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, params.config.reliability);
+
+    const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, params.config.execution);
 
     const rebuildCheck = shouldRebuild(
       {
@@ -163,7 +165,13 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         quoteTickIndex: quoteContext?.quoteTickIndex,
       },
       snapshot,
-      { nowUnixMs: nowUnixMs(), latestSlot, quoteFreshnessMs: params.config.execution.quoteFreshnessMs, maxSlotDrift: params.config.reliability.maxSlotDrift },
+      {
+        nowUnixMs: nowUnixMs(),
+        latestSlot,
+        quoteFreshnessMs: params.config.execution.quoteFreshnessMs,
+        quoteFreshnessSlots: params.config.execution.quoteFreshnessSlots,
+        rebuildTickDelta: params.config.execution.rebuildTickDelta,
+      },
     );
 
     if (rebuildCheck.rebuild) {
@@ -175,11 +183,26 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           errorMessage: `Rebuild required: ${rebuildCheck.reasonCode}`,
         };
       }
-      const rebuilt = await withBoundedRetry(() => params.rebuildSnapshotAndQuote!(), sleep, params.config.reliability);
+      const rebuilt = await withBoundedRetry(() => params.rebuildSnapshotAndQuote!(), sleep, params.config.execution);
       snapshot = rebuilt.snapshot;
       quote = rebuilt.quote;
       quoteContext = rebuilt.quoteContext;
       params.logger?.notify?.('quote rebuilt', { reasonCode: rebuildCheck.reasonCode ?? 'QUOTE_STALE' });
+    }
+
+    // Dust thresholds (avoid building/simulating/sending meaningless swaps).
+    const isSolInput = quote.inputMint.toBase58() === 'So11111111111111111111111111111111111111112';
+    if (isSolInput && quote.inAmount < BigInt(params.config.execution.minSolLamportsToSwap)) {
+      return {
+        status: 'HOLD',
+        refresh: refreshed,
+      };
+    }
+    if (!isSolInput && quote.inAmount < BigInt(params.config.execution.minUsdcMinorToSwap)) {
+      return {
+        status: 'HOLD',
+        refresh: refreshed,
+      };
     }
 
     const epochSourceMs = nowUnixMs();
@@ -187,7 +210,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     const [receiptPda] = deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch });
     const existingReceipt = params.checkExistingReceipt
       ? await params.checkExistingReceipt(receiptPda)
-      : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, params.config.reliability));
+      : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, params.config.execution));
     if (existingReceipt) {
       return {
         status: 'ERROR',
@@ -197,10 +220,14 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       };
     }
 
-    const availableLamports = await withBoundedRetry(() => params.connection.getBalance(params.authority), sleep, params.config.reliability);
+    const availableLamports = await withBoundedRetry(
+      () => params.connection.getBalance(params.authority),
+      sleep,
+      params.config.execution,
+    );
 
     const fetchedAtUnixMs = nowUnixMs();
-    let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, params.config.reliability);
+    let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, params.config.execution);
 
     const buildTx = async (recentBlockhash: string) => {
       const buildSwapIxs = params.buildJupiterSwapIxs ?? fetchJupiterSwapIxs;
@@ -214,19 +241,10 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         computeUnitLimit: params.config.execution.computeUnitLimit,
         computeUnitPriceMicroLamports: params.config.execution.computeUnitPriceMicroLamports,
         quote,
-        maxSlippageBps: params.config.execution.maxSlippageBps,
+        slippageBpsCap: params.config.execution.slippageBpsCap,
         quoteFreshnessMs: params.config.execution.quoteFreshnessMs,
-        maxRebuildAttempts: params.config.execution.maxRebuildAttempts,
-        rebuildWindowMs: params.config.execution.rebuildWindowMs,
         nowUnixMs,
         receiptEpochUnixMs: epochSourceMs,
-        rebuildSnapshotAndQuote: async () => {
-          const r = params.rebuildSnapshotAndQuote ? await params.rebuildSnapshotAndQuote() : { snapshot, quote, quoteContext };
-          snapshot = r.snapshot;
-          quote = r.quote;
-          quoteContext = r.quoteContext;
-          return { snapshot: r.snapshot, quote: r.quote };
-        },
         availableLamports,
         requirements: await computeExecutionRequirements({
           connection: params.connection,
@@ -309,10 +327,10 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     );
 
     let receipt = null;
-    for (let i = 0; i < 6; i += 1) {
+    for (let i = 0; i < params.config.execution.receiptPollMaxAttempts; i += 1) {
       receipt = await fetchReceiptByPda(params.connection, receiptPda);
       if (receipt) break;
-      await sleep(500);
+      await sleep(params.config.execution.receiptPollIntervalMs);
     }
 
     return {

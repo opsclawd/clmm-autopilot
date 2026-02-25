@@ -23,8 +23,8 @@ export type RequirementsInput = {
   /** Expected base network fee (signature fee) strategy, in lamports. */
   txFeeLamports: number;
   /** Priority fee strategy based on compute budget settings. */
-  computeUnitLimit: number;
-  computeUnitPriceMicroLamports: number;
+  computeUnitLimit?: number;
+  computeUnitPriceMicroLamports?: number;
   /** Additional lamports reserved as a safety buffer. */
   bufferLamports: number;
 };
@@ -71,7 +71,9 @@ export async function computeExecutionRequirements(input: RequirementsInput): Pr
   const tokenAccountRent = await input.connection.getMinimumBalanceForRentExemption(AccountLayout.span);
   const rentLamports = tokenAccountRent * missingAtas;
 
-  const priorityFeeLamports = Math.ceil((input.computeUnitLimit * input.computeUnitPriceMicroLamports) / 1_000_000);
+  const computeUnitLimit = input.computeUnitLimit ?? 0;
+  const computeUnitPriceMicroLamports = input.computeUnitPriceMicroLamports ?? 0;
+  const priorityFeeLamports = Math.ceil((computeUnitLimit * computeUnitPriceMicroLamports) / 1_000_000);
 
   const totalRequiredLamports = rentLamports + input.txFeeLamports + priorityFeeLamports + input.bufferLamports;
 

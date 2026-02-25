@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   PublicKey,
   TransactionInstruction,
@@ -68,13 +68,10 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     computeUnitLimit: 600_000,
     computeUnitPriceMicroLamports: 10_000,
     quote: defaultQuote,
-    maxSlippageBps: 50,
+    slippageBpsCap: 50,
     quoteFreshnessMs: 2_000,
-    maxRebuildAttempts: 3,
-    rebuildWindowMs: 15_000,
     nowUnixMs: () => epochNowMs,
     receiptEpochUnixMs: epochNowMs,
-    rebuildSnapshotAndQuote: async () => ({ snapshot: baseSnapshot, quote: { ...defaultQuote, quotedAtUnixMs: 1_700_000_000_200 } }),
     availableLamports: 5_000_000,
     requirements: {
       rentLamports: 2_039_280,
@@ -113,7 +110,7 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     tickCurrent: baseSnapshot.currentTickIndex,
     lowerTickIndex: baseSnapshot.lowerTickIndex,
     upperTickIndex: baseSnapshot.upperTickIndex,
-    slippageBpsCap: merged.maxSlippageBps,
+    slippageBpsCap: merged.slippageBpsCap,
     quoteInputMint: merged.quote.inputMint.toBase58(),
     quoteOutputMint: merged.quote.outputMint.toBase58(),
     quoteInAmount: merged.quote.inAmount,
@@ -173,7 +170,7 @@ describe('buildExitTransaction', () => {
       tickCurrent: baseSnapshot.currentTickIndex,
       lowerTickIndex: baseSnapshot.lowerTickIndex,
       upperTickIndex: baseSnapshot.upperTickIndex,
-      slippageBpsCap: cfg.maxSlippageBps,
+      slippageBpsCap: cfg.slippageBpsCap,
       quoteInputMint: cfg.quote.inputMint.toBase58(),
       quoteOutputMint: cfg.quote.outputMint.toBase58(),
       quoteInAmount: cfg.quote.inAmount,
@@ -182,27 +179,14 @@ describe('buildExitTransaction', () => {
     }) }))).rejects.toMatchObject({ code: 'MISSING_ATTESTATION_HASH' });
   });
 
-  it('stale rebuild loop stops on configured rebuild window', async () => {
-    let now = 1_700_000_000_500;
-    const nowFn = () => {
-      now += 4_000;
-      return now;
-    };
+  it('stale quote fails fast (builder does not rebuild)', async () => {
+    const cfg = buildConfig({
+      quoteFreshnessMs: 2_000,
+      nowUnixMs: () => 1_700_000_000_500,
+      quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_990_000 },
+    });
 
-    const rebuildSpy = vi.fn(async () => ({
-      snapshot: baseSnapshot,
-      quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_900_000 },
-    }));
-
-    await expect(
-      buildExitTransaction(baseSnapshot, 'DOWN', buildConfig({
-        nowUnixMs: nowFn,
-        quote: { ...buildConfig().quote, quotedAtUnixMs: 1_699_999_900_000 },
-        rebuildSnapshotAndQuote: rebuildSpy,
-        maxRebuildAttempts: 99,
-      })),
-    ).rejects.toMatchObject({ code: 'QUOTE_STALE' });
-    expect(rebuildSpy).toHaveBeenCalled();
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', cfg)).rejects.toMatchObject({ code: 'QUOTE_STALE' });
   });
 
   it('simulate-then-send gate cannot be bypassed', async () => {

@@ -7,7 +7,7 @@ describe('reliability', () => {
     const out = shouldRebuild(
       { quotedAtUnixMs: 1_000, quotedAtSlot: 10, quoteTickIndex: 100 },
       { currentTickIndex: 100, lowerTickIndex: 90, upperTickIndex: 110, tickSpacing: 1 },
-      { nowUnixMs: 25_000, latestSlot: 19, quoteFreshnessMs: 20_000, maxSlotDrift: 8 },
+      { nowUnixMs: 25_000, latestSlot: 19, quoteFreshnessMs: 20_000, quoteFreshnessSlots: 8 },
     );
 
     expect(out.rebuild).toBe(true);
@@ -18,17 +18,17 @@ describe('reliability', () => {
     const out = shouldRebuild(
       { quotedAtUnixMs: 10_000, quotedAtSlot: 10, quoteTickIndex: 100 },
       { currentTickIndex: 50, lowerTickIndex: 90, upperTickIndex: 110, tickSpacing: 1 },
-      { nowUnixMs: 11_000, latestSlot: 11, quoteFreshnessMs: 20_000, maxSlotDrift: 8 },
+      { nowUnixMs: 11_000, latestSlot: 11, quoteFreshnessMs: 20_000, quoteFreshnessSlots: 8 },
     );
     expect(out.rebuild).toBe(true);
     expect(out.reasonCode).toBe('BOUND_CROSSED');
   });
 
-  it('tick move >= tickSpacing triggers rebuild', () => {
+  it('tick move >= tickSpacing triggers rebuild by default', () => {
     const out = shouldRebuild(
       { quotedAtUnixMs: 10_000, quotedAtSlot: 10, quoteTickIndex: 100 },
       { currentTickIndex: 101, lowerTickIndex: 90, upperTickIndex: 110, tickSpacing: 1 },
-      { nowUnixMs: 11_000, latestSlot: 11, quoteFreshnessMs: 20_000, maxSlotDrift: 8 },
+      { nowUnixMs: 11_000, latestSlot: 11, quoteFreshnessMs: 20_000, quoteFreshnessSlots: 8 },
     );
     expect(out.rebuild).toBe(true);
     expect(out.reasonCode).toBe('TICK_MOVED');
@@ -58,7 +58,7 @@ describe('reliability', () => {
     });
     const sleep = vi.fn(async () => {});
 
-    await expect(withBoundedRetry(fn, sleep, DEFAULT_CONFIG.reliability)).rejects.toMatchObject({ code: 'RPC_TRANSIENT' });
+    await expect(withBoundedRetry(fn, sleep, DEFAULT_CONFIG.execution)).rejects.toMatchObject({ code: 'RPC_TRANSIENT' });
     expect(fn).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenNthCalledWith(1, 250);

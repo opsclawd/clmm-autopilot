@@ -55,13 +55,13 @@ describe('ui-state', () => {
     const model = buildUiModel({
       config: {
         policy: { cadenceMs: 2000, requiredConsecutive: 3, cooldownMs: 90000 },
-        execution: { maxSlippageBps: 50, quoteFreshnessMs: 20000 },
+        execution: { slippageBpsCap: 50, quoteFreshnessMs: 20000 },
       },
     });
     expect(model.config?.policy.cadenceMs).toBe(2000);
     expect(model.config?.policy.requiredConsecutive).toBe(3);
     expect(model.config?.policy.cooldownMs).toBe(90000);
-    expect(model.config?.execution.maxSlippageBps).toBe(50);
+    expect(model.config?.execution.slippageBpsCap).toBe(50);
     expect(model.config?.execution.quoteFreshnessMs).toBe(20000);
   });
 
