@@ -124,6 +124,9 @@ export default function Home() {
           Disconnect
         </button>
       </div>
+      <div className="text-sm text-gray-700">
+        wallet: {wallet ? `${wallet.slice(0, 4)}...${wallet.slice(-4)} (${wallet})` : 'not connected'}
+      </div>
 
       <input
         className="border rounded px-3 py-2 w-full"
@@ -320,6 +323,7 @@ export default function Home() {
         <div>current tick: {ui.snapshot?.currentTick ?? 'N/A'}</div>
         <div>lower tick: {ui.snapshot?.lowerTick ?? 'N/A'}</div>
         <div>upper tick: {ui.snapshot?.upperTick ?? 'N/A'}</div>
+        <div>pool in range: {ui.snapshot?.inRange === undefined ? 'N/A' : ui.snapshot.inRange ? 'yes' : 'no'}</div>
         <div>decision: {ui.decision?.decision ?? 'N/A'}</div>
         <div>reasonCode: {ui.decision?.reasonCode ?? 'N/A'}</div>
         <div>debounce progress: {ui.decision ? `${ui.decision.samplesUsed}/${ui.decision.threshold}` : 'N/A'}</div>

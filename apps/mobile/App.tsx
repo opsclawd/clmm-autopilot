@@ -100,6 +100,9 @@ export default function App() {
           title={wallet ? 'Wallet Connected' : 'Connect Wallet'}
           onPress={async () => setWallet((await runMwaSignMessageSmoke()).publicKey)}
         />
+        <Text style={{ fontSize: 12, color: '#374151' }}>
+          wallet: {wallet ? `${wallet.slice(0, 4)}...${wallet.slice(-4)} (${wallet})` : 'not connected'}
+        </Text>
 
         <TextInput
           placeholder="Orca position account"
@@ -282,6 +285,7 @@ export default function App() {
         <Text>current tick: {ui.snapshot?.currentTick ?? 'N/A'}</Text>
         <Text>lower tick: {ui.snapshot?.lowerTick ?? 'N/A'}</Text>
         <Text>upper tick: {ui.snapshot?.upperTick ?? 'N/A'}</Text>
+        <Text>pool in range: {ui.snapshot?.inRange === undefined ? 'N/A' : ui.snapshot.inRange ? 'yes' : 'no'}</Text>
         <Text>decision: {ui.decision?.decision ?? 'N/A'}</Text>
         <Text>reasonCode: {ui.decision?.reasonCode ?? 'N/A'}</Text>
         <Text>debounce progress: {ui.decision ? `${ui.decision.samplesUsed}/${ui.decision.threshold}` : 'N/A'}</Text>
