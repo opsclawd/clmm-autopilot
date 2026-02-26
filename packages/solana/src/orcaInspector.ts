@@ -5,6 +5,8 @@ import {
   decreaseLiquidityQuoteByLiquidityWithParams,
   NO_TOKEN_EXTENSION_CONTEXT,
   PDAUtil,
+  ParsablePosition,
+  ParsableWhirlpool,
   PriceMath,
 } from '@orca-so/whirlpools-sdk';
 import { PublicKey, type AccountInfo, type Connection } from '@solana/web3.js';
@@ -130,6 +132,23 @@ function parsePositionAccount(data: Buffer): ParsedPosition {
   };
 }
 
+function parsePositionAccountFromInfo(
+  address: PublicKey,
+  info: AccountInfo<Buffer>,
+): ParsedPosition {
+  const parsed = ParsablePosition.parse(address, info);
+  if (parsed) {
+    return {
+      whirlpool: parsed.whirlpool,
+      positionMint: parsed.positionMint,
+      liquidity: BigInt(parsed.liquidity.toString()),
+      lowerTickIndex: parsed.tickLowerIndex,
+      upperTickIndex: parsed.tickUpperIndex,
+    };
+  }
+  return parsePositionAccount(info.data);
+}
+
 function parseWhirlpoolAccount(data: Buffer): ParsedWhirlpool {
   if (data.length < 220) throw makeError('DATA_UNAVAILABLE', 'whirlpool account too small');
   return {
@@ -140,6 +159,24 @@ function parseWhirlpoolAccount(data: Buffer): ParsedWhirlpool {
     tokenMintB: readPubkey(data, 181),
     tokenVaultB: readPubkey(data, 213),
   };
+}
+
+function parseWhirlpoolAccountFromInfo(
+  address: PublicKey,
+  info: AccountInfo<Buffer>,
+): ParsedWhirlpool {
+  const parsed = ParsableWhirlpool.parse(address, info);
+  if (parsed) {
+    return {
+      tickSpacing: parsed.tickSpacing,
+      currentTickIndex: parsed.tickCurrentIndex,
+      tokenMintA: parsed.tokenMintA,
+      tokenMintB: parsed.tokenMintB,
+      tokenVaultA: parsed.tokenVaultA,
+      tokenVaultB: parsed.tokenVaultB,
+    };
+  }
+  return parseWhirlpoolAccount(info.data);
 }
 
 function parseMintMeta(info: AccountInfo<Buffer> | null): MintMeta {
@@ -226,11 +263,11 @@ export async function loadPositionSnapshot(
     const positionInfo = await connection.getAccountInfo(positionPubkey, 'confirmed');
     if (!positionInfo) throw makeError('INVALID_POSITION', 'position account not found');
 
-    const position = parsePositionAccount(positionInfo.data);
+    const position = parsePositionAccountFromInfo(positionPubkey, positionInfo);
 
     const whirlpoolInfo = await connection.getAccountInfo(position.whirlpool, 'confirmed');
     if (!whirlpoolInfo) throw makeError('DATA_UNAVAILABLE', 'whirlpool account not found');
-    const whirlpool = parseWhirlpoolAccount(whirlpoolInfo.data);
+    const whirlpool = parseWhirlpoolAccountFromInfo(position.whirlpool, whirlpoolInfo);
 
     const cluster = clusterOverride ?? loadSolanaConfig(process.env).cluster;
     assertSolUsdcPair(whirlpool.tokenMintA.toBase58(), whirlpool.tokenMintB.toBase58(), cluster);
