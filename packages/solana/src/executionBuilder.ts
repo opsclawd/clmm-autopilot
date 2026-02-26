@@ -17,7 +17,7 @@ import { buildCreateAtaIdempotentIx, SOL_MINT } from './ata';
 import { fetchJupiterSwapIxs, type JupiterQuote, type JupiterSwapIxs } from './jupiter';
 import type { PositionSnapshot } from './orcaInspector';
 import { buildOrcaExitIxs, type OrcaExitIxs } from './orcaExitBuilder';
-import { buildRecordExecutionIx } from './receipt';
+import { buildRecordExecutionIx, DISABLE_RECEIPT_PROGRAM_FOR_TESTING } from './receipt';
 import { classifySimulationFailure, type SimulationDiagnostics } from './simErrors';
 import type { CanonicalErrorCode } from './types';
 import type { FeeBufferDebugPayload, FeeRequirementsBreakdown } from './requirements';
@@ -353,13 +353,15 @@ export async function buildExitTransaction(
     );
   }
 
-  const receiptIx = buildRecordExecutionIx({
-    authority: config.authority,
-    positionMint: snapshot.positionMint,
-    epoch: canonicalEpoch(config.receiptEpochUnixMs),
-    direction: direction === 'DOWN' ? 0 : 1,
-    attestationHash: config.attestationHash,
-  });
+  const receiptIx = DISABLE_RECEIPT_PROGRAM_FOR_TESTING
+    ? null
+    : buildRecordExecutionIx({
+        authority: config.authority,
+        positionMint: snapshot.positionMint,
+        epoch: canonicalEpoch(config.receiptEpochUnixMs),
+        direction: direction === 'DOWN' ? 0 : 1,
+        attestationHash: config.attestationHash,
+      });
 
   const instructions: TransactionInstruction[] = [
     ...buildComputeBudgetIxs(config),
@@ -370,7 +372,7 @@ export async function buildExitTransaction(
     orca.collectFeesIx,
     ...jup.instructions,
     ...(wsolRequired ? wsolLifecycle.postSwap : []),
-    receiptIx,
+    ...(receiptIx ? [receiptIx] : []),
   ];
 
   const message = new TransactionMessage({

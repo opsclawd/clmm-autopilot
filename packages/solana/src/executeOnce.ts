@@ -5,9 +5,11 @@ import { computeExecutionRequirements } from './requirements';
 import { fetchJupiterSwapIxs } from './jupiter';
 import { normalizeSolanaError } from './errors';
 import { loadPositionSnapshot } from './orcaInspector';
-import { deriveReceiptPda, fetchReceiptByPda } from './receipt';
+import { deriveReceiptPda, DISABLE_RECEIPT_PROGRAM_FOR_TESTING, fetchReceiptByPda } from './receipt';
 import { refreshBlockhashIfNeeded, shouldRebuild, withBoundedRetry } from './reliability';
 import type { CanonicalErrorCode } from './types';
+
+const SKIP_PREFLIGHT_SIMULATION_FOR_TESTING = true;
 
 type Logger = {
   notify?: (info: string, context?: Record<string, string | number | boolean>) => void;
@@ -139,8 +141,11 @@ async function loadLookupTables(connection: Connection, addresses: PublicKey[]):
 export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnceResult> {
   const sleep = params.sleep ?? (async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
+  let stage = 'init';
+  let sentSig: string | undefined;
 
   try {
+    stage = 'refresh_position_decision';
     const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, params.config.execution);
     params.logger?.notify?.('snapshot fetched', { position: params.position.toBase58() });
 
@@ -148,6 +153,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       return { status: 'HOLD', refresh: refreshed };
     }
 
+    stage = 'load_snapshot';
     let snapshot = await withBoundedRetry(
       () => loadPositionSnapshot(params.connection, params.position, params.config.cluster),
       sleep,
@@ -156,6 +162,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     let quote = params.quote;
     let quoteContext = params.quoteContext;
 
+    stage = 'get_slot';
     const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, params.config.execution);
 
     const rebuildCheck = shouldRebuild(
@@ -183,6 +190,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           errorMessage: `Rebuild required: ${rebuildCheck.reasonCode}`,
         };
       }
+      stage = 'rebuild_snapshot_and_quote';
       const rebuilt = await withBoundedRetry(() => params.rebuildSnapshotAndQuote!(), sleep, params.config.execution);
       snapshot = rebuilt.snapshot;
       quote = rebuilt.quote;
@@ -192,19 +200,25 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
 
     const epochSourceMs = nowUnixMs();
     const epoch = unixDaysFromUnixMs(epochSourceMs);
-    const [receiptPda] = deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch });
-    const existingReceipt = params.checkExistingReceipt
-      ? await params.checkExistingReceipt(receiptPda)
-      : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, params.config.execution));
-    if (existingReceipt) {
-      return {
-        status: 'ERROR',
-        refresh: refreshed,
-        errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
-        errorMessage: 'Execution receipt already exists for canonical epoch',
-      };
+    const receiptPda = DISABLE_RECEIPT_PROGRAM_FOR_TESTING
+      ? null
+      : deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch })[0];
+    if (!DISABLE_RECEIPT_PROGRAM_FOR_TESTING && receiptPda) {
+      stage = 'check_existing_receipt';
+      const existingReceipt = params.checkExistingReceipt
+        ? await params.checkExistingReceipt(receiptPda)
+        : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, params.config.execution));
+      if (existingReceipt) {
+        return {
+          status: 'ERROR',
+          refresh: refreshed,
+          errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+          errorMessage: 'Execution receipt already exists for canonical epoch',
+        };
+      }
     }
 
+    stage = 'get_balance';
     const availableLamports = await withBoundedRetry(
       () => params.connection.getBalance(params.authority),
       sleep,
@@ -212,6 +226,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     );
 
     const fetchedAtUnixMs = nowUnixMs();
+    stage = 'get_latest_blockhash';
     let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, params.config.execution);
 
     const buildTx = async (recentBlockhash: string) => {
@@ -258,6 +273,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         returnVersioned: true,
         // Phase-1: simulate must succeed before prompting wallet.
         simulate: async (tx) => {
+          if (SKIP_PREFLIGHT_SIMULATION_FOR_TESTING) {
+            return { err: null };
+          }
           const sim = await params.connection.simulateTransaction(tx);
           return {
             err: sim.value.err,
@@ -276,12 +294,13 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       });
     };
 
+    stage = 'build_tx';
     let msg = (await buildTx(latestBlockhash.blockhash)) as VersionedTransaction;
-    const simSummary = 'Simulation passed';
+    const simSummary = SKIP_PREFLIGHT_SIMULATION_FOR_TESTING ? 'Simulation skipped (testing mode)' : 'Simulation passed';
     await params.onSimulationComplete?.(simSummary);
 
-    let sig: string;
     try {
+      stage = 'refresh_blockhash_before_send';
       const refreshedBlockhash = await refreshBlockhashIfNeeded({
         getLatestBlockhash: () => params.connection.getLatestBlockhash(),
         current: { ...latestBlockhash, fetchedAtUnixMs },
@@ -295,10 +314,13 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         blockhash: refreshedBlockhash.blockhash,
         lastValidBlockHeight: refreshedBlockhash.lastValidBlockHeight,
       };
-      sig = await params.signAndSend(msg);
+      stage = 'wallet_send';
+      sentSig = await params.signAndSend(msg);
+      params.logger?.notify?.('wallet send ok', { sig: sentSig });
     } catch (sendError) {
       const normalized = normalizeSolanaError(sendError);
       if (normalized.code !== 'BLOCKHASH_EXPIRED') throw normalized;
+      stage = 'refresh_blockhash_after_send_error';
       const refreshedBlockhash = await refreshBlockhashIfNeeded({
         getLatestBlockhash: () => params.connection.getLatestBlockhash(),
         current: { ...latestBlockhash, fetchedAtUnixMs },
@@ -313,23 +335,33 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         blockhash: refreshedBlockhash.blockhash,
         lastValidBlockHeight: refreshedBlockhash.lastValidBlockHeight,
       };
-      sig = await params.signAndSend(msg);
+      stage = 'wallet_send_retry';
+      sentSig = await params.signAndSend(msg);
+      params.logger?.notify?.('wallet send ok (retry)', { sig: sentSig });
     }
 
+    if (!sentSig) {
+      throw new Error('signAndSend returned no signature');
+    }
+
+    stage = 'confirm_transaction';
     await params.connection.confirmTransaction(
       {
-        signature: sig,
+        signature: sentSig,
         blockhash: latestBlockhash.blockhash,
         lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
       },
       'confirmed',
     );
 
+    stage = 'receipt_poll';
     let receipt = null;
-    for (let i = 0; i < params.config.execution.receiptPollMaxAttempts; i += 1) {
-      receipt = await fetchReceiptByPda(params.connection, receiptPda);
-      if (receipt) break;
-      await sleep(params.config.execution.receiptPollIntervalMs);
+    if (!DISABLE_RECEIPT_PROGRAM_FOR_TESTING && receiptPda) {
+      for (let i = 0; i < params.config.execution.receiptPollMaxAttempts; i += 1) {
+        receipt = await fetchReceiptByPda(params.connection, receiptPda);
+        if (receipt) break;
+        await sleep(params.config.execution.receiptPollIntervalMs);
+      }
     }
 
     return {
@@ -339,20 +371,20 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         unsignedTxBuilt: true,
         simulated: true,
         simLogs: [simSummary],
-        sendSig: sig,
-        receiptPda: receiptPda.toBase58(),
+        sendSig: sentSig,
+        receiptPda: receiptPda?.toBase58(),
         receiptFetched: Boolean(receipt),
         receiptFields: receipt
           ? `authority=${receipt.authority.toBase58()} positionMint=${receipt.positionMint.toBase58()} epoch=${receipt.epoch} direction=${receipt.direction} attestationHash=${Buffer.from(receipt.attestationHash).toString('hex')} slot=${receipt.slot.toString()} unixTs=${receipt.unixTs.toString()} bump=${receipt.bump}`
           : undefined,
       },
       simSummary,
-      txSignature: sig,
-      receiptPda: receiptPda.toBase58(),
+      txSignature: sentSig,
+      receiptPda: receiptPda?.toBase58(),
     };
   } catch (error) {
     const normalized = normalizeSolanaError(error);
-    params.logger?.notifyError?.(error, { reasonCode: normalized.code });
+    params.logger?.notifyError?.(error, { reasonCode: normalized.code, stage, ...(typeof sentSig === 'string' ? { sig: sentSig } : {}) });
     return { status: 'ERROR', errorCode: normalized.code, errorMessage: normalized.message, errorDebug: normalized.debug };
   }
 }

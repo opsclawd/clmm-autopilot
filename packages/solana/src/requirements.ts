@@ -14,7 +14,7 @@ export type FeeRequirementsBreakdown = {
 
 export type RequirementsInput = {
   connection: Pick<Connection, 'getAccountInfo' | 'getMinimumBalanceForRentExemption'>;
-  snapshot: Pick<PositionSnapshot, 'positionMint' | 'tokenMintA' | 'tokenMintB' | 'tokenProgramA' | 'tokenProgramB'>;
+  snapshot: Pick<PositionSnapshot, 'positionMint' | 'positionTokenProgram' | 'tokenMintA' | 'tokenMintB' | 'tokenProgramA' | 'tokenProgramB'>;
   quote: { inputMint: PublicKey; outputMint: PublicKey };
 
   authority: PublicKey;
@@ -51,7 +51,7 @@ export async function computeExecutionRequirements(input: RequirementsInput): Pr
   };
 
   // Orca exit always needs these token accounts (position token + the pool mints A/B).
-  addAta(input.snapshot.positionMint);
+  addAta(input.snapshot.positionMint, input.snapshot.positionTokenProgram ?? TOKEN_PROGRAM_ID);
   addAta(input.snapshot.tokenMintA, input.snapshot.tokenProgramA);
   addAta(input.snapshot.tokenMintB, input.snapshot.tokenProgramB);
 

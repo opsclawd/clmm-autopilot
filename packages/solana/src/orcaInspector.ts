@@ -9,14 +9,15 @@ import {
   ParsableWhirlpool,
   PriceMath,
 } from '@orca-so/whirlpools-sdk';
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { PublicKey, type AccountInfo, type Connection } from '@solana/web3.js';
 import { normalizeSolanaError } from './errors';
 import { loadSolanaConfig } from './config';
 import type { CanonicalErrorCode, NormalizedError } from './types';
 
 const ORCA_WHIRLPOOL_PROGRAM_ID = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
-const TOKEN_PROGRAM_V1 = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
-const TOKEN_PROGRAM_2022 = new PublicKey('TokenzQdBNbLqP5VEhdkA6Ww2c47QhN7f6vYfP2D4W3');
+const TOKEN_PROGRAM_V1 = TOKEN_PROGRAM_ID;
+const TOKEN_PROGRAM_2022 = TOKEN_2022_PROGRAM_ID;
 
 export type RemovePreviewReasonCode = 'QUOTE_UNAVAILABLE' | 'DATA_UNAVAILABLE';
 
@@ -32,6 +33,7 @@ export type PositionSnapshot = {
   whirlpool: PublicKey;
   position: PublicKey;
   positionMint: PublicKey;
+  positionTokenProgram?: PublicKey;
   currentTickIndex: number;
   lowerTickIndex: number;
   upperTickIndex: number;
@@ -272,10 +274,12 @@ export async function loadPositionSnapshot(
     const cluster = clusterOverride ?? loadSolanaConfig(process.env).cluster;
     assertSolUsdcPair(whirlpool.tokenMintA.toBase58(), whirlpool.tokenMintB.toBase58(), cluster);
 
-    const [mintAInfo, mintBInfo] = await Promise.all([
+    const [positionMintInfo, mintAInfo, mintBInfo] = await Promise.all([
+      connection.getAccountInfo(position.positionMint, 'confirmed'),
       connection.getAccountInfo(whirlpool.tokenMintA, 'confirmed'),
       connection.getAccountInfo(whirlpool.tokenMintB, 'confirmed'),
     ]);
+    const positionMintMeta = parseMintMeta(positionMintInfo);
     const mintA = parseMintMeta(mintAInfo);
     const mintB = parseMintMeta(mintBInfo);
     const pairLabel = getCanonicalPairLabel(cluster);
@@ -305,6 +309,7 @@ export async function loadPositionSnapshot(
       whirlpool: position.whirlpool,
       position: positionPubkey,
       positionMint: position.positionMint,
+      positionTokenProgram: tokenProgramForOwner(positionMintMeta.owner),
       currentTickIndex: whirlpool.currentTickIndex,
       lowerTickIndex: position.lowerTickIndex,
       upperTickIndex: position.upperTickIndex,

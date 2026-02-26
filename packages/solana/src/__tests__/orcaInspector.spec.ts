@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import {
   __setRemovePreviewQuoteFnForTests,
@@ -6,8 +7,8 @@ import {
   loadPositionSnapshot,
 } from '../orcaInspector';
 
-const TOKEN_PROGRAM_V1 = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
-const TOKEN_PROGRAM_2022 = new PublicKey('TokenzQdBNbLqP5VEhdkA6Ww2c47QhN7f6vYfP2D4W3');
+const TOKEN_PROGRAM_V1 = TOKEN_PROGRAM_ID;
+const TOKEN_PROGRAM_2022 = TOKEN_2022_PROGRAM_ID;
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 const USDC_MINT = new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
 

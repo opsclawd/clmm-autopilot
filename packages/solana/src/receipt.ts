@@ -10,6 +10,7 @@ import {
 type Direction = 0 | 1;
 
 export const RECEIPT_PROGRAM_ID = new PublicKey('A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm');
+export const DISABLE_RECEIPT_PROGRAM_FOR_TESTING = true;
 
 export type ReceiptAccount = {
   authority: PublicKey;

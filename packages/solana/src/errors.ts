@@ -20,20 +20,42 @@ function isCanonicalCode(value: unknown): value is CanonicalErrorCode {
   return typeof value === 'string' && CANONICAL_CODES.includes(value as CanonicalErrorCode);
 }
 
+function safeJson(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function extractObjectMessage(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const e = error as {
+    message?: unknown;
+    error?: { message?: unknown; data?: unknown };
+    data?: unknown;
+    code?: unknown;
+  };
+  if (typeof e.message === 'string' && e.message.trim()) return e.message;
+  if (e.error && typeof e.error.message === 'string' && e.error.message.trim()) return e.error.message;
+  const encoded = safeJson(error);
+  return encoded && encoded !== '{}' ? encoded : undefined;
+}
+
 export function normalizeSolanaError(error: unknown): NormalizedError {
   if (typeof error === 'object' && error) {
-    const candidate = error as { code?: unknown; message?: unknown; retryable?: unknown };
+    const candidate = error as { code?: unknown; message?: unknown; retryable?: unknown; debug?: unknown };
     if (isCanonicalCode(candidate.code)) {
       return {
         code: candidate.code,
         message: typeof candidate.message === 'string' ? candidate.message : String(candidate.code),
         retryable: typeof candidate.retryable === 'boolean' ? candidate.retryable : false,
-        debug: 'debug' in candidate ? (candidate as { debug?: unknown }).debug : undefined,
+        debug: 'debug' in candidate ? candidate.debug : undefined,
       };
     }
   }
 
-  const msg = error instanceof Error ? error.message : String(error ?? 'Unknown error');
+  const msg = error instanceof Error ? error.message : (extractObjectMessage(error) ?? String(error ?? 'Unknown error'));
   const lower = msg.toLowerCase();
 
   if (
@@ -53,8 +75,8 @@ export function normalizeSolanaError(error: unknown): NormalizedError {
   }
 
   if (transientHints.some((h) => lower.includes(h))) {
-    return { code: 'RPC_TRANSIENT', message: msg, retryable: true };
+    return { code: 'RPC_TRANSIENT', message: msg, retryable: true, debug: error };
   }
 
-  return { code: 'RPC_PERMANENT', message: msg, retryable: false };
+  return { code: 'RPC_PERMANENT', message: msg, retryable: false, debug: error };
 }
