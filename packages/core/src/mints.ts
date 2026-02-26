@@ -8,7 +8,7 @@ export type CanonicalPairError = Error & {
 
 const SOL_NATIVE_MARKER = 'SOL_NATIVE';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
-const USDC_DEVNET_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+const USDC_DEVNET_MINT = 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k';
 const USDC_MAINNET_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 export type MintRegistry = {
