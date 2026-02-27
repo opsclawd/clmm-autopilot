@@ -23,6 +23,7 @@ type FetchLike = (input: string, init?: { method?: string; headers?: Record<stri
 }>;
 
 const DEFAULT_BASE = 'https://quote-api.jup.ag/v6';
+// Milestone-deferred flag: keep enabled until Jupiter integration hardening milestone.
 const JUPITER_SWAP_DISABLED_FOR_TESTING = true;
 
 function asPk(s: string): PublicKey {

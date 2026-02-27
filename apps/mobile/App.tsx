@@ -6,7 +6,7 @@ import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { createConsoleNotificationsAdapter } from '@clmm-autopilot/notifications';
 import { executeOnce, loadPositionSnapshot, refreshPositionDecision } from '@clmm-autopilot/solana';
 import { type PolicyState } from '@clmm-autopilot/core';
-import { loadAutopilotConfig } from './src/config';
+import { loadAutopilotConfig, loadMobileRuntimeConfig } from './src/config';
 import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-state';
 import { runMwaSignAndSendVersionedTransaction, runMwaSignMessageSmoke } from './src/mwaSmoke';
 
@@ -15,6 +15,7 @@ type Sample = { slot: number; unixTs: number; currentTickIndex: number };
 export default function App() {
   const notifications = useMemo(() => createConsoleNotificationsAdapter(), []);
   const loaded = useMemo(() => loadAutopilotConfig(), []);
+  const runtimeConfig = useMemo(() => loadMobileRuntimeConfig(), []);
   const autopilotConfig = loaded.config;
   const configValid = loaded.ok;
   const [wallet, setWallet] = useState('');
@@ -28,7 +29,10 @@ export default function App() {
 
   const canExecute = Boolean(configValid && wallet && positionAddress && ui.canExecute);
 
-  const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+  const connection = useMemo(
+    () => new Connection(runtimeConfig.rpcUrl, runtimeConfig.commitment),
+    [runtimeConfig.rpcUrl, runtimeConfig.commitment],
+  );
 
   useEffect(() => {
     if (monitorRef.current) {
@@ -48,7 +52,9 @@ export default function App() {
         const slot = await connection.getSlot('confirmed');
         const unixTs = Math.floor(Date.now() / 1000);
         if (cancelled) return;
-        setSamples((prev) => [...prev, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }].slice(-90));
+        setSamples((prev) =>
+          [...prev, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }].slice(-autopilotConfig.ui.sampleBufferSize),
+        );
       } catch {
         // keep monitor resilient; manual refresh surfaces explicit errors
       }
@@ -64,7 +70,7 @@ export default function App() {
         monitorRef.current = null;
       }
     };
-  }, [positionAddress, autopilotConfig.policy.cadenceMs]);
+  }, [positionAddress, autopilotConfig.policy.cadenceMs, autopilotConfig.cluster, autopilotConfig.ui.sampleBufferSize, connection]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
@@ -106,7 +112,9 @@ export default function App() {
               const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), autopilotConfig.cluster);
               const slot = await connection.getSlot('confirmed');
               const unixTs = Math.floor(Date.now() / 1000);
-              const nextSamples = [...samples, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }].slice(-90);
+              const nextSamples = [...samples, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }].slice(
+                -autopilotConfig.ui.sampleBufferSize,
+              );
               setSamples(nextSamples);
 
               const r = await refreshPositionDecision({

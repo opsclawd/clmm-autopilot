@@ -10,6 +10,7 @@ import {
 type Direction = 0 | 1;
 
 export const RECEIPT_PROGRAM_ID = new PublicKey('A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm');
+// Milestone-deferred flag: keep enabled until on-chain receipt wiring milestone.
 export const DISABLE_RECEIPT_PROGRAM_FOR_TESTING = true;
 
 export type ReceiptAccount = {
@@ -20,6 +21,7 @@ export type ReceiptAccount = {
   attestationHash: Uint8Array;
   slot: bigint;
   unixTs: bigint;
+  initialized: boolean;
   bump: number;
 };
 
@@ -45,6 +47,9 @@ function u32Le(value: number): Buffer {
 
 function decodeReceipt(info: AccountInfo<Buffer>): ReceiptAccount {
   const data = info.data;
+  const hasInitializedFlag = data.length >= 127;
+  const initializedOffset = 125;
+  const bumpOffset = hasInitializedFlag ? 126 : 125;
   return {
     authority: new PublicKey(data.subarray(8, 40)),
     positionMint: new PublicKey(data.subarray(40, 72)),
@@ -53,7 +58,8 @@ function decodeReceipt(info: AccountInfo<Buffer>): ReceiptAccount {
     attestationHash: data.subarray(77, 109),
     slot: data.readBigUInt64LE(109),
     unixTs: data.readBigInt64LE(117),
-    bump: data.readUInt8(125),
+    initialized: hasInitializedFlag ? data.readUInt8(initializedOffset) === 1 : true,
+    bump: data.readUInt8(bumpOffset),
   };
 }
 

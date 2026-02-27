@@ -56,7 +56,7 @@ export default function Home() {
         if (cancelled) return;
         setSamples((prev) => {
           const next = [...prev, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }];
-          return next.slice(-90); // rolling window (~3 min @2s cadence)
+          return next.slice(-autopilotConfig.ui.sampleBufferSize);
         });
       } catch {
         // silence polling errors; refresh button surface errors deterministically.
@@ -73,7 +73,14 @@ export default function Home() {
         pollingRef.current = null;
       }
     };
-  }, [positionAddress, autopilotConfig.cluster, solanaConfig.commitment, solanaConfig.rpcUrl, autopilotConfig.policy.cadenceMs]);
+  }, [
+    positionAddress,
+    autopilotConfig.cluster,
+    autopilotConfig.policy.cadenceMs,
+    autopilotConfig.ui.sampleBufferSize,
+    solanaConfig.commitment,
+    solanaConfig.rpcUrl,
+  ]);
 
   return (
     <main className="p-6 font-sans space-y-3">
