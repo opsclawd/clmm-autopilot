@@ -67,6 +67,7 @@ Phase 1 requires that the **user signs every execution**.
   - `SLIPPAGE_EXCEEDED`
   - `INSUFFICIENT_FEE_BUFFER`
   - `BLOCKHASH_EXPIRED`
+  - `ORCA_DECODE_FAILED`
 
 ## Receipt program invariant (LOCKED)
 

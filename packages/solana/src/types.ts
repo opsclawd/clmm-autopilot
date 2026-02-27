@@ -11,7 +11,8 @@ export type CanonicalErrorCode =
   | 'SLIPPAGE_EXCEEDED'
   | 'INSUFFICIENT_FEE_BUFFER'
   | 'BLOCKHASH_EXPIRED'
-  | 'MISSING_ATTESTATION_HASH';
+  | 'MISSING_ATTESTATION_HASH'
+  | 'ORCA_DECODE_FAILED';
 
 export type SolanaConfig = {
   rpcUrl: string;
