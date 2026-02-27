@@ -96,7 +96,7 @@ export class OrcaWhirlpoolSwapAdapter implements SolanaSwapAdapter {
         ORCA_WHIRLPOOL_PROGRAM_ID,
         ctx.fetcher,
         undefined,
-        UseFallbackTickArray.Never,
+        UseFallbackTickArray.Situational,
         new BN(String(params.deadlineUnixSec ?? Math.floor(Date.now() / 1000))),
       );
 
@@ -139,17 +139,6 @@ export class OrcaWhirlpoolSwapAdapter implements SolanaSwapAdapter {
       fail('DATA_UNAVAILABLE', 'quote router mismatch for orca adapter', false, { quoteRouter: quote.router });
     }
     const q = asOrcaDebug(quote);
-    const planned = context.tickArrays.map((k) => k.toBase58());
-    const quoted = [q.tickArray0, q.tickArray1, q.tickArray2];
-    for (let i = 0; i < Math.min(planned.length, quoted.length); i += 1) {
-      if (planned[i] !== quoted[i]) {
-        fail('DATA_UNAVAILABLE', 'Orca quote tick arrays do not match planned tickArrays', false, {
-          planned,
-          quoted,
-        });
-      }
-    }
-
     const wallet = new ReadOnlyWallet(payer);
     const ctx = WhirlpoolContext.from(context.connection, wallet);
 
