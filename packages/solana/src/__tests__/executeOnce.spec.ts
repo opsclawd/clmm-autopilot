@@ -1,16 +1,23 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { DISABLE_RECEIPT_PROGRAM_FOR_TESTING } from '../receipt';
 
 const DEVNET_USDC_MINT = 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k';
 
-const { buildExitTransactionMock } = vi.hoisted(() => ({
+const { buildExitTransactionMock, getSwapAdapterMock, buildSwapIxsMock, getQuoteMock } = vi.hoisted(() => ({
   buildExitTransactionMock: vi.fn(async () => ({}) as VersionedTransaction),
+  getSwapAdapterMock: vi.fn(),
+  buildSwapIxsMock: vi.fn(async () => ({ instructions: [] as any[], lookupTableAddresses: [] as any[] })),
+  getQuoteMock: vi.fn(),
 }));
 
 vi.mock('../executionBuilder', () => ({
   buildExitTransaction: buildExitTransactionMock,
+}));
+
+vi.mock('../swap/registry', () => ({
+  getSwapAdapter: getSwapAdapterMock,
 }));
 
 vi.mock('../orcaInspector', () => ({
@@ -57,6 +64,158 @@ import { executeOnce } from '../executeOnce';
 import { loadPositionSnapshot } from '../orcaInspector';
 
 describe('executeOnce', () => {
+  beforeEach(() => {
+    buildExitTransactionMock.mockReset();
+    buildExitTransactionMock.mockResolvedValue({} as VersionedTransaction);
+    getSwapAdapterMock.mockReset();
+    getQuoteMock.mockReset();
+    buildSwapIxsMock.mockReset();
+    buildSwapIxsMock.mockResolvedValue({ instructions: [] as any[], lookupTableAddresses: [] as any[] });
+    getSwapAdapterMock.mockReturnValue({
+      getQuote: getQuoteMock,
+      buildSwapIxs: buildSwapIxsMock,
+    });
+  });
+
+  it('loads lookup tables returned by swap adapter into tx builder', async () => {
+    buildExitTransactionMock.mockClear();
+    const lutAddressA = new PublicKey(new Uint8Array(32).fill(40));
+    const lutAddressB = new PublicKey(new Uint8Array(32).fill(41));
+    getSwapAdapterMock.mockReturnValue({
+      getQuote: getQuoteMock,
+      buildSwapIxs: buildSwapIxsMock.mockResolvedValueOnce({
+        instructions: [],
+        lookupTableAddresses: [lutAddressA, lutAddressB],
+      }),
+    });
+
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const getAddressLookupTable = vi
+      .fn()
+      .mockResolvedValueOnce({ value: { key: lutAddressA, state: {} } as any })
+      .mockResolvedValueOnce({ value: { key: lutAddressB, state: {} } as any });
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: vi.fn(async () => null),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable,
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'jupiter' } },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      checkExistingReceipt: async () => false,
+    });
+
+    expect(res.status).not.toBe('HOLD');
+    expect(getAddressLookupTable).toHaveBeenCalledTimes(2);
+    expect(getAddressLookupTable).toHaveBeenNthCalledWith(1, lutAddressA);
+    expect(getAddressLookupTable).toHaveBeenNthCalledWith(2, lutAddressB);
+    expect(buildExitTransactionMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        lookupTableAccounts: [
+          expect.objectContaining({ key: lutAddressA }),
+          expect.objectContaining({ key: lutAddressB }),
+        ],
+      }),
+    );
+  });
+
+  it('skips null lookup table responses and keeps resolved accounts', async () => {
+    buildExitTransactionMock.mockClear();
+    const lutAddressA = new PublicKey(new Uint8Array(32).fill(42));
+    const lutAddressB = new PublicKey(new Uint8Array(32).fill(43));
+    getSwapAdapterMock.mockReturnValue({
+      getQuote: getQuoteMock,
+      buildSwapIxs: buildSwapIxsMock.mockResolvedValueOnce({
+        instructions: [],
+        lookupTableAddresses: [lutAddressA, lutAddressB],
+      }),
+    });
+
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const getAddressLookupTable = vi
+      .fn()
+      .mockResolvedValueOnce({ value: { key: lutAddressA, state: {} } as any })
+      .mockResolvedValueOnce({ value: null });
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: vi.fn(async () => null),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable,
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'jupiter' } },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      checkExistingReceipt: async () => false,
+    });
+
+    expect(res.status).not.toBe('HOLD');
+    expect(getAddressLookupTable).toHaveBeenCalledTimes(2);
+    expect(buildExitTransactionMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        lookupTableAccounts: [expect.objectContaining({ key: lutAddressA })],
+      }),
+    );
+  });
+
   it('returns HOLD when decision is HOLD', async () => {
     buildExitTransactionMock.mockClear();
     const authority = new PublicKey(new Uint8Array(32).fill(20));

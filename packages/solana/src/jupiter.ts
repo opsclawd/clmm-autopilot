@@ -1,4 +1,5 @@
 import { PublicKey, TransactionInstruction, type AccountMeta } from '@solana/web3.js';
+import { SolanaSwapBuildResult } from './swap/types';
 
 export type JupiterQuote = {
   inputMint: PublicKey;
@@ -8,11 +9,6 @@ export type JupiterQuote = {
   slippageBps: number;
   quotedAtUnixMs: number;
   raw: unknown;
-};
-
-export type JupiterSwapIxs = {
-  instructions: TransactionInstruction[];
-  lookupTableAddresses: PublicKey[];
 };
 
 type FetchLike = (input: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<{
@@ -97,7 +93,7 @@ export async function fetchJupiterSwapIxs(params: {
   baseUrl?: string;
   fetchImpl?: FetchLike;
   wrapAndUnwrapSol?: boolean;
-}): Promise<JupiterSwapIxs> {
+}): Promise<SolanaSwapBuildResult> {
   if (JUPITER_SWAP_DISABLED_FOR_TESTING) {
     // Temporary bypass: keep the exit workflow testable while Jupiter swap-instructions is failing.
     return { instructions: [], lookupTableAddresses: [] };

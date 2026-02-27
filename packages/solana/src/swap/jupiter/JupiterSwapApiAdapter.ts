@@ -1,8 +1,8 @@
 import type { Cluster, SwapQuote } from '@clmm-autopilot/core';
-import { PublicKey, type TransactionInstruction } from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
 import { fetchJupiterQuote, fetchJupiterSwapIxs, type JupiterQuote } from '../../jupiter';
 import type { CanonicalErrorCode } from '../../types';
-import type { SolanaGetQuoteParams, SolanaSwapAdapter, SolanaSwapContext } from '../types';
+import type { SolanaGetQuoteParams, SolanaSwapAdapter, SolanaSwapBuildResult, SolanaSwapContext } from '../types';
 
 type TypedError = Error & { code: CanonicalErrorCode; retryable: boolean; debug?: unknown };
 
@@ -47,7 +47,7 @@ export class JupiterSwapApiAdapter implements SolanaSwapAdapter {
     };
   }
 
-  async buildSwapIxs(quote: Readonly<SwapQuote>, payer: PublicKey, _context: Readonly<SolanaSwapContext>): Promise<TransactionInstruction[]> {
+  async buildSwapIxs(quote: Readonly<SwapQuote>, payer: PublicKey, _context: Readonly<SolanaSwapContext>): Promise<SolanaSwapBuildResult> {
     if (quote.router !== this.name) {
       fail('DATA_UNAVAILABLE', 'quote router mismatch for jupiter adapter', false, { quoteRouter: quote.router });
     }
@@ -64,7 +64,6 @@ export class JupiterSwapApiAdapter implements SolanaSwapAdapter {
       quotedAtUnixMs: quote.quotedAtUnixSec * 1000,
       raw,
     };
-    const swap = await fetchJupiterSwapIxs({ quote: jupQuote, userPublicKey: payer, wrapAndUnwrapSol: false });
-    return swap.instructions;
+    return fetchJupiterSwapIxs({ quote: jupQuote, userPublicKey: payer, wrapAndUnwrapSol: false });
   }
 }

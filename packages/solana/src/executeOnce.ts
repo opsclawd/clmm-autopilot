@@ -134,7 +134,12 @@ export type ExecuteOnceResult = {
 };
 
 async function loadLookupTables(_connection: Connection, _addresses: PublicKey[]): Promise<AddressLookupTableAccount[]> {
-  return [];
+  const out: AddressLookupTableAccount[] = [];
+  for (const addr of _addresses) {
+    const res = await _connection.getAddressLookupTable(addr);
+    if (res.value) out.push(res.value);
+  }
+  return out;
 }
 
 function buildSwapInput(
@@ -191,7 +196,13 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
 
     const buildPlan = async (
       sourceSnapshot: Awaited<ReturnType<typeof loadPositionSnapshot>>,
-    ): Promise<{ plan: SwapPlan; swapIxs: ReturnType<typeof Array.prototype.slice>; quoteTickIndex: number; quotedAtUnixMs: number }> => {
+    ): Promise<{
+      plan: SwapPlan;
+      swapIxs: ReturnType<typeof Array.prototype.slice>;
+      lookupTableAddresses: PublicKey[];
+      quoteTickIndex: number;
+      quotedAtUnixMs: number;
+    }> => {
       const suppliedQuote = params.quote as
         | { inputMint: PublicKey; outputMint: PublicKey; inAmount: bigint; outAmount: bigint; quotedAtUnixMs: number }
         | undefined;
@@ -238,6 +249,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         quotedAtUnixSec: 0,
       };
       let swapIxs: TransactionInstruction[] = [];
+      let lookupTableAddresses: PublicKey[] = [];
       let swapPlanned = false;
       let swapSkipReason: 'NONE' | 'DUST' | 'ROUTER_DISABLED' = 'NONE';
 
@@ -268,7 +280,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             swapContext,
           });
         }
-        swapIxs = await adapter.buildSwapIxs(planQuote, params.authority, swapContext);
+        const swapBuild = await adapter.buildSwapIxs(planQuote, params.authority, swapContext);
+        swapIxs = swapBuild.instructions;
+        lookupTableAddresses = swapBuild.lookupTableAddresses;
         swapPlanned = true;
       }
 
@@ -280,6 +294,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           quote: planQuote,
         },
         swapIxs,
+        lookupTableAddresses,
         quoteTickIndex: sourceSnapshot.currentTickIndex,
         quotedAtUnixMs: planQuote.quotedAtUnixSec * 1000,
       };
@@ -362,7 +377,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, params.config.execution);
 
     const buildTx = async (recentBlockhash: string) => {
-      const lookupTableAccounts: AddressLookupTableAccount[] = await loadLookupTables(params.connection, []);
+      const lookupTableAccounts: AddressLookupTableAccount[] = await loadLookupTables(params.connection, assembled.lookupTableAddresses);
       return buildExitTransaction(snapshot, direction, {
         authority: params.authority,
         payer: params.authority,

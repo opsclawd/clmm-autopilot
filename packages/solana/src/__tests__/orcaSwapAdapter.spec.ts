@@ -96,7 +96,7 @@ describe('OrcaWhirlpoolSwapAdapter', () => {
       },
     };
 
-    const ixs = await adapter.buildSwapIxs(quote, pk(10), {
+    const result = await adapter.buildSwapIxs(quote, pk(10), {
       connection: {} as any,
       whirlpool: pk(3),
       tickSpacing: 1,
@@ -111,6 +111,7 @@ describe('OrcaWhirlpoolSwapAdapter', () => {
       aToB: true,
     });
 
-    expect(ixs.length).toBeGreaterThan(0);
+    expect(result.instructions.length).toBeGreaterThan(0);
+    expect(result.lookupTableAddresses).toEqual([]);
   });
 });

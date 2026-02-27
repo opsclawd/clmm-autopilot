@@ -1,6 +1,6 @@
 import type { Cluster, SwapQuote } from '@clmm-autopilot/core';
-import type { PublicKey, TransactionInstruction } from '@solana/web3.js';
-import type { SolanaGetQuoteParams, SolanaSwapAdapter, SolanaSwapContext } from '../types';
+import type { PublicKey } from '@solana/web3.js';
+import type { SolanaGetQuoteParams, SolanaSwapAdapter, SolanaSwapBuildResult, SolanaSwapContext } from '../types';
 
 export class NoopSwapAdapter implements SolanaSwapAdapter {
   readonly name = 'noop' as const;
@@ -21,7 +21,7 @@ export class NoopSwapAdapter implements SolanaSwapAdapter {
     };
   }
 
-  async buildSwapIxs(_quote: Readonly<SwapQuote>, _payer: PublicKey, _context: Readonly<SolanaSwapContext>): Promise<TransactionInstruction[]> {
-    return [];
+  async buildSwapIxs(_quote: Readonly<SwapQuote>, _payer: PublicKey, _context: Readonly<SolanaSwapContext>): Promise<SolanaSwapBuildResult> {
+    return { instructions: [], lookupTableAddresses: [] };
   }
 }

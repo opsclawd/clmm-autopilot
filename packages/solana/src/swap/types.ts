@@ -22,7 +22,12 @@ export type SolanaGetQuoteParams = GetQuoteParams & {
   swapContext: SolanaSwapContext;
 };
 
+export type SolanaSwapBuildResult = {
+  instructions: TransactionInstruction[];
+  lookupTableAddresses: PublicKey[];
+};
+
 export type SolanaSwapAdapter = SwapAdapter & {
   getQuote(params: SolanaGetQuoteParams): Promise<SwapQuote>;
-  buildSwapIxs(quote: Readonly<SwapQuote>, payer: PublicKey, context: Readonly<SolanaSwapContext>): Promise<TransactionInstruction[]>;
+  buildSwapIxs(quote: Readonly<SwapQuote>, payer: PublicKey, context: Readonly<SolanaSwapContext>): Promise<SolanaSwapBuildResult>;
 };

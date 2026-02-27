@@ -9,10 +9,11 @@ import {
   buildWhirlpoolClient,
   swapQuoteByInputToken,
 } from '@orca-so/whirlpools-sdk';
-import { PublicKey, type TransactionInstruction } from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
 import { getAta } from '../../ata';
 import type { CanonicalErrorCode } from '../../types';
 import type { SolanaGetQuoteParams, SolanaSwapAdapter, SolanaSwapContext } from '../types';
+import type { SolanaSwapBuildResult } from '../types';
 
 type TypedError = Error & { code: CanonicalErrorCode; retryable: boolean; debug?: unknown };
 
@@ -134,7 +135,7 @@ export class OrcaWhirlpoolSwapAdapter implements SolanaSwapAdapter {
     quote: Readonly<SwapQuote>,
     payer: PublicKey,
     context: Readonly<SolanaSwapContext>,
-  ): Promise<TransactionInstruction[]> {
+  ): Promise<SolanaSwapBuildResult> {
     if (quote.router !== this.name) {
       fail('DATA_UNAVAILABLE', 'quote router mismatch for orca adapter', false, { quoteRouter: quote.router });
     }
@@ -165,6 +166,9 @@ export class OrcaWhirlpoolSwapAdapter implements SolanaSwapAdapter {
       tokenAuthority: payer,
     });
 
-    return [...ix.instructions, ...ix.cleanupInstructions];
+    return {
+      instructions: [...ix.instructions, ...ix.cleanupInstructions],
+      lookupTableAddresses: [],
+    };
   }
 }
