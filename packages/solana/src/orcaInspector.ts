@@ -5,14 +5,13 @@ import {
   decreaseLiquidityQuoteByLiquidityWithParams,
   NO_TOKEN_EXTENSION_CONTEXT,
   PDAUtil,
-  ParsablePosition,
-  ParsableWhirlpool,
   PriceMath,
 } from '@orca-so/whirlpools-sdk';
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { PublicKey, type AccountInfo, type Connection } from '@solana/web3.js';
 import { normalizeSolanaError } from './errors';
 import { loadSolanaConfig } from './config';
+import { decodePositionAccount, decodeWhirlpoolAccount } from './orca/decode';
 import type { CanonicalErrorCode, NormalizedError } from './types';
 
 const ORCA_WHIRLPOOL_PROGRAM_ID = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
@@ -100,85 +99,27 @@ function makeError(code: CanonicalErrorCode, message: string, retryable = false)
   return { code, message, retryable };
 }
 
-function readPubkey(data: Buffer, offset: number): PublicKey {
-  return new PublicKey(data.subarray(offset, offset + 32));
-}
-
-function readU16LE(data: Buffer, offset: number): number {
-  return data.readUInt16LE(offset);
-}
-
-function readI32LE(data: Buffer, offset: number): number {
-  return data.readInt32LE(offset);
-}
-
-function readU64LE(data: Buffer, offset: number): bigint {
-  return data.readBigUInt64LE(offset);
-}
-
-function readU128LE(data: Buffer, offset: number): bigint {
-  const lo = data.readBigUInt64LE(offset);
-  const hi = data.readBigUInt64LE(offset + 8);
-  return lo + (hi << BigInt(64));
-}
-
-// Fixture-friendly decoding for deterministic tests. Offsets mirror expected Orca account fields.
 function parsePositionAccount(data: Buffer): ParsedPosition {
-  if (data.length < 128) throw makeError('INVALID_POSITION', 'position account too small');
+  const decoded = decodePositionAccount(data);
   return {
-    whirlpool: readPubkey(data, 8),
-    positionMint: readPubkey(data, 40),
-    liquidity: readU128LE(data, 72),
-    lowerTickIndex: readI32LE(data, 88),
-    upperTickIndex: readI32LE(data, 92),
+    whirlpool: decoded.whirlpool,
+    positionMint: decoded.positionMint,
+    liquidity: BigInt(decoded.liquidity.toString()),
+    lowerTickIndex: decoded.tickLowerIndex,
+    upperTickIndex: decoded.tickUpperIndex,
   };
-}
-
-function parsePositionAccountFromInfo(
-  address: PublicKey,
-  info: AccountInfo<Buffer>,
-): ParsedPosition {
-  const parsed = ParsablePosition.parse(address, info);
-  if (parsed) {
-    return {
-      whirlpool: parsed.whirlpool,
-      positionMint: parsed.positionMint,
-      liquidity: BigInt(parsed.liquidity.toString()),
-      lowerTickIndex: parsed.tickLowerIndex,
-      upperTickIndex: parsed.tickUpperIndex,
-    };
-  }
-  return parsePositionAccount(info.data);
 }
 
 function parseWhirlpoolAccount(data: Buffer): ParsedWhirlpool {
-  if (data.length < 220) throw makeError('DATA_UNAVAILABLE', 'whirlpool account too small');
+  const decoded = decodeWhirlpoolAccount(data);
   return {
-    tickSpacing: readU16LE(data, 41),
-    currentTickIndex: readI32LE(data, 85),
-    tokenMintA: readPubkey(data, 101),
-    tokenVaultA: readPubkey(data, 133),
-    tokenMintB: readPubkey(data, 181),
-    tokenVaultB: readPubkey(data, 213),
+    tickSpacing: decoded.tickSpacing,
+    currentTickIndex: decoded.tickCurrentIndex,
+    tokenMintA: decoded.tokenMintA,
+    tokenMintB: decoded.tokenMintB,
+    tokenVaultA: decoded.tokenVaultA,
+    tokenVaultB: decoded.tokenVaultB,
   };
-}
-
-function parseWhirlpoolAccountFromInfo(
-  address: PublicKey,
-  info: AccountInfo<Buffer>,
-): ParsedWhirlpool {
-  const parsed = ParsableWhirlpool.parse(address, info);
-  if (parsed) {
-    return {
-      tickSpacing: parsed.tickSpacing,
-      currentTickIndex: parsed.tickCurrentIndex,
-      tokenMintA: parsed.tokenMintA,
-      tokenMintB: parsed.tokenMintB,
-      tokenVaultA: parsed.tokenVaultA,
-      tokenVaultB: parsed.tokenVaultB,
-    };
-  }
-  return parseWhirlpoolAccount(info.data);
 }
 
 function parseMintMeta(info: AccountInfo<Buffer> | null): MintMeta {
@@ -265,11 +206,11 @@ export async function loadPositionSnapshot(
     const positionInfo = await connection.getAccountInfo(positionPubkey, 'confirmed');
     if (!positionInfo) throw makeError('INVALID_POSITION', 'position account not found');
 
-    const position = parsePositionAccountFromInfo(positionPubkey, positionInfo);
+    const position = parsePositionAccount(positionInfo.data);
 
     const whirlpoolInfo = await connection.getAccountInfo(position.whirlpool, 'confirmed');
     if (!whirlpoolInfo) throw makeError('DATA_UNAVAILABLE', 'whirlpool account not found');
-    const whirlpool = parseWhirlpoolAccountFromInfo(position.whirlpool, whirlpoolInfo);
+    const whirlpool = parseWhirlpoolAccount(whirlpoolInfo.data);
 
     const cluster = clusterOverride ?? loadSolanaConfig(process.env).cluster;
     assertSolUsdcPair(whirlpool.tokenMintA.toBase58(), whirlpool.tokenMintB.toBase58(), cluster);

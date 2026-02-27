@@ -1,6 +1,34 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { Keypair, PublicKey } from '@solana/web3.js';
+
+vi.mock('../orca/decode', () => ({
+  decodePositionAccount: (data: Buffer) => ({
+    whirlpool: new PublicKey(data.subarray(8, 40)),
+    positionMint: new PublicKey(data.subarray(40, 72)),
+    liquidity: {
+      toString: () => {
+        const lo = data.readBigUInt64LE(72);
+        const hi = data.readBigUInt64LE(80);
+        return (lo + (hi << 64n)).toString();
+      },
+    },
+    tickLowerIndex: data.readInt32LE(88),
+    tickUpperIndex: data.readInt32LE(92),
+  }),
+  decodeWhirlpoolAccount: (data: Buffer) => ({
+    tickSpacing: data.readUInt16LE(41),
+    tickCurrentIndex: data.readInt32LE(85),
+    tokenMintA: new PublicKey(data.subarray(101, 133)),
+    tokenVaultA: new PublicKey(data.subarray(133, 165)),
+    tokenMintB: new PublicKey(data.subarray(181, 213)),
+    tokenVaultB: new PublicKey(data.subarray(213, 245)),
+  }),
+}));
+
+import * as orcaDecode from '../orca/decode';
 import {
   __setRemovePreviewQuoteFnForTests,
   clearTickArrayCache,
@@ -10,7 +38,7 @@ import {
 const TOKEN_PROGRAM_V1 = TOKEN_PROGRAM_ID;
 const TOKEN_PROGRAM_2022 = TOKEN_2022_PROGRAM_ID;
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
-const USDC_MINT = new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
+const USDC_MINT = new PublicKey('BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k');
 
 function mkPositionData(args: {
   whirlpool: PublicKey;
@@ -108,6 +136,7 @@ describe('loadPositionSnapshot', () => {
         }),
       },
     );
+    accounts.set(positionMint.toBase58(), { data: mkMintData(0), owner: TOKEN_PROGRAM_V1 });
     accounts.set(tokenMintA.toBase58(), { data: mkMintData(6), owner: TOKEN_PROGRAM_V1 });
     accounts.set(tokenMintB.toBase58(), { data: mkMintData(9), owner: TOKEN_PROGRAM_2022 });
 
@@ -116,6 +145,7 @@ describe('loadPositionSnapshot', () => {
     expect(snapshot.position.toBase58()).toBe(position.toBase58());
     expect(snapshot.whirlpool.toBase58()).toBe(whirlpool.toBase58());
     expect(snapshot.positionMint.toBase58()).toBe(positionMint.toBase58());
+    expect(snapshot.positionTokenProgram?.toBase58()).toBe(TOKEN_PROGRAM_V1.toBase58());
     expect(snapshot.currentTickIndex).toBe(150);
     expect(snapshot.lowerTickIndex).toBe(120);
     expect(snapshot.upperTickIndex).toBe(200);
@@ -156,6 +186,7 @@ describe('loadPositionSnapshot', () => {
         }),
       },
     );
+    accounts.set(positionMint.toBase58(), { data: mkMintData(0), owner: TOKEN_PROGRAM_V1 });
     accounts.set(tokenMintA.toBase58(), { data: mkMintData(6), owner: TOKEN_PROGRAM_V1 });
     accounts.set(tokenMintB.toBase58(), { data: mkMintData(9), owner: TOKEN_PROGRAM_V1 });
 
@@ -193,6 +224,7 @@ describe('loadPositionSnapshot', () => {
         }),
       },
     );
+    accounts.set(positionMint.toBase58(), { data: mkMintData(0), owner: TOKEN_PROGRAM_V1 });
     accounts.set(tokenMintA.toBase58(), { data: mkMintData(6), owner: TOKEN_PROGRAM_V1 });
     accounts.set(tokenMintB.toBase58(), { data: mkMintData(9), owner: TOKEN_PROGRAM_V1 });
 
@@ -227,6 +259,7 @@ describe('loadPositionSnapshot', () => {
         }),
       },
     );
+    accounts.set(positionMint.toBase58(), { data: mkMintData(0), owner: TOKEN_PROGRAM_V1 });
     accounts.set(tokenMintA.toBase58(), { data: mkMintData(6), owner: TOKEN_PROGRAM_V1 });
     accounts.set(tokenMintB.toBase58(), { data: mkMintData(9), owner: TOKEN_PROGRAM_V1 });
 
@@ -303,6 +336,7 @@ describe('loadPositionSnapshot', () => {
         }),
       },
     );
+    accounts.set(positionMint.toBase58(), { data: mkMintData(0), owner: TOKEN_PROGRAM_V1 });
     accounts.set(tokenMintA.toBase58(), { data: mkMintData(6), owner: TOKEN_PROGRAM_V1 });
     accounts.set(tokenMintB.toBase58(), { data: mkMintData(9), owner: TOKEN_PROGRAM_V1 });
 
@@ -375,5 +409,28 @@ describe('loadPositionSnapshot', () => {
     await expect(loadPositionSnapshot(mockConn({ accounts }), position)).rejects.toMatchObject({
       code: 'DATA_UNAVAILABLE',
     });
+  });
+
+  it('propagates ORCA_DECODE_FAILED when decoder fails', async () => {
+    clearTickArrayCache();
+    const position = Keypair.generate().publicKey;
+    const accounts = new Map<string, { data: Buffer; owner?: PublicKey }>();
+    accounts.set(position.toBase58(), { data: Buffer.alloc(16) });
+
+    const spy = vi.spyOn(orcaDecode, 'decodePositionAccount').mockImplementationOnce(() => {
+      throw { code: 'ORCA_DECODE_FAILED', message: 'bad position bytes', retryable: false };
+    });
+
+    await expect(loadPositionSnapshot(mockConn({ accounts }), position)).rejects.toMatchObject({
+      code: 'ORCA_DECODE_FAILED',
+    });
+
+    spy.mockRestore();
+  });
+
+  it('inspector delegates Orca account decode to orca/decode module', () => {
+    const src = readFileSync(resolve(__dirname, '..', 'orcaInspector.ts'), 'utf8');
+    expect(src).toContain("from './orca/decode'");
+    expect(src).not.toMatch(/readUInt16LE|readInt32LE|readBigUInt64LE|subarray\(\d+, \d+\)/);
   });
 });

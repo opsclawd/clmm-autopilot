@@ -55,4 +55,4 @@ Use any owned Orca Whirlpool position account on devnet. If needed, inspect your
 
 ## Notes
 - Notifications are stubbed to console logging only.
-- No auto-execution, no push infrastructure, no multi-position management in M6.
+- No auto-execution, no push infrastructure, no multi-position management.

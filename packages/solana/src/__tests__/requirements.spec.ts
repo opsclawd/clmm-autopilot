@@ -5,7 +5,7 @@ import { computeExecutionRequirements } from '../requirements';
 import { getAta } from '../ata';
 
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
-const USDC_MINT = new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
+const USDC_MINT = new PublicKey('BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k');
 
 const pk = (seed: number) => new PublicKey(new Uint8Array(32).fill(seed));
 

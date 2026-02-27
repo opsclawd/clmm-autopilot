@@ -55,7 +55,7 @@ export async function fetchJupiterQuote(params: {
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       inAmount: params.amount,
-      outAmount: 0n,
+      outAmount: BigInt(0),
       slippageBps: params.slippageBps,
       quotedAtUnixMs: (params.nowUnixMs ?? (() => Date.now()))(),
       raw: { disabled: true, reason: 'JUPITER_SWAP_DISABLED_FOR_TESTING' },
