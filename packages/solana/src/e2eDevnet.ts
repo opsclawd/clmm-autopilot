@@ -237,10 +237,10 @@ export async function runDevnetE2E(
     quoteOutputMint: quote.outputMint.toBase58(),
     quoteInAmount: quote.inAmount,
     quoteMinOutAmount: quote.outAmount,
-    quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
-    swapPlanned: 1,
-    swapExecuted: swapDecision.execute ? 1 : 0,
-    swapReasonCode: swapDecision.reasonCode,
+    quoteQuotedAtUnixSec: Math.floor(quote.quotedAtUnixMs / 1000),
+    swapPlanned: swapDecision.execute ? 1 : 0,
+    swapSkipReason: swapDecision.execute ? 'NONE' : 'DUST',
+    swapRouter: config.execution.swapRouter,
   });
   const attestationHash = computeAttestationHash({
     cluster: 'devnet',
@@ -258,10 +258,10 @@ export async function runDevnetE2E(
     quoteOutputMint: quote.outputMint.toBase58(),
     quoteInAmount: quote.inAmount,
     quoteMinOutAmount: quote.outAmount,
-    quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
-    swapPlanned: 1,
-    swapExecuted: swapDecision.execute ? 1 : 0,
-    swapReasonCode: swapDecision.reasonCode,
+    quoteQuotedAtUnixSec: Math.floor(quote.quotedAtUnixMs / 1000),
+    swapPlanned: swapDecision.execute ? 1 : 0,
+    swapSkipReason: swapDecision.execute ? 'NONE' : 'DUST',
+    swapRouter: config.execution.swapRouter,
   });
 
   log(logger, 'tx.build-sim-send.start', { attestationHash: Buffer.from(attestationHash).toString('hex') });

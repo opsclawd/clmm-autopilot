@@ -16,6 +16,7 @@ export type RequirementsInput = {
   connection: Pick<Connection, 'getAccountInfo' | 'getMinimumBalanceForRentExemption'>;
   snapshot: Pick<PositionSnapshot, 'positionMint' | 'positionTokenProgram' | 'tokenMintA' | 'tokenMintB' | 'tokenProgramA' | 'tokenProgramB'>;
   quote: { inputMint: PublicKey; outputMint: PublicKey };
+  swapPlanned: boolean;
 
   authority: PublicKey;
   payer: PublicKey;
@@ -55,12 +56,13 @@ export async function computeExecutionRequirements(input: RequirementsInput): Pr
   addAta(input.snapshot.tokenMintA, input.snapshot.tokenProgramA);
   addAta(input.snapshot.tokenMintB, input.snapshot.tokenProgramB);
 
-  // Jupiter swap ATAs for input/output mints when those are SPL tokens.
-  if (!input.quote.inputMint.equals(SOL_MINT)) addAta(input.quote.inputMint);
-  if (!input.quote.outputMint.equals(SOL_MINT)) addAta(input.quote.outputMint);
-
-  // WSOL ATA when the swap involves SOL (wrap/unwrap lifecycle uses the native mint ATA).
-  if (involvesSol) addAta(SOL_MINT, TOKEN_PROGRAM_ID);
+  if (input.swapPlanned) {
+    // Swap ATAs for input/output mints when those are SPL tokens.
+    if (!input.quote.inputMint.equals(SOL_MINT)) addAta(input.quote.inputMint);
+    if (!input.quote.outputMint.equals(SOL_MINT)) addAta(input.quote.outputMint);
+    // WSOL ATA when swap involves SOL (wrap/unwrap lifecycle uses native mint ATA).
+    if (involvesSol) addAta(SOL_MINT, TOKEN_PROGRAM_ID);
+  }
 
   const uniqueAtas = Array.from(ataAddresses.values());
 

@@ -90,7 +90,7 @@ export default function App() {
           cadenceMs={autopilotConfig.policy.cadenceMs} requiredConsecutive={autopilotConfig.policy.requiredConsecutive} cooldownMs={autopilotConfig.policy.cooldownMs}
         </Text>
         <Text style={{ fontSize: 12, color: "#111" }}>
-          slippageBpsCap={autopilotConfig.execution.slippageBpsCap} quoteFreshnessMs={autopilotConfig.execution.quoteFreshnessMs}
+          slippageBpsCap={autopilotConfig.execution.slippageBpsCap} quoteFreshnessSec={autopilotConfig.execution.quoteFreshnessSec}
         </Text>
         <Button
           title={wallet ? 'Wallet Connected' : 'Connect Wallet'}
@@ -132,7 +132,7 @@ export default function App() {
                   policy: autopilotConfig.policy,
                   execution: {
                     slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
-                    quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessMs,
+                    quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessSec * 1000,
                   },
                 },
                 snapshot: r.snapshot,
@@ -201,7 +201,7 @@ export default function App() {
                     policy: autopilotConfig.policy,
                     execution: {
                       slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
-                      quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessMs,
+                      quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessSec * 1000,
                     },
                   },
                   snapshot: result.refresh?.snapshot,
