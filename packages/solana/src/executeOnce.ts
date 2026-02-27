@@ -213,12 +213,15 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       });
 
       const swapContext: SolanaSwapContext = {
+        connection: params.connection,
         whirlpool: sourceSnapshot.whirlpool,
         tickSpacing: sourceSnapshot.tickSpacing,
         tickCurrentIndex: sourceSnapshot.currentTickIndex,
         tickArrays,
         tokenMintA: sourceSnapshot.tokenMintA,
         tokenMintB: sourceSnapshot.tokenMintB,
+        tokenVaultA: sourceSnapshot.tokenVaultA,
+        tokenVaultB: sourceSnapshot.tokenVaultB,
         tokenProgramA: sourceSnapshot.tokenProgramA,
         tokenProgramB: sourceSnapshot.tokenProgramB,
         aToB,
