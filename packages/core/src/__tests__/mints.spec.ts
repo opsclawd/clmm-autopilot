@@ -3,7 +3,7 @@ import { assertSolUsdcPair, getMintRegistry, isSolUsdcPair, symbolForMint } from
 
 const SOL = 'So11111111111111111111111111111111111111112';
 const SOL_NATIVE = 'SOL_NATIVE';
-const USDC_DEVNET = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+const USDC_DEVNET = 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k';
 const USDT = 'Es9vMFrzaCERmJfrF4H2RFxYDs2fzGEGZm4G6dkhQ5tq';
 const JITOSOL = 'jitoSo1uCvR4TBGjW8R5m6h3vN8nQ7yS9M2K1jitoSo';
 

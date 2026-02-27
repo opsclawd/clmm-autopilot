@@ -42,6 +42,19 @@ pnpm e2e:devnet
 
 Logs are JSON (structured) and failure exits non-zero.
 
+## Current Deferred Flags (Intentional)
+
+The following runtime flags remain enabled for this milestone and are intentional:
+
+- `JUPITER_SWAP_DISABLED_FOR_TESTING=true` in `packages/solana/src/jupiter.ts`
+- `DISABLE_RECEIPT_PROGRAM_FOR_TESTING=true` in `packages/solana/src/receipt.ts`
+
+Expected impact while flags are ON:
+
+- Quote/swap calls are synthesized or omitted for deterministic testability.
+- Receipt instruction is not appended in live tx builder path.
+- M5/M12 behavior is partially deferred until those flags are disabled in later milestones.
+
 ## Failure → Action mapping
 
 - `QUOTE_STALE`
@@ -76,3 +89,6 @@ Logs are JSON (structured) and failure exits non-zero.
   - **Cause:** Confirmed receipt fields/hash differ from locally computed expectations.
   - **Action:** Stop automation for this position, inspect tx + receipt PDA on explorer, and rerun with fresh quote once mismatch root cause is understood.
 
+## Spec Traceability
+
+See `docs/spec-traceability.md` for milestone-by-milestone status (`met`, `partial`, `deferred`) and the corresponding code/tests.

@@ -2,17 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createConsoleNotificationsAdapter } from '@clmm-autopilot/notifications';
-import { executeOnce, fetchJupiterQuote, loadPositionSnapshot, loadSolanaConfig, refreshPositionDecision } from '@clmm-autopilot/solana';
-import {
-  SWAP_OK,
-  SWAP_SKIP_DUST_SOL,
-  SWAP_SKIP_DUST_USDC,
-  computeAttestationHash,
-  decideSwap,
-  encodeAttestationPayload,
-  unixDaysFromUnixMs,
-  type PolicyState,
-} from '@clmm-autopilot/core';
+import { executeOnce, loadPositionSnapshot, loadSolanaConfig, refreshPositionDecision } from '@clmm-autopilot/solana';
+import { type PolicyState } from '@clmm-autopilot/core';
 import { loadAutopilotConfig } from '../config';
 import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-state';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
@@ -36,10 +27,9 @@ export default function Home() {
   const [ui, setUi] = useState<UiModel>(buildUiModel({}));
   const [simSummary, setSimSummary] = useState<string>('N/A');
   const [samples, setSamples] = useState<Sample[]>([]);
-  const policyStateRef = useRef<PolicyState>({});
+  const previewPolicyStateRef = useRef<PolicyState>({});
+  const executionPolicyStateRef = useRef<PolicyState>({});
   const [lastSimDebug, setLastSimDebug] = useState<unknown>(null);
-  const [attestationDebugPrefix, setAttestationDebugPrefix] = useState<string>('N/A');
-  const [swapPlanSummary, setSwapPlanSummary] = useState<string>('N/A');
   const pollingRef = useRef<number | null>(null);
 
   const canExecute = Boolean(configValid && wallet && positionAddress && ui.canExecute);
@@ -50,6 +40,8 @@ export default function Home() {
       pollingRef.current = null;
     }
     setSamples([]);
+    previewPolicyStateRef.current = {};
+    executionPolicyStateRef.current = {};
 
     if (!positionAddress) return;
 
@@ -64,7 +56,7 @@ export default function Home() {
         if (cancelled) return;
         setSamples((prev) => {
           const next = [...prev, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }];
-          return next.slice(-90); // rolling window (~3 min @2s cadence)
+          return next.slice(-autopilotConfig.ui.sampleBufferSize);
         });
       } catch {
         // silence polling errors; refresh button surface errors deterministically.
@@ -81,11 +73,18 @@ export default function Home() {
         pollingRef.current = null;
       }
     };
-  }, [positionAddress, autopilotConfig.cluster, solanaConfig.commitment, solanaConfig.rpcUrl, autopilotConfig.policy.cadenceMs]);
+  }, [
+    positionAddress,
+    autopilotConfig.cluster,
+    autopilotConfig.policy.cadenceMs,
+    autopilotConfig.ui.sampleBufferSize,
+    solanaConfig.commitment,
+    solanaConfig.rpcUrl,
+  ]);
 
   return (
     <main className="p-6 font-sans space-y-3">
-      <h1 className="text-2xl font-bold">CLMM Autopilot — M6 Shell</h1>
+      <h1 className="text-2xl font-bold">CLMM Autopilot — Shell</h1>
       {!configValid ? (
         <div className="rounded border border-red-300 bg-red-50 p-3 text-sm">
           <div className="font-semibold">{mapErrorToUi({ code: 'CONFIG_INVALID' }).title}</div>
@@ -144,11 +143,11 @@ export default function Home() {
                 position: new PublicKey(positionAddress),
                 samples,
                 config: autopilotConfig,
-                policyState: policyStateRef.current,
+                policyState: previewPolicyStateRef.current,
                 expectedMinOut: 'N/A',
                 quoteAgeMs: 0,
               });
-              policyStateRef.current = refreshed.decision.nextState;
+              previewPolicyStateRef.current = refreshed.decision.nextState;
               setUi(buildUiModel({
                 config: {
                   policy: autopilotConfig.policy,
@@ -201,86 +200,25 @@ export default function Home() {
               const position = new PublicKey(positionAddress);
               const connection = new Connection(solanaConfig.rpcUrl, solanaConfig.commitment);
 
-              // Build a quote off the current snapshot remove preview (best-effort Phase-1 heuristic).
-              const snapshot = await loadPositionSnapshot(connection, position, autopilotConfig.cluster);
-              const dir = ui.decision?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN';
-              if (!snapshot.removePreview) throw new Error(`Remove preview unavailable (${snapshot.removePreviewReasonCode ?? 'DATA_UNAVAILABLE'})`);
-
-              const tokenAOut = snapshot.removePreview.tokenAOut;
-              const tokenBOut = snapshot.removePreview.tokenBOut;
-
-              const inputMint = dir === 'DOWN' ? SOL_MINT : (snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA);
-              const outputMint = dir === 'DOWN' ? (snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA) : SOL_MINT;
-              const amount = dir === 'DOWN'
-                ? (snapshot.tokenMintA.equals(SOL_MINT) ? tokenAOut : tokenBOut)
-                : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
-
-              const swapDecision = decideSwap(amount, dir, autopilotConfig);
-              const reasonLabel =
-                swapDecision.reasonCode === SWAP_OK
-                  ? 'SWAP_OK'
-                  : swapDecision.reasonCode === SWAP_SKIP_DUST_SOL
-                    ? 'SWAP_SKIP_DUST_SOL'
-                    : swapDecision.reasonCode === SWAP_SKIP_DUST_USDC
-                      ? 'SWAP_SKIP_DUST_USDC'
-                      : 'UNKNOWN_SWAP_REASON';
-              setSwapPlanSummary(`${swapDecision.execute ? 'execute' : 'skip'} (${reasonLabel})`);
-
-              const quote = swapDecision.execute
-                ? await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.slippageBpsCap })
-                : {
-                    inputMint,
-                    outputMint,
-                    inAmount: amount,
-                    outAmount: BigInt(0),
-                    slippageBps: autopilotConfig.execution.slippageBpsCap,
-                    quotedAtUnixMs: Date.now(),
-                  };
-              const epochNowMs = Date.now();
-              const epoch = unixDaysFromUnixMs(epochNowMs);
-              const attestationInput = {
-                cluster: autopilotConfig.cluster,
-                authority: authority.toBase58(),
-                position: snapshot.position.toBase58(),
-                positionMint: snapshot.positionMint.toBase58(),
-                whirlpool: snapshot.whirlpool.toBase58(),
-                epoch,
-                direction: dir === 'UP' ? (1 as const) : (0 as const),
-                tickCurrent: snapshot.currentTickIndex,
-                lowerTickIndex: snapshot.lowerTickIndex,
-                upperTickIndex: snapshot.upperTickIndex,
-                slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
-                quoteInputMint: quote.inputMint.toBase58(),
-                quoteOutputMint: quote.outputMint.toBase58(),
-                quoteInAmount: quote.inAmount,
-                quoteMinOutAmount: quote.outAmount,
-                quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
-                swapPlanned: 1,
-                swapExecuted: swapDecision.execute ? 1 : 0,
-                swapReasonCode: swapDecision.reasonCode,
-              };
-              const attestationPayloadBytes = encodeAttestationPayload(attestationInput);
-              const attestationHash = computeAttestationHash(attestationInput);
-              setAttestationDebugPrefix(Buffer.from(attestationHash).toString('hex').slice(0, 12));
-
               const res = await executeOnce({
                 connection,
                 authority,
                 position,
                 samples,
-                quote,
                 config: autopilotConfig,
-                policyState: policyStateRef.current,
-                expectedMinOut: quote.outAmount.toString(),
-                quoteAgeMs: Math.max(0, Date.now() - quote.quotedAtUnixMs),
-                attestationHash,
-                attestationPayloadBytes,
+                policyState: executionPolicyStateRef.current,
+                expectedMinOut: 'N/A',
+                quoteAgeMs: 0,
                 onSimulationComplete: (s) => setSimSummary(`${s} — ready for wallet prompt`),
                 signAndSend: async (tx: VersionedTransaction) => (await provider.signAndSendTransaction(tx)).signature,
                 logger: notifications,
               });
               if (res.refresh?.decision?.nextState) {
-                policyStateRef.current = res.refresh.decision.nextState;
+                executionPolicyStateRef.current = res.refresh.decision.nextState;
+                previewPolicyStateRef.current = res.refresh.decision.nextState;
+              }
+              if (res.status === 'HOLD') {
+                setSimSummary(`Skipped before simulation: ${res.refresh?.decision?.reasonCode ?? 'HOLD'}`);
               }
 
               setLastSimDebug(res.errorDebug ?? null);
@@ -332,8 +270,6 @@ export default function Home() {
         <div>pair valid: {ui.snapshot?.pairValid === undefined ? 'N/A' : ui.snapshot?.pairValid ? 'yes' : 'no'}</div>
         <div>samples buffered: {samples.length}</div>
         <div>simulate summary: {simSummary}</div>
-        <div>swap plan: {swapPlanSummary}</div>
-        <div>attestation hash (prefix): {attestationDebugPrefix}</div>
       </section>
 
       <section className="text-sm space-y-1 border rounded p-3">
@@ -366,5 +302,3 @@ export default function Home() {
     </main>
   );
 }
-
-const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');

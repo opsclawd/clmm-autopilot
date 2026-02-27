@@ -19,6 +19,10 @@ pub mod receipt {
         let now = Clock::get()?;
 
         let receipt = &mut ctx.accounts.receipt;
+        require!(
+            !receipt.initialized,
+            ReceiptError::DuplicateExecutionReceipt
+        );
         receipt.authority = authority;
         receipt.position_mint = position_mint;
         receipt.epoch = epoch;
@@ -26,6 +30,7 @@ pub mod receipt {
         receipt.attestation_hash = attestation_hash;
         receipt.slot = now.slot;
         receipt.unix_ts = now.unix_timestamp;
+        receipt.initialized = true;
         receipt.bump = ctx.bumps.receipt;
 
         Ok(())
@@ -39,7 +44,7 @@ pub struct RecordExecution<'info> {
     pub authority: Signer<'info>,
 
     #[account(
-        init,
+        init_if_needed,
         payer = authority,
         space = Receipt::SPACE,
         seeds = [
@@ -64,6 +69,7 @@ pub struct Receipt {
     pub attestation_hash: [u8; 32],
     pub slot: u64,
     pub unix_ts: i64,
+    pub initialized: bool,
     pub bump: u8,
 }
 
@@ -76,6 +82,7 @@ impl Receipt {
         + 32 // attestation_hash
         + 8  // slot
         + 8  // unix_ts
+        + 1  // initialized
         + 1; // bump
 }
 
@@ -83,4 +90,6 @@ impl Receipt {
 pub enum ReceiptError {
     #[msg("Direction must be 0 (DOWN) or 1 (UP)")]
     InvalidDirection,
+    #[msg("Execution receipt already exists for this authority/position/epoch")]
+    DuplicateExecutionReceipt,
 }

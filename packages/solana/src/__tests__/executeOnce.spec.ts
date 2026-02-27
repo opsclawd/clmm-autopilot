@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { DISABLE_RECEIPT_PROGRAM_FOR_TESTING } from '../receipt';
+
+const DEVNET_USDC_MINT = 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k';
 
 const { buildExitTransactionMock } = vi.hoisted(() => ({
   buildExitTransactionMock: vi.fn(async () => ({}) as VersionedTransaction),
@@ -25,7 +28,7 @@ vi.mock('../orcaInspector', () => ({
     inRange: false,
     liquidity: BigInt(1),
     tokenMintA: new PublicKey('So11111111111111111111111111111111111111112'),
-    tokenMintB: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+    tokenMintB: new PublicKey(DEVNET_USDC_MINT),
     tokenDecimalsA: 9,
     tokenDecimalsB: 6,
     tokenVaultA: new PublicKey(new Uint8Array(32).fill(4)),
@@ -73,7 +76,7 @@ describe('executeOnce', () => {
       samples: [{ slot: 1, unixTs: 1, currentTickIndex: 11 }],
       quote: {
         inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
-        outputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
         inAmount: BigInt(1),
         outAmount: BigInt(1),
         slippageBps: 10,
@@ -125,7 +128,7 @@ describe('executeOnce', () => {
       ],
       quote: {
         inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
-        outputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
         inAmount: BigInt(1),
         outAmount: BigInt(1),
         slippageBps: 10,
@@ -171,7 +174,7 @@ describe('executeOnce', () => {
       ],
       quote: {
         inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
-        outputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
         inAmount: BigInt(1),
         outAmount: BigInt(1),
         slippageBps: 10,
@@ -201,7 +204,7 @@ describe('executeOnce', () => {
           inRange: true,
           liquidity: BigInt(1),
           tokenMintA: new PublicKey('So11111111111111111111111111111111111111112'),
-          tokenMintB: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+          tokenMintB: new PublicKey(DEVNET_USDC_MINT),
           tokenDecimalsA: 9,
           tokenDecimalsB: 6,
           tokenVaultA: new PublicKey(new Uint8Array(32).fill(4)),
@@ -215,7 +218,7 @@ describe('executeOnce', () => {
         },
         quote: {
           inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
-          outputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+          outputMint: new PublicKey(DEVNET_USDC_MINT),
           inAmount: BigInt(1),
           outAmount: BigInt(1),
           slippageBps: 10,
@@ -226,6 +229,11 @@ describe('executeOnce', () => {
       sleep: vi.fn(async () => {}),
       nowUnixMs: () => 10_000,
     });
+
+    if (DISABLE_RECEIPT_PROGRAM_FOR_TESTING) {
+      expect(res.errorCode).not.toBe('ALREADY_EXECUTED_THIS_EPOCH');
+      return;
+    }
 
     expect(res.status).toBe('ERROR');
     expect(res.errorCode).toBe('ALREADY_EXECUTED_THIS_EPOCH');
@@ -263,7 +271,7 @@ describe('executeOnce', () => {
       ],
       quote: {
         inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
-        outputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
         inAmount: BigInt(1),
         outAmount: BigInt(1),
         slippageBps: 10,

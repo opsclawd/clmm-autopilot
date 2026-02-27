@@ -3,10 +3,11 @@ import { Keypair, PublicKey } from '@solana/web3.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { getMintRegistry } from '@clmm-autopilot/core';
 import { runDevnetE2E } from '../e2eDevnet';
 
 const SOL = new PublicKey('So11111111111111111111111111111111111111112');
-const USDC = new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
+const USDC = new PublicKey(getMintRegistry('devnet').usdc);
 const NOT_USDC = new PublicKey('Es9vMFrzaCERmJfrF4H2FYD8fYF8f3L7hPwrKyYVJZZW');
 
 async function makeEnv(secret?: string): Promise<{ env: Record<string, string>; cleanup: () => Promise<void> }> {
@@ -84,6 +85,10 @@ describe('runDevnetE2E refusals', () => {
 
     expect(executeOnce).not.toHaveBeenCalled();
     await cleanup();
+  });
+
+  it('uses canonical devnet USDC fixture mint', () => {
+    expect(USDC.toBase58()).toBe(getMintRegistry('devnet').usdc);
   });
 
   it('refuses with ALREADY_EXECUTED_THIS_EPOCH before executeOnce', async () => {

@@ -4,28 +4,18 @@ import * as Clipboard from 'expo-clipboard';
 import { Button, SafeAreaView, ScrollView, Text, TextInput } from 'react-native';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { createConsoleNotificationsAdapter } from '@clmm-autopilot/notifications';
-import { executeOnce, fetchJupiterQuote, loadPositionSnapshot, refreshPositionDecision } from '@clmm-autopilot/solana';
-import {
-  SWAP_OK,
-  SWAP_SKIP_DUST_SOL,
-  decideSwap,
-  encodeAttestationPayload,
-  SWAP_SKIP_DUST_USDC,
-  computeAttestationHash,
-  unixDaysFromUnixMs,
-  type PolicyState,
-} from '@clmm-autopilot/core';
-import { loadAutopilotConfig } from './src/config';
+import { executeOnce, loadPositionSnapshot, refreshPositionDecision } from '@clmm-autopilot/solana';
+import { type PolicyState } from '@clmm-autopilot/core';
+import { loadAutopilotConfig, loadMobileRuntimeConfig } from './src/config';
 import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-state';
 import { runMwaSignAndSendVersionedTransaction, runMwaSignMessageSmoke } from './src/mwaSmoke';
-
-const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 
 type Sample = { slot: number; unixTs: number; currentTickIndex: number };
 
 export default function App() {
   const notifications = useMemo(() => createConsoleNotificationsAdapter(), []);
   const loaded = useMemo(() => loadAutopilotConfig(), []);
+  const runtimeConfig = useMemo(() => loadMobileRuntimeConfig(), []);
   const autopilotConfig = loaded.config;
   const configValid = loaded.ok;
   const [wallet, setWallet] = useState('');
@@ -33,14 +23,16 @@ export default function App() {
   const [ui, setUi] = useState<UiModel>(buildUiModel({}));
   const [simSummary, setSimSummary] = useState('N/A');
   const [samples, setSamples] = useState<Sample[]>([]);
-  const policyStateRef = useRef<PolicyState>({});
-  const [attestationDebugPrefix, setAttestationDebugPrefix] = useState('N/A');
-  const [swapPlanSummary, setSwapPlanSummary] = useState('N/A');
+  const previewPolicyStateRef = useRef<PolicyState>({});
+  const executionPolicyStateRef = useRef<PolicyState>({});
   const monitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const canExecute = Boolean(configValid && wallet && positionAddress && ui.canExecute);
 
-  const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+  const connection = useMemo(
+    () => new Connection(runtimeConfig.rpcUrl, runtimeConfig.commitment),
+    [runtimeConfig.rpcUrl, runtimeConfig.commitment],
+  );
 
   useEffect(() => {
     if (monitorRef.current) {
@@ -48,6 +40,8 @@ export default function App() {
       monitorRef.current = null;
     }
     setSamples([]);
+    previewPolicyStateRef.current = {};
+    executionPolicyStateRef.current = {};
 
     if (!positionAddress) return;
 
@@ -58,7 +52,9 @@ export default function App() {
         const slot = await connection.getSlot('confirmed');
         const unixTs = Math.floor(Date.now() / 1000);
         if (cancelled) return;
-        setSamples((prev) => [...prev, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }].slice(-90));
+        setSamples((prev) =>
+          [...prev, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }].slice(-autopilotConfig.ui.sampleBufferSize),
+        );
       } catch {
         // keep monitor resilient; manual refresh surfaces explicit errors
       }
@@ -74,12 +70,12 @@ export default function App() {
         monitorRef.current = null;
       }
     };
-  }, [positionAddress, autopilotConfig.policy.cadenceMs]);
+  }, [positionAddress, autopilotConfig.policy.cadenceMs, autopilotConfig.cluster, autopilotConfig.ui.sampleBufferSize, connection]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
       <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
-        <Text style={{ fontSize: 24, fontWeight: '700' }}>M6 Shell UX</Text>
+        <Text style={{ fontSize: 24, fontWeight: '700' }}>Shell UX</Text>
         {!configValid ? (
           <Text style={{ color: '#b91c1c' }}>
             {mapErrorToUi({ code: 'CONFIG_INVALID' }).title}: {mapErrorToUi({ code: 'CONFIG_INVALID' }).message}
@@ -116,7 +112,9 @@ export default function App() {
               const snapshot = await loadPositionSnapshot(connection, new PublicKey(positionAddress), autopilotConfig.cluster);
               const slot = await connection.getSlot('confirmed');
               const unixTs = Math.floor(Date.now() / 1000);
-              const nextSamples = [...samples, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }].slice(-90);
+              const nextSamples = [...samples, { slot, unixTs, currentTickIndex: snapshot.currentTickIndex }].slice(
+                -autopilotConfig.ui.sampleBufferSize,
+              );
               setSamples(nextSamples);
 
               const r = await refreshPositionDecision({
@@ -124,11 +122,11 @@ export default function App() {
                 position: new PublicKey(positionAddress),
                 samples: nextSamples,
                 config: autopilotConfig,
-                policyState: policyStateRef.current,
+                policyState: previewPolicyStateRef.current,
                 expectedMinOut: 'N/A',
                 quoteAgeMs: 0,
               });
-              policyStateRef.current = r.decision.nextState;
+              previewPolicyStateRef.current = r.decision.nextState;
               setUi(buildUiModel({
                 config: {
                   policy: autopilotConfig.policy,
@@ -175,80 +173,27 @@ export default function App() {
             try {
               const authority = new PublicKey(wallet);
               const position = new PublicKey(positionAddress);
-              const snapshot = await loadPositionSnapshot(connection, position, autopilotConfig.cluster);
-              const dir = ui.decision?.decision === 'TRIGGER_UP' ? 'UP' : 'DOWN';
-              if (!snapshot.removePreview) throw new Error(`Remove preview unavailable (${snapshot.removePreviewReasonCode ?? 'DATA_UNAVAILABLE'})`);
-
-              const tokenAOut = snapshot.removePreview.tokenAOut;
-              const tokenBOut = snapshot.removePreview.tokenBOut;
-              const inputMint = dir === 'DOWN' ? SOL_MINT : (snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA);
-              const outputMint = dir === 'DOWN' ? (snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA) : SOL_MINT;
-              const amount = dir === 'DOWN'
-                ? (snapshot.tokenMintA.equals(SOL_MINT) ? tokenAOut : tokenBOut)
-                : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
-
-              const swapDecision = decideSwap(amount, dir, autopilotConfig);
-              const reasonLabel =
-                swapDecision.reasonCode === SWAP_OK
-                  ? 'SWAP_OK'
-                  : swapDecision.reasonCode === SWAP_SKIP_DUST_SOL
-                    ? 'SWAP_SKIP_DUST_SOL'
-                    : 'SWAP_SKIP_DUST_USDC';
-              setSwapPlanSummary(`${swapDecision.execute ? 'execute' : 'skip'} (${reasonLabel})`);
-
-              const quote = swapDecision.execute
-                ? await fetchJupiterQuote({ inputMint, outputMint, amount, slippageBps: autopilotConfig.execution.slippageBpsCap })
-                : {
-                    inputMint,
-                    outputMint,
-                    inAmount: amount,
-                    outAmount: 0n,
-                    slippageBps: autopilotConfig.execution.slippageBpsCap,
-                    quotedAtUnixMs: Date.now(),
-                  };
-              const epochNowMs = Date.now();
-              const epoch = unixDaysFromUnixMs(epochNowMs);
-              const attestationInput = {
-                cluster: autopilotConfig.cluster,
-                authority: authority.toBase58(),
-                position: snapshot.position.toBase58(),
-                positionMint: snapshot.positionMint.toBase58(),
-                whirlpool: snapshot.whirlpool.toBase58(),
-                epoch,
-                direction: dir === 'UP' ? (1 as const) : (0 as const),
-                tickCurrent: snapshot.currentTickIndex,
-                lowerTickIndex: snapshot.lowerTickIndex,
-                upperTickIndex: snapshot.upperTickIndex,
-                slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
-                quoteInputMint: quote.inputMint.toBase58(),
-                quoteOutputMint: quote.outputMint.toBase58(),
-                quoteInAmount: quote.inAmount,
-                quoteMinOutAmount: quote.outAmount,
-                quoteQuotedAtUnixMs: BigInt(quote.quotedAtUnixMs),
-                swapPlanned: 1,
-                swapExecuted: swapDecision.execute ? 1 : 0,
-                swapReasonCode: swapDecision.reasonCode,
-              };
-              const attestationPayloadBytes = encodeAttestationPayload(attestationInput);
-              const attestationHash = computeAttestationHash(attestationInput);
-              setAttestationDebugPrefix(Buffer.from(attestationHash).toString('hex').slice(0, 12));
-
               const result = await executeOnce({
                 connection,
                 authority,
                 position,
                 samples,
-                quote,
                 config: autopilotConfig,
-                policyState: policyStateRef.current,
-                expectedMinOut: quote.outAmount.toString(),
-                quoteAgeMs: Math.max(0, Date.now() - quote.quotedAtUnixMs),
-                attestationHash,
-                attestationPayloadBytes,
+                policyState: executionPolicyStateRef.current,
+                expectedMinOut: 'N/A',
+                quoteAgeMs: 0,
                 onSimulationComplete: (s) => setSimSummary(`${s} — ready for wallet prompt`),
                 signAndSend: async (tx: VersionedTransaction) => (await runMwaSignAndSendVersionedTransaction(tx)).signature,
                 logger: notifications,
               });
+
+              if (result.refresh?.decision?.nextState) {
+                executionPolicyStateRef.current = result.refresh.decision.nextState;
+                previewPolicyStateRef.current = result.refresh.decision.nextState;
+              }
+              if (result.status === 'HOLD') {
+                setSimSummary(`Skipped before simulation: ${result.refresh?.decision?.reasonCode ?? 'HOLD'}`);
+              }
 
               setUi(
                 buildUiModel({
@@ -294,8 +239,6 @@ export default function App() {
         <Text>pair valid: {ui.snapshot?.pairValid === undefined ? 'N/A' : ui.snapshot?.pairValid ? 'yes' : 'no'}</Text>
         <Text>samples buffered: {samples.length}</Text>
         <Text>simulate summary: {simSummary}</Text>
-        <Text>swap plan: {swapPlanSummary}</Text>
-        <Text>attestation hash (prefix): {attestationDebugPrefix}</Text>
 
         <Text>tx signature: {ui.execution?.sendSig ?? 'N/A'}</Text>
         <Button

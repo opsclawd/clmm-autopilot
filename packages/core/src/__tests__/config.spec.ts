@@ -105,4 +105,20 @@ describe('validateConfig', () => {
       expect(res.value.execution.slippageBpsCap).toBe(50);
     }
   });
+
+  it('exposes default ui.sampleBufferSize', () => {
+    const res = validateConfig(undefined);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.value.ui.sampleBufferSize).toBe(DEFAULT_CONFIG.ui.sampleBufferSize);
+    }
+  });
+
+  it('rejects invalid ui.sampleBufferSize', () => {
+    const res = validateConfig({ ui: { sampleBufferSize: 0 } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.errors.some((e) => e.path === 'ui.sampleBufferSize' && e.code === 'RANGE')).toBe(true);
+    }
+  });
 });

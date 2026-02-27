@@ -43,6 +43,11 @@ export type AutopilotConfig = {
     minSolLamportsToSwap: number;
     minUsdcMinorToSwap: number;
   };
+
+  ui: {
+    /** Maximum number of recent tick samples retained in shell UIs. */
+    sampleBufferSize: number;
+  };
 };
 
 export const DEFAULT_CONFIG: AutopilotConfig = {
@@ -79,6 +84,9 @@ export const DEFAULT_CONFIG: AutopilotConfig = {
     // Dust thresholds.
     minSolLamportsToSwap: 0, // default disabled
     minUsdcMinorToSwap: 0, // default disabled
+  },
+  ui: {
+    sampleBufferSize: 90,
   },
 };
 
@@ -214,6 +222,7 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
 
   const policyInRaw = input.policy;
   const executionInRaw = input.execution;
+  const uiInRaw = input.ui;
 
   const policyIn =
     policyInRaw === undefined
@@ -227,6 +236,12 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
       : isRecord(executionInRaw)
         ? executionInRaw
         : (pushType(errors, 'execution', 'object', executionInRaw), {});
+  const uiIn =
+    uiInRaw === undefined
+      ? {}
+      : isRecord(uiInRaw)
+        ? uiInRaw
+        : (pushType(errors, 'ui', 'object', uiInRaw), {});
 
   const retryRaw = executionIn.retryBackoffMs;
   let retryBackoffMs = DEFAULT_CONFIG.execution.retryBackoffMs;
@@ -349,6 +364,15 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
         DEFAULT_CONFIG.execution.minUsdcMinorToSwap,
       ),
     },
+    ui: {
+      sampleBufferSize: readIntField(
+        errors,
+        uiIn,
+        'sampleBufferSize',
+        'ui.sampleBufferSize',
+        DEFAULT_CONFIG.ui.sampleBufferSize,
+      ),
+    },
   };
 
   if (errors.length) return { ok: false, errors };
@@ -445,6 +469,12 @@ export function validateConfig(input: unknown): ValidateConfigResult {
 
   if (!Number.isInteger(e.minUsdcMinorToSwap)) pushType(errors, 'execution.minUsdcMinorToSwap', 'integer', e.minUsdcMinorToSwap);
   else if (e.minUsdcMinorToSwap < 0) pushRange(errors, 'execution.minUsdcMinorToSwap', '>= 0', e.minUsdcMinorToSwap);
+
+  const ui = normalized.value.ui;
+  if (!Number.isInteger(ui.sampleBufferSize)) pushType(errors, 'ui.sampleBufferSize', 'integer', ui.sampleBufferSize);
+  else if (ui.sampleBufferSize < 10 || ui.sampleBufferSize > 10_000) {
+    pushRange(errors, 'ui.sampleBufferSize', '10..10000', ui.sampleBufferSize);
+  }
 
   if (errors.length) return { ok: false, errors };
   return normalized;

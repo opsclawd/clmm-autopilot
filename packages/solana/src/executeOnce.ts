@@ -1,13 +1,14 @@
-import { decideSwap, evaluateRangeBreak, type AutopilotConfig, type PolicyState, type Sample, unixDaysFromUnixMs } from '@clmm-autopilot/core';
+import { computeAttestationHash, decideSwap, encodeAttestationPayload, evaluateRangeBreak, type AutopilotConfig, type PolicyState, type Sample, unixDaysFromUnixMs } from '@clmm-autopilot/core';
 import { Connection, PublicKey, VersionedTransaction, type AddressLookupTableAccount } from '@solana/web3.js';
 import { buildExitTransaction, type ExitDirection, type ExitQuote } from './executionBuilder';
 import { computeExecutionRequirements } from './requirements';
-import { fetchJupiterSwapIxs } from './jupiter';
+import { fetchJupiterQuote, fetchJupiterSwapIxs } from './jupiter';
 import { normalizeSolanaError } from './errors';
 import { loadPositionSnapshot } from './orcaInspector';
-import { deriveReceiptPda, fetchReceiptByPda } from './receipt';
+import { deriveReceiptPda, DISABLE_RECEIPT_PROGRAM_FOR_TESTING, fetchReceiptByPda } from './receipt';
 import { refreshBlockhashIfNeeded, shouldRebuild, withBoundedRetry } from './reliability';
 import type { CanonicalErrorCode } from './types';
+import { SOL_MINT } from './ata';
 
 type Logger = {
   notify?: (info: string, context?: Record<string, string | number | boolean>) => void;
@@ -84,11 +85,11 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
 
 export type ExecuteOnceParams = RefreshParams & {
   authority: PublicKey;
-  quote: ExitQuote;
+  quote?: ExitQuote;
   quoteContext?: { quotedAtSlot?: number; quoteTickIndex?: number };
   // Receipt attestation hash (sha256 over canonical bytes) provided by app.
-  attestationHash: Uint8Array;
-  attestationPayloadBytes: Uint8Array;
+  attestationHash?: Uint8Array;
+  attestationPayloadBytes?: Uint8Array;
 
   signAndSend: (tx: VersionedTransaction) => Promise<string>;
 
@@ -136,6 +137,34 @@ async function loadLookupTables(connection: Connection, addresses: PublicKey[]):
   return out;
 }
 
+function buildQuoteFromSnapshot(
+  snapshot: Awaited<ReturnType<typeof loadPositionSnapshot>>,
+  direction: ExitDirection,
+  config: AutopilotConfig,
+): {
+  inputMint: PublicKey;
+  outputMint: PublicKey;
+  amount: bigint;
+  swapDecision: ReturnType<typeof decideSwap>;
+} {
+  if (!snapshot.removePreview) {
+    throw new Error(`Remove preview unavailable (${snapshot.removePreviewReasonCode ?? 'DATA_UNAVAILABLE'})`);
+  }
+  const tokenAOut = snapshot.removePreview.tokenAOut;
+  const tokenBOut = snapshot.removePreview.tokenBOut;
+  const inputMint = direction === 'DOWN'
+    ? SOL_MINT
+    : (snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA);
+  const outputMint = direction === 'DOWN'
+    ? (snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA)
+    : SOL_MINT;
+  const amount = direction === 'DOWN'
+    ? (snapshot.tokenMintA.equals(SOL_MINT) ? tokenAOut : tokenBOut)
+    : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
+  const swapDecision = decideSwap(amount, direction, config);
+  return { inputMint, outputMint, amount, swapDecision };
+}
+
 export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnceResult> {
   const sleep = params.sleep ?? (async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
@@ -153,14 +182,83 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       sleep,
       params.config.execution,
     );
+    const direction = refreshed.decision.decision === 'TRIGGER_UP' ? ('UP' as ExitDirection) : ('DOWN' as ExitDirection);
     let quote = params.quote;
     let quoteContext = params.quoteContext;
+    let attestationHash = params.attestationHash;
+    let attestationPayloadBytes = params.attestationPayloadBytes;
 
     const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, params.config.execution);
+    const epochSourceMs = nowUnixMs();
+    const epoch = unixDaysFromUnixMs(epochSourceMs);
+
+    const assembleFromSnapshot = async (
+      sourceSnapshot: Awaited<ReturnType<typeof loadPositionSnapshot>>,
+    ): Promise<{
+      quote: ExitQuote;
+      attestationHash: Uint8Array;
+      attestationPayloadBytes: Uint8Array;
+      quoteContext: { quotedAtSlot: number; quoteTickIndex: number };
+      swapDecision: ReturnType<typeof decideSwap>;
+    }> => {
+      const { inputMint, outputMint, amount, swapDecision } = buildQuoteFromSnapshot(sourceSnapshot, direction, params.config);
+      const builtQuote = swapDecision.execute
+        ? await fetchJupiterQuote({
+            inputMint,
+            outputMint,
+            amount,
+            slippageBps: params.config.execution.slippageBpsCap,
+          })
+        : {
+            inputMint,
+            outputMint,
+            inAmount: amount,
+            outAmount: BigInt(0),
+            slippageBps: params.config.execution.slippageBpsCap,
+            quotedAtUnixMs: nowUnixMs(),
+          };
+      const attestationInput = {
+        cluster: params.config.cluster,
+        authority: params.authority.toBase58(),
+        position: sourceSnapshot.position.toBase58(),
+        positionMint: sourceSnapshot.positionMint.toBase58(),
+        whirlpool: sourceSnapshot.whirlpool.toBase58(),
+        epoch,
+        direction: direction === 'UP' ? (1 as const) : (0 as const),
+        tickCurrent: sourceSnapshot.currentTickIndex,
+        lowerTickIndex: sourceSnapshot.lowerTickIndex,
+        upperTickIndex: sourceSnapshot.upperTickIndex,
+        slippageBpsCap: params.config.execution.slippageBpsCap,
+        quoteInputMint: builtQuote.inputMint.toBase58(),
+        quoteOutputMint: builtQuote.outputMint.toBase58(),
+        quoteInAmount: builtQuote.inAmount,
+        quoteMinOutAmount: builtQuote.outAmount,
+        quoteQuotedAtUnixMs: BigInt(builtQuote.quotedAtUnixMs),
+        swapPlanned: 1,
+        swapExecuted: swapDecision.execute ? 1 : 0,
+        swapReasonCode: swapDecision.reasonCode,
+      };
+      return {
+        quote: builtQuote,
+        attestationHash: computeAttestationHash(attestationInput),
+        attestationPayloadBytes: encodeAttestationPayload(attestationInput),
+        quoteContext: { quotedAtSlot: latestSlot, quoteTickIndex: sourceSnapshot.currentTickIndex },
+        swapDecision,
+      };
+    };
+
+    if (!quote || !attestationHash || !attestationPayloadBytes) {
+      const assembled = await withBoundedRetry(() => assembleFromSnapshot(snapshot), sleep, params.config.execution);
+      quote = assembled.quote;
+      attestationHash = assembled.attestationHash;
+      attestationPayloadBytes = assembled.attestationPayloadBytes;
+      quoteContext = assembled.quoteContext;
+      params.logger?.notify?.('quote assembled');
+    }
 
     const rebuildCheck = shouldRebuild(
       {
-        quotedAtUnixMs: quote.quotedAtUnixMs,
+        quotedAtUnixMs: quote!.quotedAtUnixMs,
         quotedAtSlot: quoteContext?.quotedAtSlot,
         quoteTickIndex: quoteContext?.quoteTickIndex,
       },
@@ -175,34 +273,41 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     );
 
     if (rebuildCheck.rebuild) {
-      if (!params.rebuildSnapshotAndQuote) {
-        return {
-          status: 'ERROR',
-          refresh: refreshed,
-          errorCode: 'QUOTE_STALE',
-          errorMessage: `Rebuild required: ${rebuildCheck.reasonCode}`,
-        };
+      if (params.rebuildSnapshotAndQuote) {
+        const rebuilt = await withBoundedRetry(() => params.rebuildSnapshotAndQuote!(), sleep, params.config.execution);
+        snapshot = rebuilt.snapshot;
+        quote = rebuilt.quote;
+        quoteContext = rebuilt.quoteContext;
+      } else {
+        snapshot = await withBoundedRetry(
+          () => loadPositionSnapshot(params.connection, params.position, params.config.cluster),
+          sleep,
+          params.config.execution,
+        );
+        const rebuilt = await withBoundedRetry(() => assembleFromSnapshot(snapshot), sleep, params.config.execution);
+        quote = rebuilt.quote;
+        quoteContext = rebuilt.quoteContext;
+        attestationHash = rebuilt.attestationHash;
+        attestationPayloadBytes = rebuilt.attestationPayloadBytes;
       }
-      const rebuilt = await withBoundedRetry(() => params.rebuildSnapshotAndQuote!(), sleep, params.config.execution);
-      snapshot = rebuilt.snapshot;
-      quote = rebuilt.quote;
-      quoteContext = rebuilt.quoteContext;
       params.logger?.notify?.('quote rebuilt', { reasonCode: rebuildCheck.reasonCode ?? 'QUOTE_STALE' });
     }
 
-    const epochSourceMs = nowUnixMs();
-    const epoch = unixDaysFromUnixMs(epochSourceMs);
-    const [receiptPda] = deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch });
-    const existingReceipt = params.checkExistingReceipt
-      ? await params.checkExistingReceipt(receiptPda)
-      : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, params.config.execution));
-    if (existingReceipt) {
-      return {
-        status: 'ERROR',
-        refresh: refreshed,
-        errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
-        errorMessage: 'Execution receipt already exists for canonical epoch',
-      };
+    const receiptPda = DISABLE_RECEIPT_PROGRAM_FOR_TESTING
+      ? null
+      : deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch })[0];
+    if (!DISABLE_RECEIPT_PROGRAM_FOR_TESTING && receiptPda) {
+      const existingReceipt = params.checkExistingReceipt
+        ? await params.checkExistingReceipt(receiptPda)
+        : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, params.config.execution));
+      if (existingReceipt) {
+        return {
+          status: 'ERROR',
+          refresh: refreshed,
+          errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+          errorMessage: 'Execution receipt already exists for canonical epoch',
+        };
+      }
     }
 
     const availableLamports = await withBoundedRetry(
@@ -215,15 +320,14 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, params.config.execution);
 
     const buildTx = async (recentBlockhash: string) => {
-      const direction = refreshed.decision.decision === 'TRIGGER_UP' ? ('UP' as ExitDirection) : ('DOWN' as ExitDirection);
       let lookupTableAccounts: AddressLookupTableAccount[] = [];
       let cachedSwap: Awaited<ReturnType<typeof fetchJupiterSwapIxs>> | null = null;
 
-      const swapDecision = decideSwap(quote.inAmount, direction, params.config);
+      const swapDecision = decideSwap(quote!.inAmount, direction, params.config);
 
       if (swapDecision.execute) {
         const buildSwapIxs = params.buildJupiterSwapIxs ?? fetchJupiterSwapIxs;
-        cachedSwap = await buildSwapIxs({ quote: quote as any, userPublicKey: params.authority, wrapAndUnwrapSol: false });
+        cachedSwap = await buildSwapIxs({ quote: quote! as any, userPublicKey: params.authority, wrapAndUnwrapSol: false });
         lookupTableAccounts = await loadLookupTables(params.connection, cachedSwap.lookupTableAddresses);
       }
 
@@ -233,7 +337,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         recentBlockhash,
         computeUnitLimit: params.config.execution.computeUnitLimit,
         computeUnitPriceMicroLamports: params.config.execution.computeUnitPriceMicroLamports,
-        quote,
+        quote: quote!,
         slippageBpsCap: params.config.execution.slippageBpsCap,
         quoteFreshnessMs: params.config.execution.quoteFreshnessMs,
         nowUnixMs,
@@ -244,7 +348,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         requirements: await computeExecutionRequirements({
           connection: params.connection,
           snapshot,
-          quote,
+          quote: quote!,
           authority: params.authority,
           payer: params.authority,
           txFeeLamports: params.config.execution.txFeeLamports,
@@ -252,8 +356,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           computeUnitPriceMicroLamports: params.config.execution.computeUnitPriceMicroLamports,
           bufferLamports: params.config.execution.feeBufferLamports,
         }),
-        attestationHash: params.attestationHash,
-        attestationPayloadBytes: params.attestationPayloadBytes,
+        attestationHash: attestationHash!,
+        attestationPayloadBytes: attestationPayloadBytes!,
         lookupTableAccounts,
         returnVersioned: true,
         // Phase-1: simulate must succeed before prompting wallet.
@@ -326,10 +430,12 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     );
 
     let receipt = null;
-    for (let i = 0; i < params.config.execution.receiptPollMaxAttempts; i += 1) {
-      receipt = await fetchReceiptByPda(params.connection, receiptPda);
-      if (receipt) break;
-      await sleep(params.config.execution.receiptPollIntervalMs);
+    if (!DISABLE_RECEIPT_PROGRAM_FOR_TESTING && receiptPda) {
+      for (let i = 0; i < params.config.execution.receiptPollMaxAttempts; i += 1) {
+        receipt = await fetchReceiptByPda(params.connection, receiptPda);
+        if (receipt) break;
+        await sleep(params.config.execution.receiptPollIntervalMs);
+      }
     }
 
     return {
@@ -340,7 +446,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         simulated: true,
         simLogs: [simSummary],
         sendSig: sig,
-        receiptPda: receiptPda.toBase58(),
+        receiptPda: receiptPda?.toBase58(),
         receiptFetched: Boolean(receipt),
         receiptFields: receipt
           ? `authority=${receipt.authority.toBase58()} positionMint=${receipt.positionMint.toBase58()} epoch=${receipt.epoch} direction=${receipt.direction} attestationHash=${Buffer.from(receipt.attestationHash).toString('hex')} slot=${receipt.slot.toString()} unixTs=${receipt.unixTs.toString()} bump=${receipt.bump}`
@@ -348,7 +454,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       },
       simSummary,
       txSignature: sig,
-      receiptPda: receiptPda.toBase58(),
+      receiptPda: receiptPda?.toBase58(),
     };
   } catch (error) {
     const normalized = normalizeSolanaError(error);

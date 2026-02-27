@@ -16,3 +16,9 @@ Use: `specs/<milestone>-<slug>.spec.md`
 Examples:
 - `specs/m0-scaffold.spec.md`
 - `specs/m1-foundations.spec.md`
+
+## Milestone Status Notes
+
+Current implementation traceability and deferred items are tracked in:
+
+- `docs/spec-traceability.md`

@@ -1,4 +1,5 @@
 import { PublicKey, TransactionInstruction, type AccountMeta } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import type { PositionSnapshot } from './orcaInspector';
 import { buildCreateAtaIdempotentIx, getAta } from './ata';
 
@@ -11,16 +12,28 @@ const DISCRIMINATOR_COLLECT_FEES_V2 = Buffer.from([207, 117, 95, 191, 229, 180, 
 
 function writeU64LE(v: bigint): Buffer {
   const b = Buffer.alloc(8);
-  b.writeBigUInt64LE(v);
+  let n = BigInt.asUintN(64, v);
+  for (let i = 0; i < 8; i += 1) {
+    b[i] = Number(n & BigInt(0xff));
+    n >>= BigInt(8);
+  }
   return b;
 }
 
 function writeU128LE(v: bigint): Buffer {
   const b = Buffer.alloc(16);
   const lo = BigInt.asUintN(64, v);
-  const hi = v >> BigInt(64);
-  b.writeBigUInt64LE(lo, 0);
-  b.writeBigUInt64LE(hi, 8);
+  const hi = BigInt.asUintN(64, v >> BigInt(64));
+  let n = lo;
+  for (let i = 0; i < 8; i += 1) {
+    b[i] = Number(n & BigInt(0xff));
+    n >>= BigInt(8);
+  }
+  n = hi;
+  for (let i = 0; i < 8; i += 1) {
+    b[8 + i] = Number(n & BigInt(0xff));
+    n >>= BigInt(8);
+  }
   return b;
 }
 
@@ -38,12 +51,18 @@ export function buildOrcaExitIxs(params: {
   authority: PublicKey;
   payer: PublicKey;
 }): OrcaExitIxs {
-  const positionTokenAccount = getAta(params.snapshot.positionMint, params.authority);
+  const positionTokenProgram = params.snapshot.positionTokenProgram ?? TOKEN_PROGRAM_ID;
+  const positionTokenAccount = getAta(params.snapshot.positionMint, params.authority, positionTokenProgram);
   const ownerA = getAta(params.snapshot.tokenMintA, params.authority, params.snapshot.tokenProgramA);
   const ownerB = getAta(params.snapshot.tokenMintB, params.authority, params.snapshot.tokenProgramB);
 
   const conditionalAtaIxs: TransactionInstruction[] = [
-    buildCreateAtaIdempotentIx({ payer: params.payer, owner: params.authority, mint: params.snapshot.positionMint }).ix,
+    buildCreateAtaIdempotentIx({
+      payer: params.payer,
+      owner: params.authority,
+      mint: params.snapshot.positionMint,
+      tokenProgramId: positionTokenProgram,
+    }).ix,
     buildCreateAtaIdempotentIx({ payer: params.payer, owner: params.authority, mint: params.snapshot.tokenMintA, tokenProgramId: params.snapshot.tokenProgramA }).ix,
     buildCreateAtaIdempotentIx({ payer: params.payer, owner: params.authority, mint: params.snapshot.tokenMintB, tokenProgramId: params.snapshot.tokenProgramB }).ix,
   ];

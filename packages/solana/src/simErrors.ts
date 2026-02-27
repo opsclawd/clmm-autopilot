@@ -18,7 +18,7 @@ const RULES: Rule[] = [
   {
     code: 'ALREADY_EXECUTED_THIS_EPOCH',
     message: 'Simulation failed because receipt already exists for epoch',
-    patterns: ['already executed', 'receipt already exists', 'executionalreadyrecorded'],
+    patterns: ['already executed', 'receipt already exists', 'executionalreadyrecorded', 'duplicateexecutionreceipt'],
   },
   {
     code: 'SLIPPAGE_EXCEEDED',

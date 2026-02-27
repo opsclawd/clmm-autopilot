@@ -5,7 +5,7 @@ import { PublicKey } from '@solana/web3.js';
 vi.mock('@clmm-autopilot/core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@clmm-autopilot/core')>();
   const SOL = 'So11111111111111111111111111111111111111112';
-  const USDC = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+  const USDC = 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k';
   return {
     ...actual,
     evaluateRangeBreak: () => ({
@@ -30,7 +30,7 @@ vi.mock('@clmm-autopilot/core', async (importOriginal) => {
 vi.mock('../orcaInspector', async () => {
   const { PublicKey } = await import('@solana/web3.js');
   const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
-  const USDC_MINT = new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
+  const USDC_MINT = new PublicKey('BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k');
   return {
     loadPositionSnapshot: async () => ({
       cluster: 'devnet',
@@ -78,7 +78,7 @@ describe('executeOnce underfunded', () => {
 
     const quote = {
       inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
-      outputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'),
+      outputMint: new PublicKey('BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k'),
       inAmount: BigInt(1),
       outAmount: BigInt(1),
       slippageBps: 1,
@@ -112,7 +112,7 @@ describe('executeOnce underfunded', () => {
         upperTickIndex: 150,
         slippageBpsCap: 50,
         quoteInputMint: new PublicKey('So11111111111111111111111111111111111111112').toBase58(),
-        quoteOutputMint: new PublicKey('4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU').toBase58(),
+        quoteOutputMint: new PublicKey('BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k').toBase58(),
         quoteInAmount: 1n,
         quoteMinOutAmount: 1n,
         quoteQuotedAtUnixMs: 1n,

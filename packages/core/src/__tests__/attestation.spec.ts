@@ -15,7 +15,7 @@ const INPUT = {
   upperTickIndex: 1200,
   slippageBpsCap: 50,
   quoteInputMint: 'So11111111111111111111111111111111111111112',
-  quoteOutputMint: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+  quoteOutputMint: 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k',
   quoteInAmount: 123456789n,
   quoteMinOutAmount: 45441650n,
   quoteQuotedAtUnixMs: 1708747200123n,
@@ -46,7 +46,7 @@ describe('attestation encoding/hash', () => {
     const hash = computeAttestationHash(INPUT);
 
     expect(payload.length).toBe(240);
-    expect(Buffer.from(hash).toString('hex')).toBe('1a45a55e4a919d945716569a3f2ef47315d779982462fdf2b14dae0ad796ee45');
+    expect(Buffer.from(hash).toString('hex')).toBe('afb51a8e8b6635aaafae1fc7ca859d8977fe4924866db0c00a27f003f95059a8');
   });
 
   it('matches node crypto sha256 reference across payload sizes', () => {

@@ -17,6 +17,20 @@ describe('receipt', () => {
   const positionMint = Keypair.generate().publicKey;
   const randomHash = () => Uint8Array.from(Array.from({ length: 32 }, () => Math.floor(Math.random() * 256)));
 
+  const extractErrorCode = (error: unknown): string => {
+    if (typeof error === 'object' && error) {
+      const e = error as {
+        error?: { errorCode?: { code?: string } };
+        logs?: string[];
+      };
+      if (typeof e.error?.errorCode?.code === 'string') return e.error.errorCode.code;
+      if (Array.isArray(e.logs) && e.logs.some((l) => l.includes('DuplicateExecutionReceipt'))) {
+        return 'DuplicateExecutionReceipt';
+      }
+    }
+    return String(error);
+  };
+
   const fund = async (kp: Keypair) => {
     const sig = await provider.connection.requestAirdrop(kp.publicKey, 2 * anchor.web3.LAMPORTS_PER_SOL);
     await provider.connection.confirmTransaction(sig, 'confirmed');
@@ -52,7 +66,7 @@ describe('receipt', () => {
     expect(Number(acc.unixTs)).to.not.eq(0);
   });
 
-  it('duplicate fails with stable account-in-use style error', async () => {
+  it('duplicate fails with stable custom error code', async () => {
     const [receipt] = deriveReceiptPda({
       authority: authorityA.publicKey,
       positionMint,
@@ -60,7 +74,7 @@ describe('receipt', () => {
       programId: program.programId,
     });
 
-    let errMsg = '';
+    let errCode = '';
     try {
       await program.methods
         .recordExecution(epoch, 0, positionMint, [...randomHash()])
@@ -68,11 +82,10 @@ describe('receipt', () => {
         .signers([authorityA])
         .rpc();
     } catch (e) {
-      errMsg = String(e);
+      errCode = extractErrorCode(e);
     }
 
-    expect(errMsg.length).to.be.greaterThan(0);
-    expect(/already in use|custom program error|Allocate: account Address/.test(errMsg)).to.eq(true);
+    expect(errCode).to.eq('DuplicateExecutionReceipt');
   });
 
   it('different epoch succeeds', async () => {
@@ -139,5 +152,6 @@ describe('receipt', () => {
     expect(acc.direction).to.eq(1);
     expect(acc.positionMint.toBase58()).to.eq(positionMint.toBase58());
     expect(Buffer.from(acc.attestationHash).equals(Buffer.from(attestationHash))).to.eq(true);
+    expect(acc.initialized).to.eq(true);
   });
 });

@@ -3,6 +3,7 @@ export type CanonicalErrorCode =
   | 'RPC_TRANSIENT'
   | 'RPC_PERMANENT'
   | 'INVALID_POSITION'
+  | 'ORCA_DECODE_FAILED'
   | 'NOT_SOL_USDC'
   | 'ALREADY_EXECUTED_THIS_EPOCH'
   | 'QUOTE_STALE'
