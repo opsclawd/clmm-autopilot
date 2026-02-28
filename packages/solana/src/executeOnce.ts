@@ -29,6 +29,14 @@ type Logger = {
 };
 
 const ZERO_PUBKEY = '11111111111111111111111111111111';
+type SuppliedQuote = {
+  inputMint: PublicKey;
+  outputMint: PublicKey;
+  inAmount: bigint;
+  outAmount: bigint;
+  quotedAtUnixMs: number;
+  raw?: unknown;
+};
 
 export type RefreshParams = {
   connection: Connection;
@@ -170,6 +178,27 @@ function buildSwapInput(
   return { inputMint, outputMint, amount, aToB: inputMint.equals(snapshot.tokenMintA) };
 }
 
+function buildPlanQuoteFromSupplied(router: AutopilotConfig['execution']['swapRouter'], suppliedQuote: SuppliedQuote, slippageBpsCap: number): SwapQuote {
+  if (router === 'jupiter' && suppliedQuote.raw === undefined) {
+    throw {
+      code: 'DATA_UNAVAILABLE',
+      retryable: false,
+      message: 'supplied quote missing raw Jupiter payload required for swap instruction build',
+      debug: { router, suppliedQuoteKeys: Object.keys(suppliedQuote as Record<string, unknown>) },
+    } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
+  }
+  return {
+    router,
+    inMint: suppliedQuote.inputMint.toBase58(),
+    outMint: suppliedQuote.outputMint.toBase58(),
+    swapInAmount: suppliedQuote.inAmount,
+    swapMinOutAmount: suppliedQuote.outAmount,
+    slippageBpsCap,
+    quotedAtUnixSec: Math.floor(suppliedQuote.quotedAtUnixMs / 1000),
+    ...(router === 'jupiter' && suppliedQuote.raw !== undefined ? { debug: { jupiterRaw: suppliedQuote.raw } } : {}),
+  };
+}
+
 export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnceResult> {
   const sleep = params.sleep ?? (async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
@@ -203,9 +232,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       quoteTickIndex: number;
       quotedAtUnixMs: number;
     }> => {
-      const suppliedQuote = params.quote as
-        | { inputMint: PublicKey; outputMint: PublicKey; inAmount: bigint; outAmount: bigint; quotedAtUnixMs: number }
-        | undefined;
+      const suppliedQuote = params.quote as SuppliedQuote | undefined;
       const { inputMint, outputMint, amount, aToB } = suppliedQuote
         ? {
             inputMint: suppliedQuote.inputMint,
@@ -260,15 +287,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       } else {
         const adapter = getSwapAdapter(router, params.config.cluster);
         if (suppliedQuote) {
-          planQuote = {
-            router,
-            inMint: suppliedQuote.inputMint.toBase58(),
-            outMint: suppliedQuote.outputMint.toBase58(),
-            swapInAmount: suppliedQuote.inAmount,
-            swapMinOutAmount: suppliedQuote.outAmount,
-            slippageBpsCap: params.config.execution.slippageBpsCap,
-            quotedAtUnixSec: Math.floor(suppliedQuote.quotedAtUnixMs / 1000),
-          };
+          planQuote = buildPlanQuoteFromSupplied(router, suppliedQuote, params.config.execution.slippageBpsCap);
         } else {
           planQuote = await adapter.getQuote({
             cluster: params.config.cluster,
