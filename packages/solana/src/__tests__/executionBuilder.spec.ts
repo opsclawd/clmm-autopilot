@@ -96,6 +96,7 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
       positionTokenAccount: pk(3),
     }),
     buildJupiterSwapIxs: async () => ({ instructions: [ix(33)], lookupTableAddresses: [pk(90)] }),
+    swapIxs: [ix(33)],
     buildWsolLifecycleIxs: () => ({ preSwap: [ix(23)], postSwap: [ix(24)], wsolAta: pk(55) }),
     lookupTableAccounts: [] as AddressLookupTableAccount[],
   };
@@ -200,6 +201,11 @@ describe('buildExitTransaction', () => {
     });
 
     await expect(buildExitTransaction(baseSnapshot, 'DOWN', cfg)).rejects.toMatchObject({ code: 'QUOTE_STALE' });
+  });
+
+  it('fails when swap is planned but swap instructions are missing', async () => {
+    const cfg = buildConfig({ swapIxs: [] });
+    await expect(buildExitTransaction(baseSnapshot, 'DOWN', cfg)).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE' });
   });
 
   it('simulate-then-send gate cannot be bypassed', async () => {

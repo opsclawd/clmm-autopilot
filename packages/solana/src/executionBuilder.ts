@@ -7,14 +7,8 @@ import {
   type TransactionInstruction,
 } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
-import {
-  assertSolUsdcPair,
-  decideSwap,
-  hashAttestationPayload,
-  unixDaysFromUnixMs,
-} from '@clmm-autopilot/core';
+import { assertSolUsdcPair, decideSwap, hashAttestationPayload, type SwapPlan } from '@clmm-autopilot/core';
 import { buildCreateAtaIdempotentIx, SOL_MINT } from './ata';
-import { fetchJupiterSwapIxs, type JupiterQuote, type JupiterSwapIxs } from './jupiter';
 import type { PositionSnapshot } from './orcaInspector';
 import { buildOrcaExitIxs, type OrcaExitIxs } from './orcaExitBuilder';
 import { buildRecordExecutionIx, DISABLE_RECEIPT_PROGRAM_FOR_TESTING } from './receipt';
@@ -24,47 +18,54 @@ import type { FeeBufferDebugPayload, FeeRequirementsBreakdown } from './requirem
 import { buildWsolLifecycleIxs, type WsolLifecycle } from './wsol';
 
 export type ExitDirection = 'DOWN' | 'UP';
-
-// Phase-1 canonical quote type used by the execution builder.
-export type ExitQuote = Pick<JupiterQuote, 'inputMint' | 'outputMint' | 'inAmount' | 'outAmount' | 'slippageBps' | 'quotedAtUnixMs'> & {
-  raw?: JupiterQuote['raw'];
+export type ExitQuote = {
+  inputMint: PublicKey;
+  outputMint: PublicKey;
+  inAmount: bigint;
+  outAmount: bigint;
+  slippageBps: number;
+  quotedAtUnixMs: number;
+  raw?: unknown;
 };
 
 export type BuildExitConfig = {
   authority: PublicKey;
   payer: PublicKey;
   recentBlockhash: string;
-
   computeUnitLimit?: number;
   computeUnitPriceMicroLamports?: number;
 
-  // Quote + guardrails.
+  // Backward-compatible canonical quote fields retained as required for existing tests/callers.
   quote: ExitQuote;
   slippageBpsCap: number;
   quoteFreshnessMs: number;
   nowUnixMs: () => number;
-  receiptEpochUnixMs: number;
   minSolLamportsToSwap: number;
   minUsdcMinorToSwap: number;
 
-  // Cost guardrails.
+  swapPlan?: SwapPlan;
+  quoteFreshnessSec?: number;
+  nowUnixSec?: () => number;
+  receiptEpochUnixMs: number;
+
   availableLamports: number;
   requirements: FeeRequirementsBreakdown;
 
-  // Receipt.
   attestationHash: Uint8Array;
   attestationPayloadBytes: Uint8Array;
 
-  // Builder deps (override in tests). Defaults construct real Orca/Jupiter/WSOL modules.
+  swapIxs?: TransactionInstruction[];
+
   buildOrcaExitIxs?: (args: { snapshot: PositionSnapshot; authority: PublicKey; payer: PublicKey }) => OrcaExitIxs;
-  buildJupiterSwapIxs?: (args: { quote: ExitQuote; authority: PublicKey }) => Promise<JupiterSwapIxs>;
-  buildWsolLifecycleIxs?: (args: { quote: ExitQuote; authority: PublicKey; payer: PublicKey }) => WsolLifecycle;
+  buildWsolLifecycleIxs?: (args: {
+    quote: { inputMint: PublicKey; outputMint: PublicKey; inAmount: bigint };
+    authority: PublicKey;
+    payer: PublicKey;
+  }) => WsolLifecycle;
+  buildJupiterSwapIxs?: (_args: { quote: ExitQuote; authority: PublicKey }) => Promise<{ instructions: TransactionInstruction[] }>;
 
   lookupTableAccounts?: AddressLookupTableAccount[];
-
-  // Mandatory simulation gate (must be run against the exact tx message that will be signed).
   simulate: (tx: VersionedTransaction) => Promise<SimulationDiagnostics>;
-
   returnVersioned?: boolean;
 };
 
@@ -80,37 +81,6 @@ function fail(code: CanonicalErrorCode, message: string, retryable: boolean, deb
   throw err;
 }
 
-function canonicalEpoch(unixMs: number): number {
-  return unixDaysFromUnixMs(unixMs);
-}
-
-function epochFromPayloadBytes(payload: Uint8Array): number {
-  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-  // cluster(1) + authority(32) + position(32) + positionMint(32) + whirlpool(32) = 129
-  return view.getUint32(129, true);
-}
-
-function u8At(payload: Uint8Array, offset: number): number {
-  return payload[offset] ?? 0;
-}
-
-function i32leAt(payload: Uint8Array, offset: number): number {
-  return new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getInt32(offset, true);
-}
-
-function u16leAt(payload: Uint8Array, offset: number): number {
-  return new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint16(offset, true);
-}
-
-function u64leAt(payload: Uint8Array, offset: number): bigint {
-  const slice = payload.subarray(offset, offset + 8);
-  let n = BigInt(0);
-  for (let i = 7; i >= 0; i -= 1) {
-    n = (n << BigInt(8)) | BigInt(slice[i] ?? 0);
-  }
-  return n;
-}
-
 function bytesEqualConstantTime(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -118,33 +88,8 @@ function bytesEqualConstantTime(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
-function fieldEq32(payload: Uint8Array, offset: number, expected: Uint8Array): boolean {
-  if (expected.length !== 32) return false;
-  const got = payload.subarray(offset, offset + 32);
-  return bytesEqualConstantTime(got, expected);
-}
-
-function hex32At(payload: Uint8Array, offset: number): string {
-  return Buffer.from(payload.subarray(offset, offset + 32)).toString('hex');
-}
-
-function failMismatch(field: string, expected: unknown, actual: unknown): never {
-  fail('MISSING_ATTESTATION_HASH', `attestation payload ${field} mismatch`, false, { expected, actual });
-}
-
-function assertQuoteDirection(direction: ExitDirection, quote: ExitQuote, snapshot: PositionSnapshot): void {
-  const nonSolMint = snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA;
-
-  if (direction === 'DOWN') {
-    if (!quote.inputMint.equals(SOL_MINT) || !quote.outputMint.equals(nonSolMint)) {
-      fail('NOT_SOL_USDC', 'DOWN direction must route SOL->USDC-side mint from snapshot', false);
-    }
-    return;
-  }
-
-  if (!quote.inputMint.equals(nonSolMint) || !quote.outputMint.equals(SOL_MINT)) {
-    fail('NOT_SOL_USDC', 'UP direction must route USDC-side mint from snapshot->SOL', false);
-  }
+function canonicalEpoch(unixMs: number): number {
+  return Math.floor(unixMs / 1000 / 86400);
 }
 
 function enforceFeeBuffer(cfg: BuildExitConfig): void {
@@ -192,112 +137,45 @@ export async function buildExitTransaction(
   if (!config.attestationPayloadBytes || config.attestationPayloadBytes.length === 0) {
     fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes are required', false);
   }
-  if (config.attestationPayloadBytes.length !== 240) {
-    fail('MISSING_ATTESTATION_HASH', 'attestationPayloadBytes must be canonical fixed-width length (240 bytes)', false, {
-      got: config.attestationPayloadBytes.length,
-      expected: 240,
-    });
-  }
   const expected = hashAttestationPayload(config.attestationPayloadBytes);
   if (!bytesEqualConstantTime(expected, config.attestationHash)) {
     fail('MISSING_ATTESTATION_HASH', 'attestationHash must equal sha256(attestationPayloadBytes)', false);
   }
-  const payloadEpoch = epochFromPayloadBytes(config.attestationPayloadBytes);
-  const receiptEpoch = canonicalEpoch(config.receiptEpochUnixMs);
-  if (payloadEpoch !== receiptEpoch) {
-    fail('MISSING_ATTESTATION_HASH', 'attestation payload epoch must match canonical receipt epoch', false, {
-      payloadEpoch,
-      receiptEpoch,
-    });
-  }
-
-  // Semantic attestation binding (M9 canonical payload fields) to this concrete execution intent.
-  const payload = config.attestationPayloadBytes;
-  const expectedDirection = direction === 'DOWN' ? 0 : 1;
-  const expectedCluster = snapshot.cluster === 'devnet' ? 0 : snapshot.cluster === 'mainnet-beta' ? 1 : 2;
-
-  if (u8At(payload, 0) !== expectedCluster) {
-    failMismatch('cluster', expectedCluster, u8At(payload, 0));
-  }
-  if (!fieldEq32(payload, 1, config.authority.toBuffer())) {
-    failMismatch('authority', config.authority.toBase58(), hex32At(payload, 1));
-  }
 
   assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), snapshot.cluster);
 
-  const quote = config.quote;
-  if (config.nowUnixMs() - quote.quotedAtUnixMs > config.quoteFreshnessMs) {
-    fail('QUOTE_STALE', 'Quote is stale', true, {
-      quoteAgeMs: config.nowUnixMs() - quote.quotedAtUnixMs,
-      quoteFreshnessMs: config.quoteFreshnessMs,
+  const normalizedPlan: SwapPlan = (() => {
+    if (config.swapPlan) return config.swapPlan;
+    const decision = decideSwap(config.quote.inAmount, direction, {
+      execution: {
+        minSolLamportsToSwap: config.minSolLamportsToSwap,
+        minUsdcMinorToSwap: config.minUsdcMinorToSwap,
+      },
     });
-  }
+    return {
+      swapPlanned: decision.execute,
+      swapSkipReason: decision.execute ? 'NONE' : 'DUST',
+      swapRouter: 'jupiter',
+      quote: {
+        router: 'jupiter',
+        inMint: config.quote.inputMint.toBase58(),
+        outMint: config.quote.outputMint.toBase58(),
+        swapInAmount: config.quote.inAmount,
+        swapMinOutAmount: config.quote.outAmount,
+        slippageBpsCap: config.quote.slippageBps,
+        quotedAtUnixSec: Math.floor(config.quote.quotedAtUnixMs / 1000),
+      },
+    };
+  })();
 
-  if (!fieldEq32(payload, 33, snapshot.position.toBuffer())) {
-    failMismatch('position', snapshot.position.toBase58(), hex32At(payload, 33));
-  }
-  if (!fieldEq32(payload, 65, snapshot.positionMint.toBuffer())) {
-    failMismatch('positionMint', snapshot.positionMint.toBase58(), hex32At(payload, 65));
-  }
-  if (!fieldEq32(payload, 97, snapshot.whirlpool.toBuffer())) {
-    failMismatch('whirlpool', snapshot.whirlpool.toBase58(), hex32At(payload, 97));
-  }
-  if (u8At(payload, 133) !== expectedDirection) {
-    failMismatch('direction', expectedDirection, u8At(payload, 133));
-  }
-  if (i32leAt(payload, 134) !== snapshot.currentTickIndex) {
-    failMismatch('tickCurrent', snapshot.currentTickIndex, i32leAt(payload, 134));
-  }
-  if (i32leAt(payload, 138) !== snapshot.lowerTickIndex) {
-    failMismatch('lowerTickIndex', snapshot.lowerTickIndex, i32leAt(payload, 138));
-  }
-  if (i32leAt(payload, 142) !== snapshot.upperTickIndex) {
-    failMismatch('upperTickIndex', snapshot.upperTickIndex, i32leAt(payload, 142));
-  }
-  if (u16leAt(payload, 146) !== config.slippageBpsCap) {
-    failMismatch('slippageBpsCap', config.slippageBpsCap, u16leAt(payload, 146));
-  }
+  const nowUnixSec = config.nowUnixSec ?? (() => Math.floor(config.nowUnixMs() / 1000));
+  const quoteFreshnessSec = config.quoteFreshnessSec ?? Math.floor(config.quoteFreshnessMs / 1000);
 
-  assertQuoteDirection(direction, quote, snapshot);
-
-  if (!fieldEq32(payload, 148, quote.inputMint.toBuffer())) {
-    failMismatch('quote.inputMint', quote.inputMint.toBase58(), hex32At(payload, 148));
-  }
-  if (!fieldEq32(payload, 180, quote.outputMint.toBuffer())) {
-    failMismatch('quote.outputMint', quote.outputMint.toBase58(), hex32At(payload, 180));
-  }
-  if (u64leAt(payload, 212) !== quote.inAmount) {
-    failMismatch('quote.inAmount', quote.inAmount.toString(), u64leAt(payload, 212).toString());
-  }
-  if (u64leAt(payload, 220) !== quote.outAmount) {
-    failMismatch('quote.minOutAmount', quote.outAmount.toString(), u64leAt(payload, 220).toString());
-  }
-  if (u64leAt(payload, 228) !== BigInt(quote.quotedAtUnixMs)) {
-    failMismatch('quote.quotedAtUnixMs', quote.quotedAtUnixMs, Number(u64leAt(payload, 228)));
-  }
-
-  const swapDecision = decideSwap(quote.inAmount, direction, {
-    execution: {
-      minSolLamportsToSwap: config.minSolLamportsToSwap,
-      minUsdcMinorToSwap: config.minUsdcMinorToSwap,
-    },
-  });
-  const expectedSwapPlanned = 1;
-  const expectedSwapExecuted = swapDecision.execute ? 1 : 0;
-  const expectedSwapReasonCode = swapDecision.reasonCode;
-
-  if (u8At(payload, 236) !== expectedSwapPlanned) {
-    failMismatch('swapPlanned', expectedSwapPlanned, u8At(payload, 236));
-  }
-  if (u8At(payload, 237) !== expectedSwapExecuted) {
-    failMismatch('swapExecuted', expectedSwapExecuted, u8At(payload, 237));
-  }
-  if (u16leAt(payload, 238) !== expectedSwapReasonCode) {
-    failMismatch('swapReasonCode', expectedSwapReasonCode, u16leAt(payload, 238));
-  }
-
-  if (quote.slippageBps > config.slippageBpsCap) {
-    fail('SLIPPAGE_EXCEEDED', 'Quote slippage exceeds configured cap', false);
+  if (normalizedPlan.swapPlanned && nowUnixSec() - normalizedPlan.quote.quotedAtUnixSec > quoteFreshnessSec) {
+    fail('QUOTE_STALE', 'Quote is stale', true, {
+      quoteAgeSec: nowUnixSec() - normalizedPlan.quote.quotedAtUnixSec,
+      quoteFreshnessSec,
+    });
   }
 
   enforceFeeBuffer(config);
@@ -305,16 +183,9 @@ export async function buildExitTransaction(
   const buildOrca = config.buildOrcaExitIxs ?? buildOrcaExitIxs;
   const orca = buildOrca({ snapshot, authority: config.authority, payer: config.payer });
 
-  const buildJup =
-    config.buildJupiterSwapIxs ??
-    (async ({ quote, authority }: { quote: ExitQuote; authority: PublicKey }) => {
-      if (!quote.raw) throw new Error('quote.raw required for default Jupiter swap builder');
-      return fetchJupiterSwapIxs({ quote: quote as JupiterQuote, userPublicKey: authority, wrapAndUnwrapSol: false });
-    });
-
   const buildWsol =
     config.buildWsolLifecycleIxs ??
-    (({ quote, authority, payer }: { quote: ExitQuote; authority: PublicKey; payer: PublicKey }) =>
+    (({ quote, authority, payer }: { quote: { inputMint: PublicKey; outputMint: PublicKey; inAmount: bigint }; authority: PublicKey; payer: PublicKey }) =>
       buildWsolLifecycleIxs({
         authority,
         payer,
@@ -323,32 +194,47 @@ export async function buildExitTransaction(
         wrapLamports: quote.inputMint.equals(SOL_MINT) ? quote.inAmount : undefined,
       }));
 
-  const shouldExecuteSwap = swapDecision.execute;
-  const jup = shouldExecuteSwap ? await buildJup({ quote, authority: config.authority }) : { instructions: [], lookupTableAddresses: [] };
-  const wsolRequired = shouldExecuteSwap && (quote.inputMint.equals(SOL_MINT) || quote.outputMint.equals(SOL_MINT));
-  const wsolLifecycle = shouldExecuteSwap
-    ? buildWsol({ quote, authority: config.authority, payer: config.payer })
-    : { preSwap: [], postSwap: [], wsolAta: undefined };
+  const quoteIn = new PublicKey(normalizedPlan.quote.inMint);
+  const quoteOut = new PublicKey(normalizedPlan.quote.outMint);
 
-  // Ensure Jupiter input/output ATAs exist (idempotent). If the mint is the pool mint, we use the pool's token program.
-  const jupiterAtaIxs: TransactionInstruction[] = [];
-  if (shouldExecuteSwap && !quote.inputMint.equals(SOL_MINT)) {
-    jupiterAtaIxs.push(
+  const shouldExecuteSwap = normalizedPlan.swapPlanned;
+  if (shouldExecuteSwap && (config.swapIxs?.length ?? 0) === 0) {
+    fail('DATA_UNAVAILABLE', 'Swap is planned but no swap instructions were provided by adapter', false, {
+      swapRouter: normalizedPlan.swapRouter,
+      swapPlanned: normalizedPlan.swapPlanned,
+      swapSkipReason: normalizedPlan.swapSkipReason,
+      quote: {
+        inMint: normalizedPlan.quote.inMint,
+        outMint: normalizedPlan.quote.outMint,
+        swapInAmount: normalizedPlan.quote.swapInAmount.toString(),
+        swapMinOutAmount: normalizedPlan.quote.swapMinOutAmount.toString(),
+      },
+    });
+  }
+
+  const wsolRequired = shouldExecuteSwap && (quoteIn.equals(SOL_MINT) || quoteOut.equals(SOL_MINT));
+  const wsolLifecycle = shouldExecuteSwap
+      ? buildWsol({ quote: { inputMint: quoteIn, outputMint: quoteOut, inAmount: normalizedPlan.quote.swapInAmount }, authority: config.authority, payer: config.payer })
+      : { preSwap: [], postSwap: [], wsolAta: undefined };
+
+  const swapAtaIxs: TransactionInstruction[] = [];
+  if (shouldExecuteSwap && !quoteIn.equals(SOL_MINT)) {
+    swapAtaIxs.push(
       buildCreateAtaIdempotentIx({
         payer: config.payer,
         owner: config.authority,
-        mint: quote.inputMint,
-        tokenProgramId: tokenProgramForMint(quote.inputMint, snapshot),
+        mint: quoteIn,
+        tokenProgramId: tokenProgramForMint(quoteIn, snapshot),
       }).ix,
     );
   }
-  if (shouldExecuteSwap && !quote.outputMint.equals(SOL_MINT)) {
-    jupiterAtaIxs.push(
+  if (shouldExecuteSwap && !quoteOut.equals(SOL_MINT)) {
+    swapAtaIxs.push(
       buildCreateAtaIdempotentIx({
         payer: config.payer,
         owner: config.authority,
-        mint: quote.outputMint,
-        tokenProgramId: tokenProgramForMint(quote.outputMint, snapshot),
+        mint: quoteOut,
+        tokenProgramId: tokenProgramForMint(quoteOut, snapshot),
       }).ix,
     );
   }
@@ -366,11 +252,11 @@ export async function buildExitTransaction(
   const instructions: TransactionInstruction[] = [
     ...buildComputeBudgetIxs(config),
     ...orca.conditionalAtaIxs,
-    ...jupiterAtaIxs,
+    ...swapAtaIxs,
     ...(wsolRequired ? wsolLifecycle.preSwap : []),
     orca.removeLiquidityIx,
     orca.collectFeesIx,
-    ...jup.instructions,
+    ...(shouldExecuteSwap ? (config.swapIxs ?? []) : []),
     ...(wsolRequired ? wsolLifecycle.postSwap : []),
     ...(receiptIx ? [receiptIx] : []),
   ];

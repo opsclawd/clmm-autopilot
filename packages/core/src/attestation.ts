@@ -1,35 +1,36 @@
 import type { SolanaCluster } from './mints';
+import type { SwapRouter } from './config';
+import { SWAP_ROUTER_TO_CODE, SWAP_SKIP_REASON_TO_CODE, type SwapSkipReason } from './swap';
 
 export type AttestationDirection = 0 | 1;
 
-// Canonical, fixed-width execution attestation payload input.
-// IMPORTANT: any change to this shape or encoding must be treated as a consensus-breaking change
-// across web/mobile and the Solana tx builder.
+export const ATTESTATION_VERSION = 2;
+
 export type AttestationInput = {
-  cluster: SolanaCluster | number; // u8
-  authority: string | Uint8Array; // 32
-  position: string | Uint8Array; // 32
-  positionMint: string | Uint8Array; // 32
-  whirlpool: string | Uint8Array; // 32
-
-  epoch: number; // u32 LE (unix-days)
-  direction: AttestationDirection; // u8
-
-  tickCurrent: number; // i32 LE
-  lowerTickIndex: number; // i32 LE
-  upperTickIndex: number; // i32 LE
-
-  slippageBpsCap: number; // u16 LE
-
-  quoteInputMint: string | Uint8Array; // 32
-  quoteOutputMint: string | Uint8Array; // 32
-  quoteInAmount: bigint; // u64 LE
-  quoteMinOutAmount: bigint; // u64 LE
-  quoteQuotedAtUnixMs: bigint; // u64 LE
-
-  swapPlanned: number; // u8
-  swapExecuted: number; // u8
-  swapReasonCode: number; // u16 LE
+  attestationVersion?: number;
+  cluster: SolanaCluster | number;
+  authority: string | Uint8Array;
+  position: string | Uint8Array;
+  positionMint: string | Uint8Array;
+  whirlpool: string | Uint8Array;
+  epoch: number;
+  direction: AttestationDirection;
+  tickCurrent: number;
+  lowerTickIndex: number;
+  upperTickIndex: number;
+  slippageBpsCap: number;
+  quoteInputMint: string | Uint8Array;
+  quoteOutputMint: string | Uint8Array;
+  quoteInAmount: bigint;
+  quoteMinOutAmount: bigint;
+  quoteQuotedAtUnixSec?: number;
+  quoteQuotedAtUnixMs?: bigint;
+  swapPlanned: number;
+  swapSkipReason?: number | SwapSkipReason;
+  swapRouter?: number | SwapRouter;
+  // Backward-compatible legacy fields.
+  swapExecuted?: number;
+  swapReasonCode?: number;
 };
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -37,13 +38,11 @@ const BASE58_MAP = new Map(BASE58_ALPHABET.split('').map((ch, idx) => [ch, idx])
 
 function base58Decode(value: string): Uint8Array {
   if (value.length === 0) return new Uint8Array();
-
   const bytes: number[] = [0];
   for (let i = 0; i < value.length; i += 1) {
     const ch = value[i];
     const carry0 = BASE58_MAP.get(ch);
     if (carry0 === undefined) throw new Error(`Invalid base58 character: ${ch}`);
-
     let carry = carry0;
     for (let j = 0; j < bytes.length; j += 1) {
       const x = bytes[j] * 58 + carry;
@@ -55,13 +54,9 @@ function base58Decode(value: string): Uint8Array {
       carry >>= 8;
     }
   }
-
   let leadingZeroes = 0;
   while (leadingZeroes < value.length && value[leadingZeroes] === '1') leadingZeroes += 1;
-  for (let i = 1; i < leadingZeroes; i += 1) {
-    bytes.push(0);
-  }
-
+  for (let i = 1; i < leadingZeroes; i += 1) bytes.push(0);
   return Uint8Array.from(bytes.reverse());
 }
 
@@ -79,24 +74,21 @@ function u8(value: number): Uint8Array {
 function u16le(value: number): Uint8Array {
   if (!Number.isInteger(value) || value < 0 || value > 0xffff) throw new Error('u16 out of range');
   const b = new Uint8Array(2);
-  const view = new DataView(b.buffer);
-  view.setUint16(0, value, true);
+  new DataView(b.buffer).setUint16(0, value, true);
   return b;
 }
 
 function u32le(value: number): Uint8Array {
   if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) throw new Error('u32 out of range');
   const b = new Uint8Array(4);
-  const view = new DataView(b.buffer);
-  view.setUint32(0, value, true);
+  new DataView(b.buffer).setUint32(0, value, true);
   return b;
 }
 
 function i32le(value: number): Uint8Array {
   if (!Number.isInteger(value) || value < -0x80000000 || value > 0x7fffffff) throw new Error('i32 out of range');
   const b = new Uint8Array(4);
-  const view = new DataView(b.buffer);
-  view.setInt32(0, value, true);
+  new DataView(b.buffer).setInt32(0, value, true);
   return b;
 }
 
@@ -122,7 +114,6 @@ function concat(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
-// SHA-256 adapted for deterministic pure-TS hashing in all runtimes.
 const K = new Uint32Array([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
   0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -157,17 +148,13 @@ export function hashAttestationPayload(bytes: Uint8Array): Uint8Array {
 
   const W = new Uint32Array(64);
   for (let i = 0; i < msg.length; i += 64) {
-    for (let t = 0; t < 16; t += 1) {
-      W[t] = view.getUint32(i + t * 4, false);
-    }
+    for (let t = 0; t < 16; t += 1) W[t] = view.getUint32(i + t * 4, false);
     for (let t = 16; t < 64; t += 1) {
       const s0 = rotr(W[t - 15], 7) ^ rotr(W[t - 15], 18) ^ (W[t - 15] >>> 3);
       const s1 = rotr(W[t - 2], 17) ^ rotr(W[t - 2], 19) ^ (W[t - 2] >>> 10);
       W[t] = (W[t - 16] + s0 + W[t - 7] + s1) >>> 0;
     }
-
     let [a, b, c, d, e, f, g, h] = H;
-
     for (let t = 0; t < 64; t += 1) {
       const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
       const ch = (e & f) ^ (~e & g);
@@ -175,7 +162,6 @@ export function hashAttestationPayload(bytes: Uint8Array): Uint8Array {
       const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
       const maj = (a & b) ^ (a & c) ^ (b & c);
       const temp2 = (S0 + maj) >>> 0;
-
       h = g;
       g = f;
       f = e;
@@ -185,7 +171,6 @@ export function hashAttestationPayload(bytes: Uint8Array): Uint8Array {
       b = a;
       a = (temp1 + temp2) >>> 0;
     }
-
     H[0] = (H[0] + a) >>> 0;
     H[1] = (H[1] + b) >>> 0;
     H[2] = (H[2] + c) >>> 0;
@@ -198,16 +183,12 @@ export function hashAttestationPayload(bytes: Uint8Array): Uint8Array {
 
   const out = new Uint8Array(32);
   const outView = new DataView(out.buffer);
-  for (let i = 0; i < 8; i += 1) {
-    outView.setUint32(i * 4, H[i], false);
-  }
+  for (let i = 0; i < 8; i += 1) outView.setUint32(i * 4, H[i], false);
   return out;
 }
 
 function clusterToU8(cluster: SolanaCluster | number): number {
   if (typeof cluster === 'number') return cluster;
-  // Canonical cluster mapping for attestation payloads.
-  // NOTE: do not reorder.
   switch (cluster) {
     case 'devnet':
       return 0;
@@ -220,32 +201,51 @@ function clusterToU8(cluster: SolanaCluster | number): number {
   }
 }
 
+function swapRouterToU8(router: number | SwapRouter): number {
+  return typeof router === 'number' ? router : SWAP_ROUTER_TO_CODE[router as SwapRouter];
+}
+
+function swapSkipReasonToU8(reason: number | SwapSkipReason): number {
+  return typeof reason === 'number' ? reason : SWAP_SKIP_REASON_TO_CODE[reason];
+}
+
+function resolveSwapSkipReason(input: AttestationInput): number {
+  if (input.swapSkipReason !== undefined) return swapSkipReasonToU8(input.swapSkipReason);
+  if (input.swapReasonCode !== undefined) {
+    return input.swapReasonCode === 0 ? SWAP_SKIP_REASON_TO_CODE.NONE : SWAP_SKIP_REASON_TO_CODE.DUST;
+  }
+  return SWAP_SKIP_REASON_TO_CODE.NONE;
+}
+
 export function encodeAttestationPayload(input: AttestationInput): Uint8Array {
+  const quoteQuotedAtUnixSec =
+    input.quoteQuotedAtUnixSec !== undefined
+      ? input.quoteQuotedAtUnixSec
+      : input.quoteQuotedAtUnixMs !== undefined
+        ? Math.floor(Number(input.quoteQuotedAtUnixMs) / 1000)
+        : 0;
+  const swapRouter = input.swapRouter ?? SWAP_ROUTER_TO_CODE.jupiter;
   return concat([
+    u8(input.attestationVersion ?? ATTESTATION_VERSION),
     u8(clusterToU8(input.cluster)),
     toPubkey32(input.authority),
     toPubkey32(input.position),
     toPubkey32(input.positionMint),
     toPubkey32(input.whirlpool),
-
     u32le(input.epoch),
     u8(input.direction),
-
     i32le(input.tickCurrent),
     i32le(input.lowerTickIndex),
     i32le(input.upperTickIndex),
-
     u16le(input.slippageBpsCap),
-
     toPubkey32(input.quoteInputMint),
     toPubkey32(input.quoteOutputMint),
     u64le(input.quoteInAmount),
     u64le(input.quoteMinOutAmount),
-    u64le(input.quoteQuotedAtUnixMs),
-
+    u32le(quoteQuotedAtUnixSec),
     u8(input.swapPlanned),
-    u8(input.swapExecuted),
-    u16le(input.swapReasonCode),
+    u8(resolveSwapSkipReason(input)),
+    u8(swapRouterToU8(swapRouter)),
   ]);
 }
 

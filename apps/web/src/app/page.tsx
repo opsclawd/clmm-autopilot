@@ -105,7 +105,7 @@ export default function Home() {
         <div>requiredConsecutive: {autopilotConfig.policy.requiredConsecutive}</div>
         <div>cooldownMs: {autopilotConfig.policy.cooldownMs}</div>
         <div>slippageBpsCap: {autopilotConfig.execution.slippageBpsCap}</div>
-        <div>quoteFreshnessMs: {autopilotConfig.execution.quoteFreshnessMs}</div>
+        <div>quoteFreshnessSec: {autopilotConfig.execution.quoteFreshnessSec}</div>
       </div>
       <div className="flex gap-2">
         <button
@@ -153,7 +153,7 @@ export default function Home() {
                   policy: autopilotConfig.policy,
                   execution: {
                     slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
-                    quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessMs,
+                    quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessSec * 1000,
                   },
                 },
                 snapshot: refreshed.snapshot,
@@ -228,7 +228,7 @@ export default function Home() {
                     policy: autopilotConfig.policy,
                     execution: {
                       slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
-                      quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessMs,
+                      quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessSec * 1000,
                     },
                   },
                   snapshot: res.refresh?.snapshot,

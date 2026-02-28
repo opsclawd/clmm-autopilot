@@ -1,4 +1,5 @@
 import { PublicKey, TransactionInstruction, type AccountMeta } from '@solana/web3.js';
+import { SolanaSwapBuildResult } from './swap/types';
 
 export type JupiterQuote = {
   inputMint: PublicKey;
@@ -10,11 +11,6 @@ export type JupiterQuote = {
   raw: unknown;
 };
 
-export type JupiterSwapIxs = {
-  instructions: TransactionInstruction[];
-  lookupTableAddresses: PublicKey[];
-};
-
 type FetchLike = (input: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<{
   ok: boolean;
   status: number;
@@ -22,9 +18,7 @@ type FetchLike = (input: string, init?: { method?: string; headers?: Record<stri
   json(): Promise<any>;
 }>;
 
-const DEFAULT_BASE = 'https://quote-api.jup.ag/v6';
-// Milestone-deferred flag: keep enabled until Jupiter integration hardening milestone.
-const JUPITER_SWAP_DISABLED_FOR_TESTING = true;
+const DEFAULT_BASE = 'https://api.jup.ag/swap/v1';
 
 function asPk(s: string): PublicKey {
   return new PublicKey(s);
@@ -50,19 +44,6 @@ export async function fetchJupiterQuote(params: {
   fetchImpl?: FetchLike;
   nowUnixMs?: () => number;
 }): Promise<JupiterQuote> {
-  if (JUPITER_SWAP_DISABLED_FOR_TESTING) {
-    // Temporary bypass: synthesize a quote so the rest of the workflow can be tested offline.
-    return {
-      inputMint: params.inputMint,
-      outputMint: params.outputMint,
-      inAmount: params.amount,
-      outAmount: BigInt(0),
-      slippageBps: params.slippageBps,
-      quotedAtUnixMs: (params.nowUnixMs ?? (() => Date.now()))(),
-      raw: { disabled: true, reason: 'JUPITER_SWAP_DISABLED_FOR_TESTING' },
-    };
-  }
-
   const baseUrl = params.baseUrl ?? DEFAULT_BASE;
   const fetchImpl: FetchLike = params.fetchImpl ?? (globalThis.fetch as any);
   if (!fetchImpl) throw new Error('fetch is not available (provide fetchImpl)');
@@ -97,12 +78,7 @@ export async function fetchJupiterSwapIxs(params: {
   baseUrl?: string;
   fetchImpl?: FetchLike;
   wrapAndUnwrapSol?: boolean;
-}): Promise<JupiterSwapIxs> {
-  if (JUPITER_SWAP_DISABLED_FOR_TESTING) {
-    // Temporary bypass: keep the exit workflow testable while Jupiter swap-instructions is failing.
-    return { instructions: [], lookupTableAddresses: [] };
-  }
-
+}): Promise<SolanaSwapBuildResult> {
   const baseUrl = params.baseUrl ?? DEFAULT_BASE;
   const fetchImpl: FetchLike = params.fetchImpl ?? (globalThis.fetch as any);
   if (!fetchImpl) throw new Error('fetch is not available (provide fetchImpl)');

@@ -98,12 +98,23 @@ describe('validateConfig', () => {
   });
 
   it('accepts numeric strings (normalize)', () => {
-    const res = validateConfig({ policy: { cadenceMs: '2000' }, execution: { slippageBpsCap: '50' } });
+    const res = validateConfig({ policy: { cadenceMs: '2000' }, execution: { slippageBpsCap: '50', quoteFreshnessSec: '20' } });
     expect(res.ok).toBe(true);
     if (res.ok) {
       expect(res.value.policy.cadenceMs).toBe(2000);
       expect(res.value.execution.slippageBpsCap).toBe(50);
+      expect(res.value.execution.quoteFreshnessSec).toBe(20);
     }
+  });
+
+  it('defaults swapRouter by cluster', () => {
+    const mainnet = validateConfig({ cluster: 'mainnet-beta' });
+    expect(mainnet.ok).toBe(true);
+    if (mainnet.ok) expect(mainnet.value.execution.swapRouter).toBe('jupiter');
+
+    const local = validateConfig({ cluster: 'localnet' });
+    expect(local.ok).toBe(true);
+    if (local.ok) expect(local.value.execution.swapRouter).toBe('noop');
   });
 
   it('exposes default ui.sampleBufferSize', () => {

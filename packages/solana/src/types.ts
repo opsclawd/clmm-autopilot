@@ -12,6 +12,7 @@ export type CanonicalErrorCode =
   | 'INSUFFICIENT_FEE_BUFFER'
   | 'BLOCKHASH_EXPIRED'
   | 'MISSING_ATTESTATION_HASH'
+  | 'SWAP_ROUTER_UNSUPPORTED_CLUSTER'
   | 'ORCA_DECODE_FAILED';
 
 export type SolanaConfig = {

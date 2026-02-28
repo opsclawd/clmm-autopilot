@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { computeAttestationHash, encodeAttestationPayload, hashAttestationPayload } from '../attestation';
 
 const INPUT = {
+  attestationVersion: 2,
   cluster: 'devnet' as const,
   authority: '8qbHbw2BbbTHBW1sbn4j4d93M2D8v1jQ7Rj4tTBW5u7x',
   position: '11111111111111111111111111111111',
@@ -18,10 +19,10 @@ const INPUT = {
   quoteOutputMint: 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k',
   quoteInAmount: 123456789n,
   quoteMinOutAmount: 45441650n,
-  quoteQuotedAtUnixMs: 1708747200123n,
+  quoteQuotedAtUnixSec: 1708747200,
   swapPlanned: 1,
-  swapExecuted: 1,
-  swapReasonCode: 0,
+  swapSkipReason: 0,
+  swapRouter: 1,
 };
 
 describe('attestation encoding/hash', () => {
@@ -45,8 +46,8 @@ describe('attestation encoding/hash', () => {
     const payload = encodeAttestationPayload(INPUT);
     const hash = computeAttestationHash(INPUT);
 
-    expect(payload.length).toBe(240);
-    expect(Buffer.from(hash).toString('hex')).toBe('afb51a8e8b6635aaafae1fc7ca859d8977fe4924866db0c00a27f003f95059a8');
+    expect(payload.length).toBe(236);
+    expect(Buffer.from(hash).toString('hex')).toBe('5cdb152ca9b0c2d70f4802b86de08014251ca0cedf3c9fcb19349f16637f5f88');
   });
 
   it('matches node crypto sha256 reference across payload sizes', () => {

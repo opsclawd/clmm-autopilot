@@ -43,7 +43,7 @@ describe('reliability', () => {
       current: { blockhash: 'old', lastValidBlockHeight: 1, fetchedAtUnixMs: 1000 },
       nowUnixMs: 1001,
       sendError: new Error('blockhash not found'),
-      quoteFreshnessMs: DEFAULT_CONFIG.execution.quoteFreshnessMs,
+      quoteFreshnessMs: DEFAULT_CONFIG.execution.quoteFreshnessSec * 1000,
       rebuildMessage,
     });
 

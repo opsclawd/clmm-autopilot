@@ -1,18 +1,41 @@
-import { computeAttestationHash, decideSwap, encodeAttestationPayload, evaluateRangeBreak, type AutopilotConfig, type PolicyState, type Sample, unixDaysFromUnixMs } from '@clmm-autopilot/core';
-import { Connection, PublicKey, VersionedTransaction, type AddressLookupTableAccount } from '@solana/web3.js';
-import { buildExitTransaction, type ExitDirection, type ExitQuote } from './executionBuilder';
+import {
+  computeAttestationHash,
+  decideSwap,
+  encodeAttestationPayload,
+  evaluateRangeBreak,
+  unixDaysFromUnixMs,
+  type AutopilotConfig,
+  type PolicyState,
+  type Sample,
+  type SwapPlan,
+  type SwapQuote,
+} from '@clmm-autopilot/core';
+import { Connection, PublicKey, VersionedTransaction, type AddressLookupTableAccount, type TransactionInstruction } from '@solana/web3.js';
+import { buildExitTransaction, type ExitDirection } from './executionBuilder';
 import { computeExecutionRequirements } from './requirements';
-import { fetchJupiterQuote, fetchJupiterSwapIxs } from './jupiter';
 import { normalizeSolanaError } from './errors';
 import { loadPositionSnapshot } from './orcaInspector';
 import { deriveReceiptPda, DISABLE_RECEIPT_PROGRAM_FOR_TESTING, fetchReceiptByPda } from './receipt';
 import { refreshBlockhashIfNeeded, shouldRebuild, withBoundedRetry } from './reliability';
 import type { CanonicalErrorCode } from './types';
 import { SOL_MINT } from './ata';
+import { deriveSwapTickArrays } from './swap/tickArrays';
+import { getSwapAdapter } from './swap/registry';
+import type { SolanaSwapContext } from './swap/types';
 
 type Logger = {
   notify?: (info: string, context?: Record<string, string | number | boolean>) => void;
   notifyError?: (err: unknown, context?: Record<string, string | number | boolean>) => void;
+};
+
+const ZERO_PUBKEY = '11111111111111111111111111111111';
+type SuppliedQuote = {
+  inputMint: PublicKey;
+  outputMint: PublicKey;
+  inAmount: bigint;
+  outAmount: bigint;
+  quotedAtUnixMs: number;
+  raw?: unknown;
 };
 
 export type RefreshParams = {
@@ -21,8 +44,6 @@ export type RefreshParams = {
   samples: Sample[];
   config: AutopilotConfig;
   policyState?: PolicyState;
-
-  // UI-only quote diagnostics (not used by core policy).
   expectedMinOut: string;
   quoteAgeMs: number;
 };
@@ -85,22 +106,14 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
 
 export type ExecuteOnceParams = RefreshParams & {
   authority: PublicKey;
-  quote?: ExitQuote;
+  // Backward-compatible optional inputs (ignored by planner path when omitted).
+  quote?: unknown;
   quoteContext?: { quotedAtSlot?: number; quoteTickIndex?: number };
-  // Receipt attestation hash (sha256 over canonical bytes) provided by app.
   attestationHash?: Uint8Array;
   attestationPayloadBytes?: Uint8Array;
-
+  buildJupiterSwapIxs?: unknown;
+  rebuildSnapshotAndQuote?: unknown;
   signAndSend: (tx: VersionedTransaction) => Promise<string>;
-
-  // Optional dependency injection for deterministic tests.
-  buildJupiterSwapIxs?: typeof fetchJupiterSwapIxs;
-
-  rebuildSnapshotAndQuote?: () => Promise<{
-    snapshot: Awaited<ReturnType<typeof loadPositionSnapshot>>;
-    quote: ExitQuote;
-    quoteContext?: { quotedAtSlot?: number; quoteTickIndex?: number };
-  }>;
   sleep?: (ms: number) => Promise<void>;
   nowUnixMs?: () => number;
   checkExistingReceipt?: (receiptPda: PublicKey) => Promise<boolean>;
@@ -128,41 +141,76 @@ export type ExecuteOnceResult = {
   simSummary?: string;
 };
 
-async function loadLookupTables(connection: Connection, addresses: PublicKey[]): Promise<AddressLookupTableAccount[]> {
+async function loadLookupTables(_connection: Connection, _addresses: PublicKey[]): Promise<AddressLookupTableAccount[]> {
   const out: AddressLookupTableAccount[] = [];
-  for (const addr of addresses) {
-    const res = await connection.getAddressLookupTable(addr);
+  for (const addr of _addresses) {
+    const res = await _connection.getAddressLookupTable(addr);
     if (res.value) out.push(res.value);
   }
   return out;
 }
 
-function buildQuoteFromSnapshot(
+function buildSwapInput(
   snapshot: Awaited<ReturnType<typeof loadPositionSnapshot>>,
   direction: ExitDirection,
-  config: AutopilotConfig,
 ): {
   inputMint: PublicKey;
   outputMint: PublicKey;
   amount: bigint;
-  swapDecision: ReturnType<typeof decideSwap>;
+  aToB: boolean;
 } {
   if (!snapshot.removePreview) {
     throw new Error(`Remove preview unavailable (${snapshot.removePreviewReasonCode ?? 'DATA_UNAVAILABLE'})`);
   }
   const tokenAOut = snapshot.removePreview.tokenAOut;
   const tokenBOut = snapshot.removePreview.tokenBOut;
-  const inputMint = direction === 'DOWN'
-    ? SOL_MINT
-    : (snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA);
-  const outputMint = direction === 'DOWN'
-    ? (snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA)
-    : SOL_MINT;
-  const amount = direction === 'DOWN'
-    ? (snapshot.tokenMintA.equals(SOL_MINT) ? tokenAOut : tokenBOut)
-    : (snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut);
-  const swapDecision = decideSwap(amount, direction, config);
-  return { inputMint, outputMint, amount, swapDecision };
+
+  if (direction === 'DOWN') {
+    const inputMint = SOL_MINT;
+    const outputMint = snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA;
+    const amount = snapshot.tokenMintA.equals(SOL_MINT) ? tokenAOut : tokenBOut;
+    return { inputMint, outputMint, amount, aToB: inputMint.equals(snapshot.tokenMintA) };
+  }
+
+  const inputMint = snapshot.tokenMintA.equals(SOL_MINT) ? snapshot.tokenMintB : snapshot.tokenMintA;
+  const outputMint = SOL_MINT;
+  const amount = snapshot.tokenMintA.equals(SOL_MINT) ? tokenBOut : tokenAOut;
+  return { inputMint, outputMint, amount, aToB: inputMint.equals(snapshot.tokenMintA) };
+}
+
+function buildPlanQuoteFromSupplied(router: AutopilotConfig['execution']['swapRouter'], suppliedQuote: SuppliedQuote, slippageBpsCap: number): SwapQuote {
+  if (router === 'jupiter' && suppliedQuote.raw === undefined) {
+    throw {
+      code: 'DATA_UNAVAILABLE',
+      retryable: false,
+      message: 'supplied quote missing raw Jupiter payload required for swap instruction build',
+      debug: { router, suppliedQuoteKeys: Object.keys(suppliedQuote as Record<string, unknown>) },
+    } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
+  }
+  if (router === 'orca' && suppliedQuote.raw === undefined) {
+    throw {
+      code: 'DATA_UNAVAILABLE',
+      retryable: false,
+      message: 'supplied quote missing raw Orca payload required for swap instruction build',
+      debug: { router, suppliedQuoteKeys: Object.keys(suppliedQuote as Record<string, unknown>) },
+    } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
+  }
+  const debug =
+    router === 'jupiter' && suppliedQuote.raw !== undefined
+      ? { jupiterRaw: suppliedQuote.raw }
+      : router === 'orca' && suppliedQuote.raw !== undefined
+        ? { orcaQuote: suppliedQuote.raw }
+        : undefined;
+  return {
+    router,
+    inMint: suppliedQuote.inputMint.toBase58(),
+    outMint: suppliedQuote.outputMint.toBase58(),
+    swapInAmount: suppliedQuote.inAmount,
+    swapMinOutAmount: suppliedQuote.outAmount,
+    slippageBpsCap,
+    quotedAtUnixSec: Math.floor(suppliedQuote.quotedAtUnixMs / 1000),
+    ...(debug ? { debug } : {}),
+  };
 }
 
 export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnceResult> {
@@ -173,6 +221,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, params.config.execution);
     params.logger?.notify?.('snapshot fetched', { position: params.position.toBase58() });
 
+    const router = params.config.execution.swapRouter;
+    const adapter = router === 'noop' ? null : getSwapAdapter(router, params.config.cluster);
+
     if (refreshed.decision.decision === 'HOLD') {
       return { status: 'HOLD', refresh: refreshed };
     }
@@ -182,114 +233,155 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       sleep,
       params.config.execution,
     );
+
     const direction = refreshed.decision.decision === 'TRIGGER_UP' ? ('UP' as ExitDirection) : ('DOWN' as ExitDirection);
-    let quote = params.quote;
-    let quoteContext = params.quoteContext;
-    let attestationHash = params.attestationHash;
-    let attestationPayloadBytes = params.attestationPayloadBytes;
 
     const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, params.config.execution);
     const epochSourceMs = nowUnixMs();
     const epoch = unixDaysFromUnixMs(epochSourceMs);
 
-    const assembleFromSnapshot = async (
+    const buildPlan = async (
       sourceSnapshot: Awaited<ReturnType<typeof loadPositionSnapshot>>,
     ): Promise<{
-      quote: ExitQuote;
-      attestationHash: Uint8Array;
-      attestationPayloadBytes: Uint8Array;
-      quoteContext: { quotedAtSlot: number; quoteTickIndex: number };
-      swapDecision: ReturnType<typeof decideSwap>;
+      plan: SwapPlan;
+      swapIxs: ReturnType<typeof Array.prototype.slice>;
+      lookupTableAddresses: PublicKey[];
+      quoteTickIndex: number;
+      quotedAtUnixMs: number;
     }> => {
-      const { inputMint, outputMint, amount, swapDecision } = buildQuoteFromSnapshot(sourceSnapshot, direction, params.config);
-      const builtQuote = swapDecision.execute
-        ? await fetchJupiterQuote({
-            inputMint,
-            outputMint,
-            amount,
-            slippageBps: params.config.execution.slippageBpsCap,
-          })
-        : {
-            inputMint,
-            outputMint,
-            inAmount: amount,
-            outAmount: BigInt(0),
-            slippageBps: params.config.execution.slippageBpsCap,
-            quotedAtUnixMs: nowUnixMs(),
-          };
-      const attestationInput = {
-        cluster: params.config.cluster,
-        authority: params.authority.toBase58(),
-        position: sourceSnapshot.position.toBase58(),
-        positionMint: sourceSnapshot.positionMint.toBase58(),
-        whirlpool: sourceSnapshot.whirlpool.toBase58(),
-        epoch,
-        direction: direction === 'UP' ? (1 as const) : (0 as const),
-        tickCurrent: sourceSnapshot.currentTickIndex,
-        lowerTickIndex: sourceSnapshot.lowerTickIndex,
-        upperTickIndex: sourceSnapshot.upperTickIndex,
-        slippageBpsCap: params.config.execution.slippageBpsCap,
-        quoteInputMint: builtQuote.inputMint.toBase58(),
-        quoteOutputMint: builtQuote.outputMint.toBase58(),
-        quoteInAmount: builtQuote.inAmount,
-        quoteMinOutAmount: builtQuote.outAmount,
-        quoteQuotedAtUnixMs: BigInt(builtQuote.quotedAtUnixMs),
-        swapPlanned: 1,
-        swapExecuted: swapDecision.execute ? 1 : 0,
-        swapReasonCode: swapDecision.reasonCode,
+      const suppliedQuote = params.quote as SuppliedQuote | undefined;
+      const { inputMint, outputMint, amount, aToB } = suppliedQuote
+        ? {
+            inputMint: suppliedQuote.inputMint,
+            outputMint: suppliedQuote.outputMint,
+            amount: suppliedQuote.inAmount,
+            aToB: suppliedQuote.inputMint.equals(sourceSnapshot.tokenMintA),
+          }
+        : buildSwapInput(sourceSnapshot, direction);
+      const swapDecision = decideSwap(amount, direction, params.config);
+
+      const tickArrays = deriveSwapTickArrays({
+        whirlpool: sourceSnapshot.whirlpool,
+        tickSpacing: sourceSnapshot.tickSpacing,
+        tickCurrentIndex: sourceSnapshot.currentTickIndex,
+        aToB,
+      });
+
+      const swapContext: SolanaSwapContext = {
+        connection: params.connection,
+        whirlpool: sourceSnapshot.whirlpool,
+        tickSpacing: sourceSnapshot.tickSpacing,
+        tickCurrentIndex: sourceSnapshot.currentTickIndex,
+        tickArrays,
+        tokenMintA: sourceSnapshot.tokenMintA,
+        tokenMintB: sourceSnapshot.tokenMintB,
+        tokenVaultA: sourceSnapshot.tokenVaultA,
+        tokenVaultB: sourceSnapshot.tokenVaultB,
+        tokenProgramA: sourceSnapshot.tokenProgramA,
+        tokenProgramB: sourceSnapshot.tokenProgramB,
+        aToB,
       };
+
+      let planQuote: SwapQuote = {
+        router,
+        inMint: ZERO_PUBKEY,
+        outMint: ZERO_PUBKEY,
+        swapInAmount: BigInt(0),
+        swapMinOutAmount: BigInt(0),
+        slippageBpsCap: params.config.execution.slippageBpsCap,
+        quotedAtUnixSec: 0,
+      };
+      let swapIxs: TransactionInstruction[] = [];
+      let lookupTableAddresses: PublicKey[] = [];
+      let swapPlanned = false;
+      let swapSkipReason: 'NONE' | 'DUST' | 'ROUTER_DISABLED' = 'NONE';
+
+      if (!swapDecision.execute) {
+        swapSkipReason = 'DUST';
+      } else if (router === 'noop') {
+        swapSkipReason = 'ROUTER_DISABLED';
+      } else {
+        if (!adapter) {
+          throw {
+            code: 'DATA_UNAVAILABLE',
+            retryable: false,
+            message: 'swap adapter unavailable for configured router',
+            debug: { router, cluster: params.config.cluster },
+          } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
+        }
+        if (suppliedQuote) {
+          planQuote = buildPlanQuoteFromSupplied(router, suppliedQuote, params.config.execution.slippageBpsCap);
+        } else {
+          planQuote = await adapter.getQuote({
+            cluster: params.config.cluster,
+            inMint: inputMint.toBase58(),
+            outMint: outputMint.toBase58(),
+            swapInAmount: amount,
+            slippageBpsCap: params.config.execution.slippageBpsCap,
+            quoteFreshnessSec: params.config.execution.quoteFreshnessSec,
+            swapContext,
+          });
+        }
+        const swapBuild = await adapter.buildSwapIxs(planQuote, params.authority, swapContext);
+        if (swapBuild.instructions.length === 0) {
+          throw {
+            code: 'DATA_UNAVAILABLE',
+            retryable: false,
+            message: 'swap adapter returned zero instructions for a planned swap',
+            debug: {
+              router,
+              cluster: params.config.cluster,
+              inMint: planQuote.inMint,
+              outMint: planQuote.outMint,
+              swapInAmount: planQuote.swapInAmount.toString(),
+              swapMinOutAmount: planQuote.swapMinOutAmount.toString(),
+            },
+          } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
+        }
+        swapIxs = swapBuild.instructions;
+        lookupTableAddresses = swapBuild.lookupTableAddresses;
+        swapPlanned = true;
+      }
+
       return {
-        quote: builtQuote,
-        attestationHash: computeAttestationHash(attestationInput),
-        attestationPayloadBytes: encodeAttestationPayload(attestationInput),
-        quoteContext: { quotedAtSlot: latestSlot, quoteTickIndex: sourceSnapshot.currentTickIndex },
-        swapDecision,
+        plan: {
+          swapPlanned,
+          swapSkipReason,
+          swapRouter: router,
+          quote: planQuote,
+        },
+        swapIxs,
+        lookupTableAddresses,
+        quoteTickIndex: sourceSnapshot.currentTickIndex,
+        quotedAtUnixMs: planQuote.quotedAtUnixSec * 1000,
       };
     };
 
-    if (!quote || !attestationHash || !attestationPayloadBytes) {
-      const assembled = await withBoundedRetry(() => assembleFromSnapshot(snapshot), sleep, params.config.execution);
-      quote = assembled.quote;
-      attestationHash = assembled.attestationHash;
-      attestationPayloadBytes = assembled.attestationPayloadBytes;
-      quoteContext = assembled.quoteContext;
-      params.logger?.notify?.('quote assembled');
-    }
+    let assembled = await withBoundedRetry(() => buildPlan(snapshot), sleep, params.config.execution);
 
     const rebuildCheck = shouldRebuild(
       {
-        quotedAtUnixMs: quote!.quotedAtUnixMs,
-        quotedAtSlot: quoteContext?.quotedAtSlot,
-        quoteTickIndex: quoteContext?.quoteTickIndex,
+        quotedAtUnixMs: assembled.quotedAtUnixMs,
+        quotedAtSlot: latestSlot,
+        quoteTickIndex: assembled.quoteTickIndex,
       },
       snapshot,
       {
         nowUnixMs: nowUnixMs(),
         latestSlot,
-        quoteFreshnessMs: params.config.execution.quoteFreshnessMs,
+        quoteFreshnessMs: params.config.execution.quoteFreshnessSec * 1000,
         quoteFreshnessSlots: params.config.execution.quoteFreshnessSlots,
         rebuildTickDelta: params.config.execution.rebuildTickDelta,
       },
     );
 
     if (rebuildCheck.rebuild) {
-      if (params.rebuildSnapshotAndQuote) {
-        const rebuilt = await withBoundedRetry(() => params.rebuildSnapshotAndQuote!(), sleep, params.config.execution);
-        snapshot = rebuilt.snapshot;
-        quote = rebuilt.quote;
-        quoteContext = rebuilt.quoteContext;
-      } else {
-        snapshot = await withBoundedRetry(
-          () => loadPositionSnapshot(params.connection, params.position, params.config.cluster),
-          sleep,
-          params.config.execution,
-        );
-        const rebuilt = await withBoundedRetry(() => assembleFromSnapshot(snapshot), sleep, params.config.execution);
-        quote = rebuilt.quote;
-        quoteContext = rebuilt.quoteContext;
-        attestationHash = rebuilt.attestationHash;
-        attestationPayloadBytes = rebuilt.attestationPayloadBytes;
-      }
+      snapshot = await withBoundedRetry(
+        () => loadPositionSnapshot(params.connection, params.position, params.config.cluster),
+        sleep,
+        params.config.execution,
+      );
+      assembled = await withBoundedRetry(() => buildPlan(snapshot), sleep, params.config.execution);
       params.logger?.notify?.('quote rebuilt', { reasonCode: rebuildCheck.reasonCode ?? 'QUOTE_STALE' });
     }
 
@@ -310,45 +402,71 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       }
     }
 
-    const availableLamports = await withBoundedRetry(
-      () => params.connection.getBalance(params.authority),
-      sleep,
-      params.config.execution,
-    );
+    const attestationInput = {
+      attestationVersion: 2,
+      cluster: params.config.cluster,
+      authority: params.authority.toBase58(),
+      position: snapshot.position.toBase58(),
+      positionMint: snapshot.positionMint.toBase58(),
+      whirlpool: snapshot.whirlpool.toBase58(),
+      epoch,
+      direction: direction === 'UP' ? (1 as const) : (0 as const),
+      tickCurrent: snapshot.currentTickIndex,
+      lowerTickIndex: snapshot.lowerTickIndex,
+      upperTickIndex: snapshot.upperTickIndex,
+      slippageBpsCap: params.config.execution.slippageBpsCap,
+      quoteInputMint: assembled.plan.quote.inMint,
+      quoteOutputMint: assembled.plan.quote.outMint,
+      quoteInAmount: assembled.plan.quote.swapInAmount,
+      quoteMinOutAmount: assembled.plan.quote.swapMinOutAmount,
+      quoteQuotedAtUnixSec: assembled.plan.quote.quotedAtUnixSec,
+      swapPlanned: assembled.plan.swapPlanned ? 1 : 0,
+      swapSkipReason: assembled.plan.swapSkipReason,
+      swapRouter: assembled.plan.swapRouter,
+    };
+
+    const attestationHash = params.attestationHash ?? computeAttestationHash(attestationInput);
+    const attestationPayloadBytes = params.attestationPayloadBytes ?? encodeAttestationPayload(attestationInput);
+
+    const availableLamports = await withBoundedRetry(() => params.connection.getBalance(params.authority), sleep, params.config.execution);
 
     const fetchedAtUnixMs = nowUnixMs();
     let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, params.config.execution);
 
     const buildTx = async (recentBlockhash: string) => {
-      let lookupTableAccounts: AddressLookupTableAccount[] = [];
-      let cachedSwap: Awaited<ReturnType<typeof fetchJupiterSwapIxs>> | null = null;
-
-      const swapDecision = decideSwap(quote!.inAmount, direction, params.config);
-
-      if (swapDecision.execute) {
-        const buildSwapIxs = params.buildJupiterSwapIxs ?? fetchJupiterSwapIxs;
-        cachedSwap = await buildSwapIxs({ quote: quote! as any, userPublicKey: params.authority, wrapAndUnwrapSol: false });
-        lookupTableAccounts = await loadLookupTables(params.connection, cachedSwap.lookupTableAddresses);
-      }
-
+      const lookupTableAccounts: AddressLookupTableAccount[] = await loadLookupTables(params.connection, assembled.lookupTableAddresses);
       return buildExitTransaction(snapshot, direction, {
         authority: params.authority,
         payer: params.authority,
         recentBlockhash,
         computeUnitLimit: params.config.execution.computeUnitLimit,
         computeUnitPriceMicroLamports: params.config.execution.computeUnitPriceMicroLamports,
-        quote: quote!,
+        quote: {
+          inputMint: new PublicKey(assembled.plan.swapPlanned ? assembled.plan.quote.inMint : snapshot.tokenMintA.toBase58()),
+          outputMint: new PublicKey(assembled.plan.swapPlanned ? assembled.plan.quote.outMint : snapshot.tokenMintB.toBase58()),
+          inAmount: assembled.plan.swapPlanned ? assembled.plan.quote.swapInAmount : BigInt(0),
+          outAmount: assembled.plan.swapPlanned ? assembled.plan.quote.swapMinOutAmount : BigInt(0),
+          slippageBps: params.config.execution.slippageBpsCap,
+          quotedAtUnixMs: assembled.plan.swapPlanned ? assembled.plan.quote.quotedAtUnixSec * 1000 : 0,
+        },
         slippageBpsCap: params.config.execution.slippageBpsCap,
-        quoteFreshnessMs: params.config.execution.quoteFreshnessMs,
+        quoteFreshnessMs: params.config.execution.quoteFreshnessSec * 1000,
         nowUnixMs,
-        receiptEpochUnixMs: epochSourceMs,
         minSolLamportsToSwap: params.config.execution.minSolLamportsToSwap,
         minUsdcMinorToSwap: params.config.execution.minUsdcMinorToSwap,
+        swapPlan: assembled.plan,
+        quoteFreshnessSec: params.config.execution.quoteFreshnessSec,
+        nowUnixSec: () => Math.floor(nowUnixMs() / 1000),
+        receiptEpochUnixMs: epochSourceMs,
         availableLamports,
         requirements: await computeExecutionRequirements({
           connection: params.connection,
           snapshot,
-          quote: quote!,
+          quote: {
+            inputMint: new PublicKey(assembled.plan.swapPlanned ? assembled.plan.quote.inMint : snapshot.tokenMintA.toBase58()),
+            outputMint: new PublicKey(assembled.plan.swapPlanned ? assembled.plan.quote.outMint : snapshot.tokenMintB.toBase58()),
+          },
+          swapPlanned: assembled.plan.swapPlanned,
           authority: params.authority,
           payer: params.authority,
           txFeeLamports: params.config.execution.txFeeLamports,
@@ -356,11 +474,11 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           computeUnitPriceMicroLamports: params.config.execution.computeUnitPriceMicroLamports,
           bufferLamports: params.config.execution.feeBufferLamports,
         }),
-        attestationHash: attestationHash!,
-        attestationPayloadBytes: attestationPayloadBytes!,
+        attestationHash,
+        attestationPayloadBytes,
         lookupTableAccounts,
         returnVersioned: true,
-        // Phase-1: simulate must succeed before prompting wallet.
+        swapIxs: assembled.swapIxs,
         simulate: async (tx) => {
           const sim = await params.connection.simulateTransaction(tx);
           return {
@@ -370,12 +488,6 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             innerInstructions: sim.value.innerInstructions ?? undefined,
             returnData: sim.value.returnData ?? undefined,
           };
-        },
-        buildJupiterSwapIxs: async () => {
-          if (!cachedSwap) {
-            throw new Error('buildJupiterSwapIxs should not be called for dust-skip executions');
-          }
-          return cachedSwap;
         },
       });
     };
@@ -390,7 +502,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         getLatestBlockhash: () => params.connection.getLatestBlockhash(),
         current: { ...latestBlockhash, fetchedAtUnixMs },
         nowUnixMs: nowUnixMs(),
-        quoteFreshnessMs: params.config.execution.quoteFreshnessMs,
+        quoteFreshnessMs: params.config.execution.quoteFreshnessSec * 1000,
         rebuildMessage: async () => {
           msg = (await buildTx((await params.connection.getLatestBlockhash()).blockhash)) as VersionedTransaction;
         },
@@ -407,7 +519,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         getLatestBlockhash: () => params.connection.getLatestBlockhash(),
         current: { ...latestBlockhash, fetchedAtUnixMs },
         nowUnixMs: nowUnixMs(),
-        quoteFreshnessMs: params.config.execution.quoteFreshnessMs,
+        quoteFreshnessMs: params.config.execution.quoteFreshnessSec * 1000,
         sendError,
         rebuildMessage: async () => {
           msg = (await buildTx((await params.connection.getLatestBlockhash()).blockhash)) as VersionedTransaction;

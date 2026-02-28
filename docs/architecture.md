@@ -23,6 +23,16 @@ This repo is a monorepo. The boundaries are intentional — do not blur them.
 - Owns RPC boundary (fetching accounts, submitting tx, simulation helpers).
 - Must not depend on UI frameworks.
 
+### Swap routers (M14)
+
+- Router selection is config-driven via `execution.swapRouter` (`jupiter` | `orca` | `noop`).
+- Cluster gating is enforced in one place (`getSwapAdapter`) and raises `SWAP_ROUTER_UNSUPPORTED_CLUSTER` for invalid router/cluster combinations.
+- Cluster defaults:
+  - `devnet`: `orca` (or explicit `noop` for deterministic harness runs)
+  - `mainnet-beta`: `jupiter`
+  - `localnet`: `noop`
+- `buildExitTransaction` remains router-agnostic; router-specific quote/instruction behavior lives in adapter implementations.
+
 ### `apps/web` and `apps/mobile`
 
 - Shells only: routing, state, rendering, wallet adapter wiring.

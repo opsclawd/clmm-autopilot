@@ -43,10 +43,9 @@ export function buildWsolLifecycleIxs(params: {
     preSwap.push(createSyncNativeInstruction(wsolAta, TOKEN_PROGRAM_ID));
   }
 
-  if (params.outputMint.equals(SOL_MINT)) {
-    // Unwrap all WSOL back to SOL after swap.
-    postSwap.push(createCloseAccountInstruction(wsolAta, params.authority, params.authority, [], TOKEN_PROGRAM_ID));
-  }
+  // Always close WSOL ATA when SOL was involved in swap. This unwraps any residual
+  // WSOL (including collected fees/dust) back to native SOL and avoids stranded WSOL.
+  postSwap.push(createCloseAccountInstruction(wsolAta, params.authority, params.authority, [], TOKEN_PROGRAM_ID));
 
   return { preSwap, postSwap, wsolAta };
 }

@@ -94,7 +94,7 @@ describe('executeOnce underfunded', () => {
       position,
       samples: [{ unixMs: 0, currentTickIndex: 0, lowerTickIndex: 0, upperTickIndex: 0 } as any],
       quote: quote as any,
-      config: DEFAULT_CONFIG,
+      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: "noop" } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
