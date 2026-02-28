@@ -8,12 +8,15 @@ import {
   unixDaysFromUnixTs,
   type AutopilotConfig,
   type Sample,
+  type SwapQuote,
 } from '@clmm-autopilot/core';
 import { Connection, Keypair, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { executeOnce } from './executeOnce';
 import { fetchJupiterQuote } from './jupiter';
 import { loadPositionSnapshot, type PositionSnapshot } from './orcaInspector';
 import { deriveReceiptPda, fetchReceiptByPda, type ReceiptAccount } from './receipt';
+import { getSwapAdapter } from './swap/registry';
+import { deriveSwapTickArrays } from './swap/tickArrays';
 
 export type HarnessDecision = 'HOLD' | 'TRIGGER_DOWN' | 'TRIGGER_UP';
 
@@ -22,6 +25,7 @@ type HarnessError = Error & { code?: string };
 
 const RECEIPT_MISMATCH_CODE = 'RECEIPT_MISMATCH';
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
+const ZERO_PUBKEY = '11111111111111111111111111111111';
 
 type HarnessLogger = (entry: Record<string, unknown>) => void;
 
@@ -57,6 +61,13 @@ function parseRequiredEnv(env: HarnessEnv, key: 'RPC_URL' | 'AUTHORITY_KEYPAIR' 
   const value = env[key]?.trim();
   if (!value) throw codedError('CONFIG_INVALID', `Missing required env: ${key}`);
   return value;
+}
+
+function parseSwapRouter(env: HarnessEnv): AutopilotConfig['execution']['swapRouter'] {
+  const raw = env.SWAP_ROUTER?.trim();
+  if (!raw) return 'noop';
+  if (raw === 'noop' || raw === 'orca' || raw === 'jupiter') return raw;
+  throw codedError('CONFIG_INVALID', `SWAP_ROUTER must be one of: noop, orca, jupiter (received '${raw}')`);
 }
 
 function parseAuthority(secretKeyJson: string): Keypair {
@@ -109,6 +120,7 @@ function getQuoteMintsAndAmount(snapshot: PositionSnapshot, decision: Exclude<Ha
   outputMint: PublicKey;
   amount: bigint;
   direction: 'DOWN' | 'UP';
+  aToB: boolean;
 } {
   if (!snapshot.removePreview) {
     throw codedError('DATA_UNAVAILABLE', 'Remove preview unavailable for quote sizing');
@@ -123,6 +135,7 @@ function getQuoteMintsAndAmount(snapshot: PositionSnapshot, decision: Exclude<Ha
       inputMint: aIsSol ? snapshot.tokenMintA : snapshot.tokenMintB,
       outputMint: aIsSol ? snapshot.tokenMintB : snapshot.tokenMintA,
       amount: aIsSol ? snapshot.removePreview.tokenAOut : snapshot.removePreview.tokenBOut,
+      aToB: aIsSol,
     };
   }
 
@@ -131,6 +144,31 @@ function getQuoteMintsAndAmount(snapshot: PositionSnapshot, decision: Exclude<Ha
     inputMint: aIsSol ? snapshot.tokenMintB : snapshot.tokenMintA,
     outputMint: aIsSol ? snapshot.tokenMintA : snapshot.tokenMintB,
     amount: aIsSol ? snapshot.removePreview.tokenBOut : snapshot.removePreview.tokenAOut,
+    aToB: !aIsSol,
+  };
+}
+
+function toSuppliedQuote(router: AutopilotConfig['execution']['swapRouter'], quote: SwapQuote): {
+  inputMint: PublicKey;
+  outputMint: PublicKey;
+  inAmount: bigint;
+  outAmount: bigint;
+  quotedAtUnixMs: number;
+  raw?: unknown;
+} {
+  const raw =
+    router === 'jupiter'
+      ? quote.debug?.jupiterRaw
+      : router === 'orca'
+        ? quote.debug?.orcaQuote
+        : undefined;
+  return {
+    inputMint: new PublicKey(quote.inMint),
+    outputMint: new PublicKey(quote.outMint),
+    inAmount: quote.swapInAmount,
+    outAmount: quote.swapMinOutAmount,
+    quotedAtUnixMs: quote.quotedAtUnixSec * 1000,
+    ...(raw !== undefined ? { raw } : {}),
   };
 }
 
@@ -167,7 +205,14 @@ export async function runDevnetE2E(
   }
   const connection = new Connection(rpcUrl, 'confirmed');
 
-  const config: AutopilotConfig = { ...DEFAULT_CONFIG, cluster: 'devnet' };
+  const config: AutopilotConfig = {
+    ...DEFAULT_CONFIG,
+    cluster: 'devnet',
+    execution: {
+      ...DEFAULT_CONFIG.execution,
+      swapRouter: parseSwapRouter(env),
+    },
+  };
 
   log(logger, 'snapshot.fetch.start', { position: position.toBase58() });
   const snapshot = await deps.loadPositionSnapshot(connection, position, 'devnet');
@@ -212,15 +257,72 @@ export async function runDevnetE2E(
   log(logger, 'idempotency.check.ok', { receiptPda: receiptPda.toBase58(), epoch });
 
   const quotePlan = getQuoteMintsAndAmount(snapshot, policy.action);
-  log(logger, 'quote.fetch.start', { direction: quotePlan.direction, amount: quotePlan.amount.toString() });
-  const quote = await deps.fetchJupiterQuote({
-    inputMint: quotePlan.inputMint,
-    outputMint: quotePlan.outputMint,
-    amount: quotePlan.amount,
-    slippageBps: config.execution.slippageBpsCap,
-  });
+  const swapDecision = decideSwap(quotePlan.amount, quotePlan.direction, config);
+  const swapPlanned = swapDecision.execute && config.execution.swapRouter !== 'noop';
+  const swapSkipReason = !swapDecision.execute ? 'DUST' : config.execution.swapRouter === 'noop' ? 'ROUTER_DISABLED' : 'NONE';
 
-  const swapDecision = decideSwap(quote.inAmount, quotePlan.direction, config);
+  let suppliedQuote:
+    | {
+        inputMint: PublicKey;
+        outputMint: PublicKey;
+        inAmount: bigint;
+        outAmount: bigint;
+        quotedAtUnixMs: number;
+        raw?: unknown;
+      }
+    | undefined;
+  let planQuote: SwapQuote = {
+    router: config.execution.swapRouter,
+    inMint: ZERO_PUBKEY,
+    outMint: ZERO_PUBKEY,
+    swapInAmount: 0n,
+    swapMinOutAmount: 0n,
+    slippageBpsCap: config.execution.slippageBpsCap,
+    quotedAtUnixSec: 0,
+  };
+
+  if (swapPlanned) {
+    log(logger, 'quote.fetch.start', {
+      router: config.execution.swapRouter,
+      direction: quotePlan.direction,
+      amount: quotePlan.amount.toString(),
+    });
+    const adapter = getSwapAdapter(config.execution.swapRouter, config.cluster);
+    const tickArrays = deriveSwapTickArrays({
+      whirlpool: snapshot.whirlpool,
+      tickSpacing: snapshot.tickSpacing,
+      tickCurrentIndex: snapshot.currentTickIndex,
+      aToB: quotePlan.aToB,
+    });
+    planQuote = await adapter.getQuote({
+      cluster: config.cluster,
+      inMint: quotePlan.inputMint.toBase58(),
+      outMint: quotePlan.outputMint.toBase58(),
+      swapInAmount: quotePlan.amount,
+      slippageBpsCap: config.execution.slippageBpsCap,
+      quoteFreshnessSec: config.execution.quoteFreshnessSec,
+      swapContext: {
+        connection,
+        whirlpool: snapshot.whirlpool,
+        tickSpacing: snapshot.tickSpacing,
+        tickCurrentIndex: snapshot.currentTickIndex,
+        tickArrays,
+        tokenMintA: snapshot.tokenMintA,
+        tokenMintB: snapshot.tokenMintB,
+        tokenVaultA: snapshot.tokenVaultA,
+        tokenVaultB: snapshot.tokenVaultB,
+        tokenProgramA: snapshot.tokenProgramA,
+        tokenProgramB: snapshot.tokenProgramB,
+        aToB: quotePlan.aToB,
+      },
+    });
+    suppliedQuote = toSuppliedQuote(config.execution.swapRouter, planQuote);
+  } else {
+    log(logger, 'quote.skip', { reason: swapSkipReason, router: config.execution.swapRouter });
+  }
+
+  const expectedMinOut = swapPlanned ? planQuote.swapMinOutAmount.toString() : '0';
+  const quoteAgeMs = swapPlanned && suppliedQuote ? Math.max(0, deps.nowMs() - suppliedQuote.quotedAtUnixMs) : 0;
   const attestationPayload = encodeAttestationPayload({
     cluster: 'devnet',
     authority: authority.publicKey.toBase58(),
@@ -233,13 +335,13 @@ export async function runDevnetE2E(
     lowerTickIndex: snapshot.lowerTickIndex,
     upperTickIndex: snapshot.upperTickIndex,
     slippageBpsCap: config.execution.slippageBpsCap,
-    quoteInputMint: quote.inputMint.toBase58(),
-    quoteOutputMint: quote.outputMint.toBase58(),
-    quoteInAmount: quote.inAmount,
-    quoteMinOutAmount: quote.outAmount,
-    quoteQuotedAtUnixSec: Math.floor(quote.quotedAtUnixMs / 1000),
-    swapPlanned: swapDecision.execute ? 1 : 0,
-    swapSkipReason: swapDecision.execute ? 'NONE' : 'DUST',
+    quoteInputMint: swapPlanned ? planQuote.inMint : ZERO_PUBKEY,
+    quoteOutputMint: swapPlanned ? planQuote.outMint : ZERO_PUBKEY,
+    quoteInAmount: swapPlanned ? planQuote.swapInAmount : 0n,
+    quoteMinOutAmount: swapPlanned ? planQuote.swapMinOutAmount : 0n,
+    quoteQuotedAtUnixSec: swapPlanned ? planQuote.quotedAtUnixSec : 0,
+    swapPlanned: swapPlanned ? 1 : 0,
+    swapSkipReason,
     swapRouter: config.execution.swapRouter,
   });
   const attestationHash = computeAttestationHash({
@@ -254,13 +356,13 @@ export async function runDevnetE2E(
     lowerTickIndex: snapshot.lowerTickIndex,
     upperTickIndex: snapshot.upperTickIndex,
     slippageBpsCap: config.execution.slippageBpsCap,
-    quoteInputMint: quote.inputMint.toBase58(),
-    quoteOutputMint: quote.outputMint.toBase58(),
-    quoteInAmount: quote.inAmount,
-    quoteMinOutAmount: quote.outAmount,
-    quoteQuotedAtUnixSec: Math.floor(quote.quotedAtUnixMs / 1000),
-    swapPlanned: swapDecision.execute ? 1 : 0,
-    swapSkipReason: swapDecision.execute ? 'NONE' : 'DUST',
+    quoteInputMint: swapPlanned ? planQuote.inMint : ZERO_PUBKEY,
+    quoteOutputMint: swapPlanned ? planQuote.outMint : ZERO_PUBKEY,
+    quoteInAmount: swapPlanned ? planQuote.swapInAmount : 0n,
+    quoteMinOutAmount: swapPlanned ? planQuote.swapMinOutAmount : 0n,
+    quoteQuotedAtUnixSec: swapPlanned ? planQuote.quotedAtUnixSec : 0,
+    swapPlanned: swapPlanned ? 1 : 0,
+    swapSkipReason,
     swapRouter: config.execution.swapRouter,
   });
 
@@ -273,10 +375,9 @@ export async function runDevnetE2E(
     samples,
     config,
     policyState: {},
-    expectedMinOut: quote.outAmount.toString(),
-    quoteAgeMs: Math.max(0, deps.nowMs() - quote.quotedAtUnixMs),
-    quote,
-    quoteContext: { quoteTickIndex: snapshot.currentTickIndex, quotedAtSlot: latestSlot },
+    expectedMinOut,
+    quoteAgeMs,
+    ...(suppliedQuote ? { quote: suppliedQuote, quoteContext: { quoteTickIndex: snapshot.currentTickIndex, quotedAtSlot: latestSlot } } : {}),
     attestationHash,
     attestationPayloadBytes: attestationPayload,
     nowUnixMs: () => deps.nowMs(),

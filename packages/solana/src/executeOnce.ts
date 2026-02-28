@@ -187,6 +187,20 @@ function buildPlanQuoteFromSupplied(router: AutopilotConfig['execution']['swapRo
       debug: { router, suppliedQuoteKeys: Object.keys(suppliedQuote as Record<string, unknown>) },
     } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
   }
+  if (router === 'orca' && suppliedQuote.raw === undefined) {
+    throw {
+      code: 'DATA_UNAVAILABLE',
+      retryable: false,
+      message: 'supplied quote missing raw Orca payload required for swap instruction build',
+      debug: { router, suppliedQuoteKeys: Object.keys(suppliedQuote as Record<string, unknown>) },
+    } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
+  }
+  const debug =
+    router === 'jupiter' && suppliedQuote.raw !== undefined
+      ? { jupiterRaw: suppliedQuote.raw }
+      : router === 'orca' && suppliedQuote.raw !== undefined
+        ? { orcaQuote: suppliedQuote.raw }
+        : undefined;
   return {
     router,
     inMint: suppliedQuote.inputMint.toBase58(),
@@ -195,7 +209,7 @@ function buildPlanQuoteFromSupplied(router: AutopilotConfig['execution']['swapRo
     swapMinOutAmount: suppliedQuote.outAmount,
     slippageBpsCap,
     quotedAtUnixSec: Math.floor(suppliedQuote.quotedAtUnixMs / 1000),
-    ...(router === 'jupiter' && suppliedQuote.raw !== undefined ? { debug: { jupiterRaw: suppliedQuote.raw } } : {}),
+    ...(debug ? { debug } : {}),
   };
 }
 
@@ -206,6 +220,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   try {
     const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, params.config.execution);
     params.logger?.notify?.('snapshot fetched', { position: params.position.toBase58() });
+
+    const router = params.config.execution.swapRouter;
+    const adapter = router === 'noop' ? null : getSwapAdapter(router, params.config.cluster);
 
     if (refreshed.decision.decision === 'HOLD') {
       return { status: 'HOLD', refresh: refreshed };
@@ -265,7 +282,6 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         aToB,
       };
 
-      const router = params.config.execution.swapRouter;
       let planQuote: SwapQuote = {
         router,
         inMint: ZERO_PUBKEY,
@@ -285,7 +301,14 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       } else if (router === 'noop') {
         swapSkipReason = 'ROUTER_DISABLED';
       } else {
-        const adapter = getSwapAdapter(router, params.config.cluster);
+        if (!adapter) {
+          throw {
+            code: 'DATA_UNAVAILABLE',
+            retryable: false,
+            message: 'swap adapter unavailable for configured router',
+            debug: { router, cluster: params.config.cluster },
+          } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
+        }
         if (suppliedQuote) {
           planQuote = buildPlanQuoteFromSupplied(router, suppliedQuote, params.config.execution.slippageBpsCap);
         } else {

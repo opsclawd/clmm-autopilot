@@ -13,6 +13,7 @@ Harness env vars:
 - `RPC_URL` (required)
 - `AUTHORITY_KEYPAIR` (required, dev-only local keypair JSON path)
 - `POSITION_ADDRESS` (required, devnet position account)
+- `SWAP_ROUTER` (optional: `noop` | `orca` | `jupiter`, default `noop` for deterministic harness runs)
 
 Example:
 
@@ -30,7 +31,7 @@ pnpm e2e:devnet
 3. Evaluates policy decision from canonical tick samples
 4. If HOLD: exits `0`
 5. If TRIGGER: checks receipt PDA for canonical epoch (`ALREADY_EXECUTED_THIS_EPOCH` if found)
-6. Fetches Jupiter quote, computes canonical M9 attestation payload/hash
+6. If swap is planned and router is not `noop`, fetches swap quote via configured router adapter (`execution.swapRouter`), then computes canonical M9/M14 attestation payload/hash
 7. Builds tx + simulates (simulation gate)
 8. Sends + confirms
 9. Fetches receipt and verifies:
@@ -46,12 +47,10 @@ Logs are JSON (structured) and failure exits non-zero.
 
 The following runtime flags remain enabled for this milestone and are intentional:
 
-- `JUPITER_SWAP_DISABLED_FOR_TESTING=true` in `packages/solana/src/jupiter.ts`
 - `DISABLE_RECEIPT_PROGRAM_FOR_TESTING=true` in `packages/solana/src/receipt.ts`
 
 Expected impact while flags are ON:
 
-- Quote/swap calls are synthesized or omitted for deterministic testability.
 - Receipt instruction is not appended in live tx builder path.
 - M5/M12 behavior is partially deferred until those flags are disabled in later milestones.
 
