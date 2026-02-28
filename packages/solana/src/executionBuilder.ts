@@ -198,6 +198,20 @@ export async function buildExitTransaction(
   const quoteOut = new PublicKey(normalizedPlan.quote.outMint);
 
   const shouldExecuteSwap = normalizedPlan.swapPlanned;
+  if (shouldExecuteSwap && (config.swapIxs?.length ?? 0) === 0) {
+    fail('DATA_UNAVAILABLE', 'Swap is planned but no swap instructions were provided by adapter', false, {
+      swapRouter: normalizedPlan.swapRouter,
+      swapPlanned: normalizedPlan.swapPlanned,
+      swapSkipReason: normalizedPlan.swapSkipReason,
+      quote: {
+        inMint: normalizedPlan.quote.inMint,
+        outMint: normalizedPlan.quote.outMint,
+        swapInAmount: normalizedPlan.quote.swapInAmount.toString(),
+        swapMinOutAmount: normalizedPlan.quote.swapMinOutAmount.toString(),
+      },
+    });
+  }
+
   const wsolRequired = shouldExecuteSwap && (quoteIn.equals(SOL_MINT) || quoteOut.equals(SOL_MINT));
   const wsolLifecycle = shouldExecuteSwap
       ? buildWsol({ quote: { inputMint: quoteIn, outputMint: quoteOut, inAmount: normalizedPlan.quote.swapInAmount }, authority: config.authority, payer: config.payer })

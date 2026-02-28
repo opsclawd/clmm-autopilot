@@ -8,7 +8,7 @@ const DEVNET_USDC_MINT = 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k';
 const { buildExitTransactionMock, getSwapAdapterMock, buildSwapIxsMock, getQuoteMock } = vi.hoisted(() => ({
   buildExitTransactionMock: vi.fn(async () => ({}) as VersionedTransaction),
   getSwapAdapterMock: vi.fn(),
-  buildSwapIxsMock: vi.fn(async () => ({ instructions: [] as any[], lookupTableAddresses: [] as any[] })),
+  buildSwapIxsMock: vi.fn(async () => ({ instructions: [{} as any], lookupTableAddresses: [] as any[] })),
   getQuoteMock: vi.fn(),
 }));
 
@@ -70,7 +70,7 @@ describe('executeOnce', () => {
     getSwapAdapterMock.mockReset();
     getQuoteMock.mockReset();
     buildSwapIxsMock.mockReset();
-    buildSwapIxsMock.mockResolvedValue({ instructions: [] as any[], lookupTableAddresses: [] as any[] });
+    buildSwapIxsMock.mockResolvedValue({ instructions: [{} as any], lookupTableAddresses: [] as any[] });
     getSwapAdapterMock.mockReturnValue({
       getQuote: getQuoteMock,
       buildSwapIxs: buildSwapIxsMock,
@@ -84,7 +84,7 @@ describe('executeOnce', () => {
     getSwapAdapterMock.mockReturnValue({
       getQuote: getQuoteMock,
       buildSwapIxs: buildSwapIxsMock.mockResolvedValueOnce({
-        instructions: [],
+        instructions: [{} as any],
         lookupTableAddresses: [lutAddressA, lutAddressB],
       }),
     });
@@ -156,7 +156,7 @@ describe('executeOnce', () => {
     getSwapAdapterMock.mockReturnValue({
       getQuote: getQuoteMock,
       buildSwapIxs: buildSwapIxsMock.mockResolvedValueOnce({
-        instructions: [],
+        instructions: [{} as any],
         lookupTableAddresses: [lutAddressA, lutAddressB],
       }),
     });
@@ -423,6 +423,55 @@ describe('executeOnce', () => {
     expect(res.status).toBe('ERROR');
     expect(res.errorCode).toBe('DATA_UNAVAILABLE');
     expect(buildSwapIxsMock).not.toHaveBeenCalled();
+    expect(buildExitTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it('fails fast when swap adapter returns zero instructions for planned swap', async () => {
+    buildExitTransactionMock.mockClear();
+    buildSwapIxsMock.mockResolvedValueOnce({ instructions: [], lookupTableAddresses: [] });
+
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: vi.fn(async () => null),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'jupiter' } },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      checkExistingReceipt: async () => false,
+    });
+
+    expect(res.status).toBe('ERROR');
+    expect(res.errorCode).toBe('DATA_UNAVAILABLE');
     expect(buildExitTransactionMock).not.toHaveBeenCalled();
   });
 

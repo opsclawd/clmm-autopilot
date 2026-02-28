@@ -135,6 +135,28 @@ describe('runDevnetE2E refusals', () => {
     await cleanup();
   });
 
+  it('fails fast on unsupported router/cluster before policy evaluation', async () => {
+    const { env, cleanup } = await makeEnv();
+    env.SWAP_ROUTER = 'jupiter';
+    const loadPositionSnapshot = vi.fn(async () => mockSnapshot(env.POSITION_ADDRESS));
+    const executeOnce = vi.fn();
+
+    await expect(
+      runDevnetE2E(env, () => {}, {
+        loadPositionSnapshot: loadPositionSnapshot as any,
+        fetchJupiterQuote: vi.fn() as any,
+        executeOnce: executeOnce as any,
+        fetchReceiptByPda: vi.fn() as any,
+        getSlot: vi.fn(async () => 123),
+        nowMs: () => 1_700_000_000_000,
+      }),
+    ).rejects.toMatchObject({ code: 'SWAP_ROUTER_UNSUPPORTED_CLUSTER' });
+
+    expect(loadPositionSnapshot).not.toHaveBeenCalled();
+    expect(executeOnce).not.toHaveBeenCalled();
+    await cleanup();
+  });
+
 
   it('returns INVALID_KEYPAIR when keypair bytes are out of range', async () => {
     const bad = JSON.stringify(new Array(64).fill(0).map((v, i) => (i === 10 ? 999 : v)));

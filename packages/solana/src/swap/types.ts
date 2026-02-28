@@ -27,7 +27,7 @@ export type SolanaSwapBuildResult = {
   lookupTableAddresses: PublicKey[];
 };
 
-export type SolanaSwapAdapter = SwapAdapter & {
+export type SolanaSwapAdapter = SwapAdapter<SolanaGetQuoteParams, SolanaSwapBuildResult, PublicKey, Readonly<SolanaSwapContext>> & {
   getQuote(params: SolanaGetQuoteParams): Promise<SwapQuote>;
   buildSwapIxs(quote: Readonly<SwapQuote>, payer: PublicKey, context: Readonly<SolanaSwapContext>): Promise<SolanaSwapBuildResult>;
 };

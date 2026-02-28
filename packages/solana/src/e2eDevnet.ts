@@ -213,6 +213,7 @@ export async function runDevnetE2E(
       swapRouter: parseSwapRouter(env),
     },
   };
+  const configuredAdapter = getSwapAdapter(config.execution.swapRouter, config.cluster);
 
   log(logger, 'snapshot.fetch.start', { position: position.toBase58() });
   const snapshot = await deps.loadPositionSnapshot(connection, position, 'devnet');
@@ -287,14 +288,13 @@ export async function runDevnetE2E(
       direction: quotePlan.direction,
       amount: quotePlan.amount.toString(),
     });
-    const adapter = getSwapAdapter(config.execution.swapRouter, config.cluster);
     const tickArrays = deriveSwapTickArrays({
       whirlpool: snapshot.whirlpool,
       tickSpacing: snapshot.tickSpacing,
       tickCurrentIndex: snapshot.currentTickIndex,
       aToB: quotePlan.aToB,
     });
-    planQuote = await adapter.getQuote({
+    planQuote = await configuredAdapter.getQuote({
       cluster: config.cluster,
       inMint: quotePlan.inputMint.toBase58(),
       outMint: quotePlan.outputMint.toBase58(),

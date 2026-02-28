@@ -323,6 +323,21 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           });
         }
         const swapBuild = await adapter.buildSwapIxs(planQuote, params.authority, swapContext);
+        if (swapBuild.instructions.length === 0) {
+          throw {
+            code: 'DATA_UNAVAILABLE',
+            retryable: false,
+            message: 'swap adapter returned zero instructions for a planned swap',
+            debug: {
+              router,
+              cluster: params.config.cluster,
+              inMint: planQuote.inMint,
+              outMint: planQuote.outMint,
+              swapInAmount: planQuote.swapInAmount.toString(),
+              swapMinOutAmount: planQuote.swapMinOutAmount.toString(),
+            },
+          } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
+        }
         swapIxs = swapBuild.instructions;
         lookupTableAddresses = swapBuild.lookupTableAddresses;
         swapPlanned = true;

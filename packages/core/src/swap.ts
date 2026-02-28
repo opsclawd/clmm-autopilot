@@ -42,8 +42,14 @@ export type SwapPlan = {
   quote: SwapQuote;
 };
 
-export type SwapAdapter = {
+export type SwapAdapter<
+  TGetQuoteParams extends GetQuoteParams = GetQuoteParams,
+  TBuildSwapIxsResult = unknown,
+  TPayer = unknown,
+  TSwapContext = unknown,
+> = {
   name: SwapRouter;
   supportsCluster(cluster: Cluster): boolean;
-  getQuote(params: GetQuoteParams): Promise<SwapQuote>;
+  getQuote(params: TGetQuoteParams): Promise<SwapQuote>;
+  buildSwapIxs(quote: Readonly<SwapQuote>, payer: TPayer, context: TSwapContext): Promise<TBuildSwapIxsResult>;
 };
