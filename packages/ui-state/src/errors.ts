@@ -5,6 +5,9 @@ export type CanonicalCode =
   | 'INVALID_POSITION'
   | 'NOT_SOL_USDC'
   | 'ALREADY_EXECUTED_THIS_EPOCH'
+  | 'RECEIPT_PROGRAM_NOT_CONFIGURED'
+  | 'RECEIPT_IDL_MISMATCH'
+  | 'RECEIPT_PROGRAM_VERIFICATION_FAILED'
   | 'QUOTE_STALE'
   | 'SIMULATION_FAILED'
   | 'SLIPPAGE_EXCEEDED'
@@ -28,6 +31,18 @@ const messages: Record<CanonicalCode, Omit<UiError, 'code'>> = {
   INVALID_POSITION: { title: 'Invalid position', message: 'Position account is invalid or missing.' },
   NOT_SOL_USDC: { title: 'Unsupported pair', message: 'Position must be SOL/USDC.' },
   ALREADY_EXECUTED_THIS_EPOCH: { title: 'Already executed', message: 'Execution already recorded for this epoch.' },
+  RECEIPT_PROGRAM_NOT_CONFIGURED: {
+    title: 'Receipt program missing',
+    message: 'Receipt program identity is not configured for this environment.',
+  },
+  RECEIPT_IDL_MISMATCH: {
+    title: 'Receipt IDL mismatch',
+    message: 'Configured receipt IDL hash does not match the runtime IDL artifact.',
+  },
+  RECEIPT_PROGRAM_VERIFICATION_FAILED: {
+    title: 'Receipt program verification failed',
+    message: 'Receipt program verification failed before execution.',
+  },
   QUOTE_STALE: { title: 'Quote stale', message: 'Quote is stale and could not be refreshed safely.' },
   SIMULATION_FAILED: { title: 'Simulation failed', message: 'Simulation failed; execution blocked.' },
   SLIPPAGE_EXCEEDED: { title: 'Slippage exceeded', message: 'Quote exceeds configured slippage cap.' },

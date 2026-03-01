@@ -10,11 +10,19 @@ import {
   type Sample,
   type SwapQuote,
 } from '@clmm-autopilot/core';
-import { Connection, Keypair, PublicKey, VersionedTransaction } from '@solana/web3.js';
+import {
+  type AccountInfo,
+  Connection,
+  Keypair,
+  PublicKey,
+  type RpcResponseAndContext,
+  VersionedTransaction,
+} from '@solana/web3.js';
 import { executeOnce } from './executeOnce';
 import { fetchJupiterQuote } from './jupiter';
 import { loadPositionSnapshot, type PositionSnapshot } from './orcaInspector';
 import { deriveReceiptPda, fetchReceiptByPda, type ReceiptAccount } from './receipt';
+import { resolveReceiptRuntimeIdentity, type ReceiptRuntimeIdentity } from './receiptIdentity';
 import { getSwapAdapter } from './swap/registry';
 import { deriveSwapTickArrays } from './swap/tickArrays';
 
@@ -26,6 +34,7 @@ type HarnessError = Error & { code?: string };
 const RECEIPT_MISMATCH_CODE = 'RECEIPT_MISMATCH';
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 const ZERO_PUBKEY = '11111111111111111111111111111111';
+const BPF_UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 
 type HarnessLogger = (entry: Record<string, unknown>) => void;
 
@@ -35,6 +44,8 @@ type HarnessDeps = {
   executeOnce: typeof executeOnce;
   fetchReceiptByPda: typeof fetchReceiptByPda;
   getSlot: (connection: Connection) => Promise<number>;
+  getAccountInfo: (connection: Connection, pubkey: PublicKey) => Promise<AccountInfo<Buffer> | null>;
+  getParsedAccountInfo: (connection: Connection, pubkey: PublicKey) => Promise<RpcResponseAndContext<any>>;
   nowMs: () => number;
 };
 
@@ -44,6 +55,8 @@ const defaultDeps: HarnessDeps = {
   executeOnce,
   fetchReceiptByPda,
   getSlot: (connection) => connection.getSlot('confirmed'),
+  getAccountInfo: (connection, pubkey) => connection.getAccountInfo(pubkey, 'confirmed'),
+  getParsedAccountInfo: (connection, pubkey) => connection.getParsedAccountInfo(pubkey, 'confirmed'),
   nowMs: () => Date.now(),
 };
 
@@ -187,6 +200,66 @@ function verifyReceipt(receipt: ReceiptAccount, expected: {
   if (receiptHashHex !== expected.attestationHashHex) throw codedError(RECEIPT_MISMATCH_CODE, 'Receipt stored_hash mismatch vs local attestation hash');
 }
 
+function parsedInfoField(value: unknown, key: string): unknown {
+  if (!value || typeof value !== 'object') return undefined;
+  const data = value as { data?: unknown };
+  if (!data.data || typeof data.data !== 'object') return undefined;
+  const parsed = data.data as { parsed?: unknown };
+  if (!parsed.parsed || typeof parsed.parsed !== 'object') return undefined;
+  const info = parsed.parsed as { info?: unknown };
+  if (!info.info || typeof info.info !== 'object') return undefined;
+  return (info.info as Record<string, unknown>)[key];
+}
+
+async function verifyReceiptProgram(
+  connection: Connection,
+  identity: ReceiptRuntimeIdentity,
+  deps: HarnessDeps,
+  logger: HarnessLogger,
+): Promise<void> {
+  const programInfo = await deps.getAccountInfo(connection, identity.programId);
+  if (!programInfo) {
+    throw codedError('RECEIPT_PROGRAM_VERIFICATION_FAILED', 'Receipt program account not found on cluster');
+  }
+  if (!programInfo.executable) {
+    throw codedError('RECEIPT_PROGRAM_VERIFICATION_FAILED', 'Receipt program account is not executable');
+  }
+  if (!programInfo.owner.equals(BPF_UPGRADEABLE_LOADER)) {
+    throw codedError('RECEIPT_PROGRAM_VERIFICATION_FAILED', 'Receipt program is not owned by upgradeable loader');
+  }
+  log(logger, 'receipt.program.verify.ok', {
+    programId: identity.programId.toBase58(),
+    owner: programInfo.owner.toBase58(),
+  });
+
+  if (!identity.expectedUpgradeAuthority) return;
+
+  const parsedProgram = await deps.getParsedAccountInfo(connection, identity.programId);
+  const programDataAddress = parsedInfoField(parsedProgram.value, 'programData');
+  if (typeof programDataAddress !== 'string') {
+    throw codedError(
+      'RECEIPT_PROGRAM_VERIFICATION_FAILED',
+      'ProgramData address missing while expectedUpgradeAuthority is configured',
+    );
+  }
+  const parsedProgramData = await deps.getParsedAccountInfo(connection, new PublicKey(programDataAddress));
+  const parsedAuthority =
+    parsedInfoField(parsedProgramData.value, 'authority') ?? parsedInfoField(parsedProgramData.value, 'upgradeAuthority');
+  if (typeof parsedAuthority !== 'string') {
+    throw codedError(
+      'RECEIPT_PROGRAM_VERIFICATION_FAILED',
+      'Upgrade authority missing on ProgramData account while strict authority check is enabled',
+    );
+  }
+  if (parsedAuthority !== identity.expectedUpgradeAuthority.toBase58()) {
+    throw codedError('RECEIPT_PROGRAM_VERIFICATION_FAILED', 'Upgrade authority mismatch for receipt program');
+  }
+  log(logger, 'receipt.program.authority.ok', {
+    programData: programDataAddress,
+    expectedUpgradeAuthority: identity.expectedUpgradeAuthority.toBase58(),
+  });
+}
+
 export async function runDevnetE2E(
   env: HarnessEnv = process.env,
   logger: HarnessLogger = (entry) => console.log(JSON.stringify(entry)),
@@ -213,6 +286,11 @@ export async function runDevnetE2E(
       swapRouter: parseSwapRouter(env),
     },
   };
+  const receiptIdentity = resolveReceiptRuntimeIdentity(config, env);
+  if (!receiptIdentity) {
+    throw codedError('RECEIPT_PROGRAM_NOT_CONFIGURED', 'Resolved receipt identity is missing for devnet harness');
+  }
+  await verifyReceiptProgram(connection, receiptIdentity, deps, logger);
   const configuredAdapter = getSwapAdapter(config.execution.swapRouter, config.cluster);
 
   log(logger, 'snapshot.fetch.start', { position: position.toBase58() });
@@ -249,13 +327,14 @@ export async function runDevnetE2E(
     authority: authority.publicKey,
     positionMint: snapshot.positionMint,
     epoch,
+    programId: receiptIdentity.programId,
   });
 
   const existing = await deps.fetchReceiptByPda(connection, receiptPda);
   if (existing) {
     throw codedError('ALREADY_EXECUTED_THIS_EPOCH', 'Execution receipt already exists for this epoch');
   }
-  log(logger, 'idempotency.check.ok', { receiptPda: receiptPda.toBase58(), epoch });
+  log(logger, 'receipt.precheck.ok', { receiptPda: receiptPda.toBase58(), epoch, count: 0 });
 
   const quotePlan = getQuoteMintsAndAmount(snapshot, policy.action);
   const swapDecision = decideSwap(quotePlan.amount, quotePlan.direction, config);
@@ -368,7 +447,7 @@ export async function runDevnetE2E(
 
   log(logger, 'tx.build-sim-send.start', { attestationHash: Buffer.from(attestationHash).toString('hex') });
 
-  const result = await deps.executeOnce({
+  const executeParams = {
     connection,
     authority: authority.publicKey,
     position,
@@ -386,7 +465,9 @@ export async function runDevnetE2E(
       return connection.sendRawTransaction(tx.serialize(), { maxRetries: 1 });
     },
     onSimulationComplete: () => log(logger, 'tx.simulate.ok', {}),
-  });
+  } as const;
+
+  const result = await deps.executeOnce(executeParams);
 
   if (result.status !== 'EXECUTED' || !result.txSignature || !result.receiptPda) {
     throw codedError(result.errorCode ?? 'EXECUTION_FAILED', result.errorMessage ?? 'Execution failed');
@@ -405,6 +486,10 @@ export async function runDevnetE2E(
     attestationHashHex: Buffer.from(attestationHash).toString('hex'),
   });
 
+  log(logger, 'receipt.postcheck.ok', {
+    receiptPda: receiptPda.toBase58(),
+    count: 1,
+  });
   log(logger, 'receipt.verify.ok', {
     authority: fetchedReceipt.authority.toBase58(),
     positionMint: fetchedReceipt.positionMint.toBase58(),
@@ -412,6 +497,15 @@ export async function runDevnetE2E(
     direction: fetchedReceipt.direction,
     storedHash: Buffer.from(fetchedReceipt.attestationHash).toString('hex'),
   });
+
+  const duplicateResult = await deps.executeOnce(executeParams);
+  if (duplicateResult.status !== 'ERROR' || duplicateResult.errorCode !== 'ALREADY_EXECUTED_THIS_EPOCH') {
+    throw codedError(
+      'RECEIPT_PROGRAM_VERIFICATION_FAILED',
+      `Duplicate attempt in same epoch was not blocked deterministically (status=${duplicateResult.status}, code=${duplicateResult.errorCode ?? 'unknown'})`,
+    );
+  }
+  log(logger, 'receipt.duplicate-block.ok', { code: duplicateResult.errorCode });
 
   log(logger, 'harness.complete', { status: 'EXECUTED', signature: result.txSignature });
 }

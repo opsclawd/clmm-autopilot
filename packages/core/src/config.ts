@@ -1,8 +1,15 @@
 export type Cluster = 'devnet' | 'mainnet-beta' | 'localnet';
 export type SwapRouter = 'jupiter' | 'orca' | 'noop';
+export type ReceiptIdlHashMode = 'subset-v1';
 
 export type AutopilotConfig = {
   cluster: Cluster;
+  // Fallback-only receipt identity fields; solana runtime resolver prefers manifest values on devnet.
+  receiptProgramId?: string;
+  receiptIdlHashMode?: ReceiptIdlHashMode;
+  receiptIdlHash?: string;
+  receiptIdlPath?: string;
+  expectedUpgradeAuthority?: string;
   policy: {
     cadenceMs: number;
     requiredConsecutive: number;
@@ -32,6 +39,11 @@ export type AutopilotConfig = {
 
 export const DEFAULT_CONFIG: AutopilotConfig = {
   cluster: 'devnet',
+  receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
+  receiptIdlHashMode: 'subset-v1',
+  receiptIdlHash: '317ea46a8109cc637f2ad2b4b55dba2e21c141102e08c3fe8b10c3857b72a0ee',
+  receiptIdlPath: 'deployments/devnet/receipt.idl.json',
+  expectedUpgradeAuthority: undefined,
   policy: {
     cadenceMs: 2_000,
     requiredConsecutive: 3,
@@ -139,6 +151,24 @@ function readOptionalIntField(
   return Math.trunc(n);
 }
 
+function readOptionalStringField(
+  errors: ConfigError[],
+  source: Record<string, unknown>,
+  key: string,
+  path: string,
+  fallback: string | undefined,
+): string | undefined {
+  if (!(key in source)) return fallback;
+  const raw = source[key];
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'string') {
+    pushType(errors, path, 'string | undefined', raw);
+    return fallback;
+  }
+  const trimmed = raw.trim();
+  return trimmed === '' ? undefined : trimmed;
+}
+
 function validateBackoffSchedule(schedule: number[]): string | null {
   if (!Array.isArray(schedule) || schedule.length === 0) return 'Backoff schedule must be a non-empty array';
   for (const v of schedule) {
@@ -229,6 +259,28 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
 
   const normalized: AutopilotConfig = {
     cluster,
+    receiptProgramId: readOptionalStringField(
+      errors,
+      input,
+      'receiptProgramId',
+      'receiptProgramId',
+      DEFAULT_CONFIG.receiptProgramId,
+    ),
+    receiptIdlHashMode:
+      typeof input.receiptIdlHashMode === 'string'
+        ? (input.receiptIdlHashMode as ReceiptIdlHashMode)
+        : input.receiptIdlHashMode === undefined || input.receiptIdlHashMode === null
+          ? DEFAULT_CONFIG.receiptIdlHashMode
+          : (pushType(errors, 'receiptIdlHashMode', "'subset-v1' | undefined", input.receiptIdlHashMode), DEFAULT_CONFIG.receiptIdlHashMode),
+    receiptIdlHash: readOptionalStringField(errors, input, 'receiptIdlHash', 'receiptIdlHash', DEFAULT_CONFIG.receiptIdlHash),
+    receiptIdlPath: readOptionalStringField(errors, input, 'receiptIdlPath', 'receiptIdlPath', DEFAULT_CONFIG.receiptIdlPath),
+    expectedUpgradeAuthority: readOptionalStringField(
+      errors,
+      input,
+      'expectedUpgradeAuthority',
+      'expectedUpgradeAuthority',
+      DEFAULT_CONFIG.expectedUpgradeAuthority,
+    ),
     policy: {
       cadenceMs: readIntField(errors, policyIn, 'cadenceMs', 'policy.cadenceMs', DEFAULT_CONFIG.policy.cadenceMs),
       requiredConsecutive: readIntField(
@@ -309,6 +361,35 @@ export function validateConfig(input: unknown): ValidateConfigResult {
   const allowedClusters = new Set<Cluster>(['devnet', 'mainnet-beta', 'localnet']);
   if (!allowedClusters.has(normalized.value.cluster)) {
     pushRange(errors, 'cluster', "'devnet' | 'mainnet-beta' | 'localnet'", normalized.value.cluster);
+  }
+  if (
+    normalized.value.receiptIdlHashMode !== undefined &&
+    normalized.value.receiptIdlHashMode !== 'subset-v1'
+  ) {
+    pushRange(errors, 'receiptIdlHashMode', "'subset-v1'", normalized.value.receiptIdlHashMode);
+  }
+  if (
+    normalized.value.receiptIdlHash !== undefined &&
+    !/^[a-f0-9]{64}$/i.test(normalized.value.receiptIdlHash)
+  ) {
+    pushRange(errors, 'receiptIdlHash', '64-char hex sha256', normalized.value.receiptIdlHash);
+  }
+  if (
+    normalized.value.receiptProgramId !== undefined &&
+    (normalized.value.receiptProgramId.length < 32 || normalized.value.receiptProgramId.length > 64)
+  ) {
+    pushRange(errors, 'receiptProgramId', 'base58 pubkey string', normalized.value.receiptProgramId);
+  }
+  if (
+    normalized.value.expectedUpgradeAuthority !== undefined &&
+    (normalized.value.expectedUpgradeAuthority.length < 32 || normalized.value.expectedUpgradeAuthority.length > 64)
+  ) {
+    pushRange(
+      errors,
+      'expectedUpgradeAuthority',
+      'base58 pubkey string | undefined',
+      normalized.value.expectedUpgradeAuthority,
+    );
   }
 
   const p = normalized.value.policy;

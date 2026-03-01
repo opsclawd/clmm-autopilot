@@ -15,7 +15,8 @@ import { buildExitTransaction, type ExitDirection } from './executionBuilder';
 import { computeExecutionRequirements } from './requirements';
 import { normalizeSolanaError } from './errors';
 import { loadPositionSnapshot } from './orcaInspector';
-import { deriveReceiptPda, DISABLE_RECEIPT_PROGRAM_FOR_TESTING, fetchReceiptByPda } from './receipt';
+import { deriveReceiptPda, fetchReceiptByPda } from './receipt';
+import { resolveReceiptRuntimeIdentity } from './receiptIdentity';
 import { refreshBlockhashIfNeeded, shouldRebuild, withBoundedRetry } from './reliability';
 import type { CanonicalErrorCode } from './types';
 import { SOL_MINT } from './ata';
@@ -385,10 +386,16 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       params.logger?.notify?.('quote rebuilt', { reasonCode: rebuildCheck.reasonCode ?? 'QUOTE_STALE' });
     }
 
-    const receiptPda = DISABLE_RECEIPT_PROGRAM_FOR_TESTING
-      ? null
-      : deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch })[0];
-    if (!DISABLE_RECEIPT_PROGRAM_FOR_TESTING && receiptPda) {
+    const receiptIdentity = resolveReceiptRuntimeIdentity(params.config);
+    const receiptPda = receiptIdentity
+      ? deriveReceiptPda({
+          authority: params.authority,
+          positionMint: snapshot.positionMint,
+          epoch,
+          programId: receiptIdentity.programId,
+        })[0]
+      : null;
+    if (receiptPda) {
       const existingReceipt = params.checkExistingReceipt
         ? await params.checkExistingReceipt(receiptPda)
         : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, params.config.execution));
@@ -476,6 +483,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         }),
         attestationHash,
         attestationPayloadBytes,
+        receiptProgramId: receiptIdentity?.programId,
         lookupTableAccounts,
         returnVersioned: true,
         swapIxs: assembled.swapIxs,
@@ -542,7 +550,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     );
 
     let receipt = null;
-    if (!DISABLE_RECEIPT_PROGRAM_FOR_TESTING && receiptPda) {
+    if (receiptPda) {
       for (let i = 0; i < params.config.execution.receiptPollMaxAttempts; i += 1) {
         receipt = await fetchReceiptByPda(params.connection, receiptPda);
         if (receipt) break;

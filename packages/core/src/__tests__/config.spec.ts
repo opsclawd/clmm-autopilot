@@ -132,4 +132,26 @@ describe('validateConfig', () => {
       expect(res.errors.some((e) => e.path === 'ui.sampleBufferSize' && e.code === 'RANGE')).toBe(true);
     }
   });
+
+  it('validates fallback receipt identity fields', () => {
+    const ok = validateConfig({
+      receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
+      receiptIdlHashMode: 'subset-v1',
+      receiptIdlHash: 'a'.repeat(64),
+      receiptIdlPath: 'deployments/devnet/receipt.idl.json',
+    });
+    expect(ok.ok).toBe(true);
+
+    const badHash = validateConfig({ receiptIdlHash: 'xyz' });
+    expect(badHash.ok).toBe(false);
+    if (!badHash.ok) {
+      expect(badHash.errors.some((e) => e.path === 'receiptIdlHash')).toBe(true);
+    }
+
+    const badMode = validateConfig({ receiptIdlHashMode: 'full-v1' });
+    expect(badMode.ok).toBe(false);
+    if (!badMode.ok) {
+      expect(badMode.errors.some((e) => e.path === 'receiptIdlHashMode')).toBe(true);
+    }
+  });
 });

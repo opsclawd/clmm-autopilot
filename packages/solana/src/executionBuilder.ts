@@ -11,7 +11,7 @@ import { assertSolUsdcPair, decideSwap, hashAttestationPayload, type SwapPlan } 
 import { buildCreateAtaIdempotentIx, SOL_MINT } from './ata';
 import type { PositionSnapshot } from './orcaInspector';
 import { buildOrcaExitIxs, type OrcaExitIxs } from './orcaExitBuilder';
-import { buildRecordExecutionIx, DISABLE_RECEIPT_PROGRAM_FOR_TESTING } from './receipt';
+import { buildRecordExecutionIx } from './receipt';
 import { classifySimulationFailure, type SimulationDiagnostics } from './simErrors';
 import type { CanonicalErrorCode } from './types';
 import type { FeeBufferDebugPayload, FeeRequirementsBreakdown } from './requirements';
@@ -47,6 +47,7 @@ export type BuildExitConfig = {
   quoteFreshnessSec?: number;
   nowUnixSec?: () => number;
   receiptEpochUnixMs: number;
+  receiptProgramId?: PublicKey;
 
   availableLamports: number;
   requirements: FeeRequirementsBreakdown;
@@ -239,15 +240,16 @@ export async function buildExitTransaction(
     );
   }
 
-  const receiptIx = DISABLE_RECEIPT_PROGRAM_FOR_TESTING
-    ? null
-    : buildRecordExecutionIx({
+  const receiptIx = config.receiptProgramId
+    ? buildRecordExecutionIx({
         authority: config.authority,
         positionMint: snapshot.positionMint,
         epoch: canonicalEpoch(config.receiptEpochUnixMs),
         direction: direction === 'DOWN' ? 0 : 1,
         attestationHash: config.attestationHash,
-      });
+        programId: config.receiptProgramId,
+      })
+    : null;
 
   const instructions: TransactionInstruction[] = [
     ...buildComputeBudgetIxs(config),

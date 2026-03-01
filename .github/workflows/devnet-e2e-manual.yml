@@ -30,5 +30,8 @@ jobs:
           test -n "${{ secrets.AUTHORITY_KEYPAIR_JSON }}"
           printf '%s' '${{ secrets.AUTHORITY_KEYPAIR_JSON }}' > "$AUTHORITY_KEYPAIR"
 
+      - name: Verify devnet receipt manifest consistency
+        run: pnpm receipt:check:devnet
+
       - name: Run devnet e2e harness
         run: pnpm e2e:devnet

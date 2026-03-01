@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
-import { DISABLE_RECEIPT_PROGRAM_FOR_TESTING } from '../receipt';
 
 const DEVNET_USDC_MINT = 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k';
 
@@ -694,11 +693,6 @@ describe('executeOnce', () => {
       sleep: vi.fn(async () => {}),
       nowUnixMs: () => 10_000,
     });
-
-    if (DISABLE_RECEIPT_PROGRAM_FOR_TESTING) {
-      expect(res.errorCode).not.toBe('ALREADY_EXECUTED_THIS_EPOCH');
-      return;
-    }
 
     expect(res.status).toBe('ERROR');
     expect(res.errorCode).toBe('ALREADY_EXECUTED_THIS_EPOCH');
