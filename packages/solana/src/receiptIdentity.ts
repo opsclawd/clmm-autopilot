@@ -12,7 +12,7 @@ export type ReceiptDeploymentManifest = {
   idlHash: string;
   deployedAt: string;
   gitCommit: string;
-  deployerPubkey: string;
+  deployerPubkey?: string;
   expectedUpgradeAuthority?: string;
 };
 

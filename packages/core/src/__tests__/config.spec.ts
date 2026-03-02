@@ -154,14 +154,14 @@ describe('validateConfig', () => {
       expect(badMode.errors.some((e) => e.path === 'receiptIdlHashMode')).toBe(true);
     }
 
-    const missingProgram = validateConfig({
+    const devnetNoFallback = validateConfig({
       cluster: 'devnet',
       receiptProgramId: undefined,
+      receiptIdlHashMode: undefined,
+      receiptIdlHash: undefined,
+      receiptIdlPath: undefined,
     });
-    expect(missingProgram.ok).toBe(false);
-    if (!missingProgram.ok) {
-      expect(missingProgram.errors.some((e) => e.path === 'receiptProgramId')).toBe(true);
-    }
+    expect(devnetNoFallback.ok).toBe(true);
 
     const badProgramId = validateConfig({
       cluster: 'devnet',

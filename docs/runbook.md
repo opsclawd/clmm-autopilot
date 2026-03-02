@@ -21,6 +21,8 @@ Harness env vars:
 - `AUTHORITY_KEYPAIR` (required, dev-only local keypair JSON path)
 - `POSITION_ADDRESS` (required, devnet position account)
 - `SWAP_ROUTER` (optional: `noop` | `orca` | `jupiter`, default `noop` for deterministic harness runs)
+- `FORCE_DECISION` (optional: `TRIGGER_DOWN` | `TRIGGER_UP`; overrides live policy decision to force receipt proof path)
+- `REQUIRE_RECEIPT_PROOF` (optional: `1|0|true|false`, default `0`; when enabled, `HOLD` is treated as failure)
 
 Example:
 
@@ -40,18 +42,21 @@ pnpm e2e:devnet
 3. Fetches position snapshot from devnet
 4. Enforces SOL/USDC guardrail (`NOT_SOL_USDC` on mismatch)
 5. Evaluates policy decision from canonical tick samples
-6. If HOLD: exits `0`
-7. If TRIGGER: checks canonical receipt PDA pre-state (must be `count=0`)
-8. If swap is planned and router is not `noop`, fetches swap quote via configured adapter (`execution.swapRouter`) and computes canonical attestation payload/hash
-9. Builds tx + simulates (simulation gate)
-10. Sends + confirms
-11. Checks canonical receipt PDA post-state (must be `count=1`) and verifies:
+6. Optionally overrides decision when `FORCE_DECISION` is configured
+7. If HOLD:
+   - exits `0` when `REQUIRE_RECEIPT_PROOF` is unset/false
+   - fails fast when `REQUIRE_RECEIPT_PROOF=1`
+8. If TRIGGER: checks canonical receipt PDA pre-state (must be `count=0`)
+9. If swap is planned and router is not `noop`, fetches swap quote via configured adapter (`execution.swapRouter`) and computes canonical attestation payload/hash
+10. Builds tx + simulates (simulation gate)
+11. Sends + confirms
+12. Checks canonical receipt PDA post-state (must be `count=1`) and verifies:
     - authority
     - position_mint
     - epoch
     - direction
     - stored hash equals local attestation hash
-12. Executes the same flow a second time in the same epoch and requires deterministic rejection with `ALREADY_EXECUTED_THIS_EPOCH`
+13. Executes the same flow a second time in the same epoch and requires deterministic rejection with `ALREADY_EXECUTED_THIS_EPOCH`
 
 Logs are JSON (structured) and failure exits non-zero.
 
@@ -107,8 +112,8 @@ If this fails, do not run harness until manifest/IDL drift is fixed.
   - **Action:** Re-run deploy script to refresh `receipt.idl.json` + manifest atomically.
 
 - `RECEIPT_PROGRAM_VERIFICATION_FAILED`
-  - **Cause:** Program missing, non-executable, wrong owner, or strict authority mismatch.
-  - **Action:** Verify `solana program show`, confirm manifest program id, and reconcile optional `expectedUpgradeAuthority`.
+  - **Cause:** Program missing, non-executable, wrong owner, strict authority mismatch, or `HOLD` while `REQUIRE_RECEIPT_PROOF=1`.
+  - **Action:** Verify `solana program show`, confirm manifest program id, reconcile optional `expectedUpgradeAuthority`, and if needed set `FORCE_DECISION` or use a trigger-eligible position.
 
 - `dust swap skipped`
   - **Cause:** Swap amount below configured dust threshold.

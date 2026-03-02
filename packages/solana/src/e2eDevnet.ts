@@ -83,6 +83,21 @@ function parseSwapRouter(env: HarnessEnv): AutopilotConfig['execution']['swapRou
   throw codedError('CONFIG_INVALID', `SWAP_ROUTER must be one of: noop, orca, jupiter (received '${raw}')`);
 }
 
+function parseForceDecision(env: HarnessEnv): Exclude<HarnessDecision, 'HOLD'> | undefined {
+  const raw = env.FORCE_DECISION?.trim();
+  if (!raw) return undefined;
+  if (raw === 'TRIGGER_DOWN' || raw === 'TRIGGER_UP') return raw;
+  throw codedError('CONFIG_INVALID', `FORCE_DECISION must be one of: TRIGGER_DOWN, TRIGGER_UP (received '${raw}')`);
+}
+
+function parseBooleanEnvFlag(env: HarnessEnv, key: string): boolean {
+  const raw = env[key]?.trim();
+  if (!raw) return false;
+  if (raw === '1' || raw.toLowerCase() === 'true') return true;
+  if (raw === '0' || raw.toLowerCase() === 'false') return false;
+  throw codedError('CONFIG_INVALID', `${key} must be one of: 1, 0, true, false (received '${raw}')`);
+}
+
 function parseAuthority(secretKeyJson: string): Keypair {
   let raw: unknown;
   try {
@@ -268,6 +283,8 @@ export async function runDevnetE2E(
   const rpcUrl = parseRequiredEnv(env, 'RPC_URL');
   const authorityPath = parseRequiredEnv(env, 'AUTHORITY_KEYPAIR');
   const positionAddress = parseRequiredEnv(env, 'POSITION_ADDRESS');
+  const forceDecision = parseForceDecision(env);
+  const requireReceiptProof = parseBooleanEnvFlag(env, 'REQUIRE_RECEIPT_PROOF');
 
   const authority = await loadAuthorityFromPath(authorityPath);
   let position: PublicKey;
@@ -308,16 +325,24 @@ export async function runDevnetE2E(
   const latestSlot = await deps.getSlot(connection);
   const samples = buildSamples(snapshot.currentTickIndex, unixTs, latestSlot);
 
-  const policy = evaluateRangeBreak(
+  const policyEvaluated = evaluateRangeBreak(
     samples,
     { lowerTickIndex: snapshot.lowerTickIndex, upperTickIndex: snapshot.upperTickIndex },
     config.policy,
     {},
   );
+  const decision = forceDecision ?? policyEvaluated.action;
+  const reasonCode = forceDecision ? `FORCED_${forceDecision}` : policyEvaluated.reasonCode;
 
-  log(logger, 'policy.evaluate.ok', { decision: policy.action, reasonCode: policy.reasonCode });
+  log(logger, 'policy.evaluate.ok', { decision, reasonCode });
 
-  if (policy.action === 'HOLD') {
+  if (decision === 'HOLD') {
+    if (requireReceiptProof) {
+      throw codedError(
+        'RECEIPT_PROGRAM_VERIFICATION_FAILED',
+        'Policy decision was HOLD while REQUIRE_RECEIPT_PROOF is enabled; set FORCE_DECISION or use a trigger-eligible position',
+      );
+    }
     log(logger, 'harness.complete', { status: 'HOLD' });
     return;
   }
@@ -336,7 +361,7 @@ export async function runDevnetE2E(
   }
   log(logger, 'receipt.precheck.ok', { receiptPda: receiptPda.toBase58(), epoch, count: 0 });
 
-  const quotePlan = getQuoteMintsAndAmount(snapshot, policy.action);
+  const quotePlan = getQuoteMintsAndAmount(snapshot, decision);
   const swapDecision = decideSwap(quotePlan.amount, quotePlan.direction, config);
   const swapPlanned = swapDecision.execute && config.execution.swapRouter !== 'noop';
   const swapSkipReason = !swapDecision.execute ? 'DUST' : config.execution.swapRouter === 'noop' ? 'ROUTER_DISABLED' : 'NONE';
@@ -409,7 +434,7 @@ export async function runDevnetE2E(
     positionMint: snapshot.positionMint.toBase58(),
     whirlpool: snapshot.whirlpool.toBase58(),
     epoch,
-    direction: decideDirection(policy.action),
+    direction: decideDirection(decision),
     tickCurrent: snapshot.currentTickIndex,
     lowerTickIndex: snapshot.lowerTickIndex,
     upperTickIndex: snapshot.upperTickIndex,
@@ -430,7 +455,7 @@ export async function runDevnetE2E(
     positionMint: snapshot.positionMint.toBase58(),
     whirlpool: snapshot.whirlpool.toBase58(),
     epoch,
-    direction: decideDirection(policy.action),
+    direction: decideDirection(decision),
     tickCurrent: snapshot.currentTickIndex,
     lowerTickIndex: snapshot.lowerTickIndex,
     upperTickIndex: snapshot.upperTickIndex,
@@ -482,7 +507,7 @@ export async function runDevnetE2E(
     authority: authority.publicKey,
     positionMint: snapshot.positionMint,
     epoch,
-    direction: decideDirection(policy.action),
+    direction: decideDirection(decision),
     attestationHashHex: Buffer.from(attestationHash).toString('hex'),
   });
 

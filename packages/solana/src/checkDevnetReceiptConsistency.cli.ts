@@ -15,12 +15,48 @@ function assertEqual(name: string, actual: string, expected: string): void {
   }
 }
 
+function assertManifestStringField(manifest: Record<string, unknown>, field: string): string {
+  const value = manifest[field];
+  if (typeof value !== 'string' || value.trim() === '') {
+    fail(`Manifest field missing/invalid: ${field}`, { value });
+  }
+  if (value.trim().toLowerCase() === 'unknown') {
+    fail(`Manifest field cannot be placeholder 'unknown': ${field}`, { value });
+  }
+  return value.trim();
+}
+
+function assertDeployedMetadata(manifest: Record<string, unknown>): void {
+  const deployedAt = assertManifestStringField(manifest, 'deployedAt');
+  const parsed = Date.parse(deployedAt);
+  if (!Number.isFinite(parsed)) {
+    fail('Manifest deployedAt is not a valid ISO timestamp', { deployedAt });
+  }
+  if (new Date(parsed).getUTCFullYear() < 2020) {
+    fail('Manifest deployedAt is not plausible for a real deployment', { deployedAt });
+  }
+
+  const gitCommit = assertManifestStringField(manifest, 'gitCommit');
+  if (!/^[a-f0-9]{7,40}$/i.test(gitCommit)) {
+    fail('Manifest gitCommit must be a 7-40 char git hash', { gitCommit });
+  }
+
+  const deployerPubkey = manifest.deployerPubkey;
+  if (deployerPubkey !== undefined) {
+    if (typeof deployerPubkey !== 'string' || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(deployerPubkey)) {
+      fail('Manifest deployerPubkey must be a base58 public key when provided', { deployerPubkey });
+    }
+  }
+}
+
 function main(): void {
   const srcDir = dirname(fileURLToPath(import.meta.url));
   const repoRoot = resolve(srcDir, '../../..');
   const manifestPath = resolve(repoRoot, 'deployments/devnet/receipt.json');
 
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as ReceiptDeploymentManifest;
+  const manifestRaw = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+  assertDeployedMetadata(manifestRaw);
+  const manifest = manifestRaw as ReceiptDeploymentManifest;
   const resolved = resolveReceiptRuntimeIdentity({ ...DEFAULT_CONFIG, cluster: 'devnet' });
   if (!resolved) fail('Resolver returned null for devnet identity');
 

@@ -4,7 +4,6 @@
   "idlPath": "deployments/devnet/receipt.idl.json",
   "idlHashMode": "subset-v1",
   "idlHash": "317ea46a8109cc637f2ad2b4b55dba2e21c141102e08c3fe8b10c3857b72a0ee",
-  "deployedAt": "1970-01-01T00:00:00.000Z",
-  "gitCommit": "unknown",
-  "deployerPubkey": "unknown"
+  "deployedAt": "2026-03-01T21:17:46.000Z",
+  "gitCommit": "b0f001b7fac6d8a5cbfc1bf5ce49f3a81e39c1b5"
 }

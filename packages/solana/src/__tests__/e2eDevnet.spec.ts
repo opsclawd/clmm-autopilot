@@ -3,7 +3,7 @@ import { Keypair, PublicKey } from '@solana/web3.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computeAttestationHash, getMintRegistry } from '@clmm-autopilot/core';
+import { getMintRegistry } from '@clmm-autopilot/core';
 import { runDevnetE2E } from '../e2eDevnet';
 import { deriveReceiptPda } from '../receipt';
 import { getDefaultDevnetReceiptManifest } from '../receiptIdentity';
@@ -155,6 +155,35 @@ describe('runDevnetE2E refusals', () => {
     delete env.RPC_URL;
 
     await expect(runDevnetE2E(env, () => {})).rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+    await cleanup();
+  });
+
+  it('returns CONFIG_INVALID when FORCE_DECISION is malformed', async () => {
+    const { env, cleanup } = await makeEnv();
+    env.FORCE_DECISION = 'bad-value';
+
+    await expect(runDevnetE2E(env, () => {})).rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+    await cleanup();
+  });
+
+  it('fails fast when REQUIRE_RECEIPT_PROOF=1 and policy stays HOLD', async () => {
+    const { env, cleanup } = await makeEnv();
+    env.REQUIRE_RECEIPT_PROOF = '1';
+    const executeOnce = vi.fn();
+
+    await expect(
+      runDevnetE2E(env, () => {}, harnessDeps({
+        loadPositionSnapshot: vi.fn(async () => mockSnapshot(env.POSITION_ADDRESS, {
+          currentTickIndex: 0,
+          lowerTickIndex: -10,
+          upperTickIndex: 10,
+          inRange: true,
+        })) as any,
+        executeOnce: executeOnce as any,
+      })),
+    ).rejects.toMatchObject({ code: 'RECEIPT_PROGRAM_VERIFICATION_FAILED' });
+
+    expect(executeOnce).not.toHaveBeenCalled();
     await cleanup();
   });
 
@@ -339,34 +368,16 @@ describe('runDevnetE2E refusals', () => {
       programId: manifestProgramId,
     });
 
-    const attestationHash = computeAttestationHash({
-      cluster: 'devnet',
-      authority: authority.toBase58(),
-      position: snapshot.position.toBase58(),
-      positionMint: snapshot.positionMint.toBase58(),
-      whirlpool: snapshot.whirlpool.toBase58(),
-      epoch,
-      direction: 0,
-      tickCurrent: snapshot.currentTickIndex,
-      lowerTickIndex: snapshot.lowerTickIndex,
-      upperTickIndex: snapshot.upperTickIndex,
-      slippageBpsCap: 50,
-      quoteInputMint: '11111111111111111111111111111111',
-      quoteOutputMint: '11111111111111111111111111111111',
-      quoteInAmount: 0n,
-      quoteMinOutAmount: 0n,
-      quoteQuotedAtUnixSec: 0,
-      swapPlanned: 0,
-      swapSkipReason: 'ROUTER_DISABLED',
-      swapRouter: 'noop',
-    });
-
-    const executeOnce = vi
-      .fn()
-      .mockResolvedValueOnce({
-        status: 'EXECUTED',
-        txSignature: 'sig-ok',
-        receiptPda: receiptPda.toBase58(),
+    let attestationHash = new Uint8Array(32).fill(1);
+    const executeOnce = vi.fn()
+      .mockImplementationOnce(async (params: { attestationHash?: Uint8Array }) => {
+        const runtimeHash = params.attestationHash ?? attestationHash;
+        attestationHash = new Uint8Array(runtimeHash);
+        return {
+          status: 'EXECUTED',
+          txSignature: 'sig-ok',
+          receiptPda: receiptPda.toBase58(),
+        };
       })
       .mockResolvedValueOnce({
         status: 'ERROR',
@@ -384,7 +395,7 @@ describe('runDevnetE2E refusals', () => {
           fetchReceiptByPda: vi
             .fn()
             .mockResolvedValueOnce(null)
-            .mockResolvedValueOnce({
+            .mockImplementationOnce(async () => ({
               authority,
               positionMint: snapshot.positionMint,
               epoch,
@@ -393,7 +404,7 @@ describe('runDevnetE2E refusals', () => {
               slot: BigInt(1),
               unixTs: BigInt(1),
               bump: 255,
-            }) as any,
+            })) as any,
           nowMs: () => nowMs,
         }),
       ),

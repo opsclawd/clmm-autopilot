@@ -39,10 +39,10 @@ export type AutopilotConfig = {
 
 export const DEFAULT_CONFIG: AutopilotConfig = {
   cluster: 'devnet',
-  receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
-  receiptIdlHashMode: 'subset-v1',
-  receiptIdlHash: '317ea46a8109cc637f2ad2b4b55dba2e21c141102e08c3fe8b10c3857b72a0ee',
-  receiptIdlPath: 'deployments/devnet/receipt.idl.json',
+  receiptProgramId: undefined,
+  receiptIdlHashMode: undefined,
+  receiptIdlHash: undefined,
+  receiptIdlPath: undefined,
   expectedUpgradeAuthority: undefined,
   policy: {
     cadenceMs: 2_000,
@@ -365,20 +365,6 @@ export function validateConfig(input: unknown): ValidateConfigResult {
   const allowedClusters = new Set<Cluster>(['devnet', 'mainnet-beta', 'localnet']);
   if (!allowedClusters.has(normalized.value.cluster)) {
     pushRange(errors, 'cluster', "'devnet' | 'mainnet-beta' | 'localnet'", normalized.value.cluster);
-  }
-  if (normalized.value.cluster === 'devnet') {
-    if (!normalized.value.receiptProgramId) {
-      pushRange(errors, 'receiptProgramId', 'required for devnet', normalized.value.receiptProgramId);
-    }
-    if (!normalized.value.receiptIdlHashMode) {
-      pushRange(errors, 'receiptIdlHashMode', 'required for devnet', normalized.value.receiptIdlHashMode);
-    }
-    if (!normalized.value.receiptIdlHash) {
-      pushRange(errors, 'receiptIdlHash', 'required for devnet', normalized.value.receiptIdlHash);
-    }
-    if (!normalized.value.receiptIdlPath) {
-      pushRange(errors, 'receiptIdlPath', 'required for devnet', normalized.value.receiptIdlPath);
-    }
   }
   if (
     normalized.value.receiptIdlHashMode !== undefined &&

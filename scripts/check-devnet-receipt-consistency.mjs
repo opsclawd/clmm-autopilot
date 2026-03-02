@@ -21,6 +21,13 @@ for (const field of ['programId', 'idlPath', 'idlHashMode', 'idlHash']) {
   }
 }
 
+for (const field of ['deployedAt', 'gitCommit']) {
+  if (typeof manifest[field] !== 'string' || manifest[field].trim() === '' || manifest[field].trim().toLowerCase() === 'unknown') {
+    console.error(`manifest deployment metadata missing/placeholder: ${field}`);
+    process.exit(1);
+  }
+}
+
 const cmd = ['-C', 'packages/solana', 'exec', 'vite-node', 'src/checkDevnetReceiptConsistency.cli.ts'];
 const out = spawnSync('pnpm', cmd, { stdio: 'inherit' });
 

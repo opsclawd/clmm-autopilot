@@ -10,6 +10,9 @@ jobs:
       RPC_URL: ${{ secrets.RPC_URL }}
       AUTHORITY_KEYPAIR: /tmp/devnet-authority.json
       POSITION_ADDRESS: ${{ secrets.POSITION_ADDRESS }}
+      SWAP_ROUTER: noop
+      FORCE_DECISION: TRIGGER_DOWN
+      REQUIRE_RECEIPT_PROOF: "1"
     steps:
       - uses: actions/checkout@v4
 
