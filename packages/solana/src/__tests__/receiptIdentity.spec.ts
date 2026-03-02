@@ -30,17 +30,19 @@ describe('receiptIdentity resolver', () => {
     expect(resolved?.programId.toBase58()).toBe(manifest.programId);
   });
 
-  it('throws RECEIPT_PROGRAM_NOT_CONFIGURED when devnet config identity is missing', () => {
-    expect(() =>
-      resolveReceiptRuntimeIdentity(
-        mkConfig({
-          receiptProgramId: undefined,
-          receiptIdlHashMode: undefined,
-          receiptIdlHash: undefined,
-          receiptIdlPath: undefined,
-        }),
-      ),
-    ).toThrowError(/Devnet receipt identity is not fully configured/);
+  it('uses manifest identity on devnet when config fallback identity is missing', () => {
+    const manifest = getDefaultDevnetReceiptManifest();
+    const resolved = resolveReceiptRuntimeIdentity(
+      mkConfig({
+        receiptProgramId: undefined,
+        receiptIdlHashMode: undefined,
+        receiptIdlHash: undefined,
+        receiptIdlPath: undefined,
+      }),
+    );
+
+    expect(resolved?.source).toBe('manifest');
+    expect(resolved?.programId.toBase58()).toBe(manifest.programId);
   });
 
   it('can force fallback config source for local overrides', () => {
@@ -70,7 +72,7 @@ describe('receiptIdentity resolver', () => {
         }),
         { RECEIPT_IDENTITY_SOURCE: 'config' },
       ),
-    ).toThrowError(/Devnet receipt identity is not fully configured/);
+    ).toThrowError(/Config fallback receipt identity is not fully configured/);
   });
 
   it('throws RECEIPT_IDL_MISMATCH when forced config hash does not match runtime IDL', () => {

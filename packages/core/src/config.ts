@@ -402,21 +402,6 @@ export function validateConfig(input: unknown): ValidateConfigResult {
       normalized.value.expectedUpgradeAuthority,
     );
   }
-  if (normalized.value.cluster === 'devnet') {
-    if (!normalized.value.receiptProgramId) {
-      pushRange(errors, 'receiptProgramId', 'required for devnet', normalized.value.receiptProgramId);
-    }
-    if (!normalized.value.receiptIdlHashMode) {
-      pushRange(errors, 'receiptIdlHashMode', 'required for devnet', normalized.value.receiptIdlHashMode);
-    }
-    if (!normalized.value.receiptIdlHash) {
-      pushRange(errors, 'receiptIdlHash', 'required for devnet', normalized.value.receiptIdlHash);
-    }
-    if (!normalized.value.receiptIdlPath) {
-      pushRange(errors, 'receiptIdlPath', 'required for devnet', normalized.value.receiptIdlPath);
-    }
-  }
-
   const p = normalized.value.policy;
   if (!Number.isInteger(p.cadenceMs)) pushType(errors, 'policy.cadenceMs', 'integer', p.cadenceMs);
   else if (p.cadenceMs <= 0) pushRange(errors, 'policy.cadenceMs', '> 0', p.cadenceMs);

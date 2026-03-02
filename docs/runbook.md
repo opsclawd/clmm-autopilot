@@ -23,6 +23,7 @@ Harness env vars:
 - `SWAP_ROUTER` (optional: `noop` | `orca` | `jupiter`, default `noop` for deterministic harness runs)
 - `FORCE_DECISION` (optional: `TRIGGER_DOWN` | `TRIGGER_UP`; overrides live policy decision to force receipt proof path)
 - `REQUIRE_RECEIPT_PROOF` (optional: `1|0|true|false`, default `0`; when enabled, `HOLD` is treated as failure)
+- `RECEIPT_IDENTITY_SOURCE` (optional, advanced: set to `config` to force legacy config fallback identity instead of devnet manifest)
 
 Example:
 
@@ -36,7 +37,7 @@ pnpm e2e:devnet
 
 ## What `pnpm e2e:devnet` does
 
-0. Resolves receipt identity from `deployments/devnet/receipt.json` (manifest precedence over duplicated config fields)
+0. Resolves receipt identity from `deployments/devnet/receipt.json` (manifest is source of truth on devnet unless explicitly overridden with `RECEIPT_IDENTITY_SOURCE=config`)
 1. Verifies receipt program account exists + executable + upgradeable-loader owner
 2. If `expectedUpgradeAuthority` is set in manifest, enforces strict authority match
 3. Fetches position snapshot from devnet
@@ -104,8 +105,8 @@ If this fails, do not run harness until manifest/IDL drift is fixed.
   - **Action:** Do not retry in same UTC day epoch; wait for next epoch/day or use a different position.
 
 - `RECEIPT_PROGRAM_NOT_CONFIGURED`
-  - **Cause:** Resolver could not build complete receipt identity (manifest missing/invalid or fallback incomplete).
-  - **Action:** Run `pnpm receipt:check:devnet`, then fix manifest fields or deploy flow.
+  - **Cause:** Forced config fallback identity is incomplete/invalid (`RECEIPT_IDENTITY_SOURCE=config`) or non-devnet fallback identity was requested but incomplete.
+  - **Action:** Prefer manifest mode (unset `RECEIPT_IDENTITY_SOURCE`) or provide complete config fallback fields.
 
 - `RECEIPT_IDL_MISMATCH`
   - **Cause:** Runtime `full-v1` hash of committed IDL artifact differs from configured hash.

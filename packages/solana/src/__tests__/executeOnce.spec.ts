@@ -561,6 +561,58 @@ describe('executeOnce', () => {
     expect(res.refresh?.decision.decision).toBe('HOLD');
   });
 
+  it('fails fast on devnet when forced config identity is incomplete, even if decision would be HOLD', async () => {
+    const prev = process.env.RECEIPT_IDENTITY_SOURCE;
+    process.env.RECEIPT_IDENTITY_SOURCE = 'config';
+    try {
+      const authority = new PublicKey(new Uint8Array(32).fill(20));
+      const connection = {
+        getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+        confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+        simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+        getAccountInfo: vi.fn(async () => null),
+        getSlot: vi.fn(async () => 1),
+        getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      } as any;
+
+      const res = await executeOnce({
+        connection,
+        authority,
+        position: new PublicKey(new Uint8Array(32).fill(21)),
+        samples: [{ slot: 1, unixTs: 1, currentTickIndex: 11 }],
+        quote: {
+          inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+          outputMint: new PublicKey(DEVNET_USDC_MINT),
+          inAmount: BigInt(1),
+          outAmount: BigInt(1),
+          slippageBps: 10,
+          quotedAtUnixMs: Date.now(),
+          raw: { inAmount: '1', outAmount: '1' },
+        },
+        config: {
+          ...DEFAULT_CONFIG,
+          receiptProgramId: undefined,
+          receiptIdlHashMode: undefined,
+          receiptIdlHash: undefined,
+          receiptIdlPath: undefined,
+          execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'noop' },
+        },
+        policyState: {},
+        expectedMinOut: '0',
+        quoteAgeMs: 0,
+        attestationHash: new Uint8Array(32),
+        attestationPayloadBytes: new Uint8Array(68),
+        signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      });
+
+      expect(res.status).toBe('ERROR');
+      expect(res.errorCode).toBe('RECEIPT_PROGRAM_NOT_CONFIGURED');
+    } finally {
+      if (prev === undefined) delete process.env.RECEIPT_IDENTITY_SOURCE;
+      else process.env.RECEIPT_IDENTITY_SOURCE = prev;
+    }
+  });
+
   it('returns mapped simulation diagnostics debug payload on execution failure', async () => {
     buildExitTransactionMock.mockRejectedValueOnce({
       code: 'DATA_UNAVAILABLE',

@@ -213,9 +213,9 @@ function readIdlFromPath(idlPath: string, source: string): unknown {
   return artifact;
 }
 
-function assertDevnetConfigIdentity(config: AutopilotConfig): void {
+function assertConfigIdentity(config: AutopilotConfig): void {
   if (!config.receiptProgramId || !config.receiptIdlHashMode || !config.receiptIdlHash || !config.receiptIdlPath) {
-    fail('RECEIPT_PROGRAM_NOT_CONFIGURED', 'Devnet receipt identity is not fully configured', {
+    fail('RECEIPT_PROGRAM_NOT_CONFIGURED', 'Config fallback receipt identity is not fully configured', {
       receiptProgramId: config.receiptProgramId,
       receiptIdlHashMode: config.receiptIdlHashMode,
       receiptIdlHash: config.receiptIdlHash,
@@ -233,10 +233,6 @@ export function resolveReceiptRuntimeIdentity(
   config: AutopilotConfig,
   env: Record<string, string | undefined> = typeof process !== 'undefined' ? process.env : {},
 ): ReceiptRuntimeIdentity | null {
-  if (config.cluster === 'devnet') {
-    assertDevnetConfigIdentity(config);
-  }
-
   const forceConfig = env.RECEIPT_IDENTITY_SOURCE === 'config';
   const shouldUseManifest = config.cluster === 'devnet' && !forceConfig;
 
@@ -270,15 +266,12 @@ export function resolveReceiptRuntimeIdentity(
 
   if (!fallbackConfigured) {
     if (config.cluster === 'devnet') {
-      fail('RECEIPT_PROGRAM_NOT_CONFIGURED', 'Devnet receipt identity is not fully configured', {
-        receiptProgramId: fallbackProgramId,
-        receiptIdlHashMode: fallbackHashMode,
-        receiptIdlHash: fallbackHash,
-        receiptIdlPath: fallbackIdlPath,
-      });
+      assertConfigIdentity(config);
     }
     return null;
   }
+
+  assertConfigIdentity(config);
 
   const idlHashMode = assertHashMode(fallbackHashMode!, 'config');
   const configIdl = readIdlFromPath(fallbackIdlPath!, 'config');

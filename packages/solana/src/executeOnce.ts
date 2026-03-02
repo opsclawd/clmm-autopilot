@@ -219,6 +219,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
 
   try {
+    // Resolve receipt identity before policy branching so devnet misconfiguration fails fast even on HOLD.
+    const receiptIdentity = resolveReceiptRuntimeIdentity(params.config);
     const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, params.config.execution);
     params.logger?.notify?.('snapshot fetched', { position: params.position.toBase58() });
 
@@ -386,7 +388,6 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       params.logger?.notify?.('quote rebuilt', { reasonCode: rebuildCheck.reasonCode ?? 'QUOTE_STALE' });
     }
 
-    const receiptIdentity = resolveReceiptRuntimeIdentity(params.config);
     const receiptPda = receiptIdentity
       ? deriveReceiptPda({
           authority: params.authority,
