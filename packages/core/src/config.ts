@@ -1,6 +1,11 @@
 export type Cluster = 'devnet' | 'mainnet-beta' | 'localnet';
 export type SwapRouter = 'jupiter' | 'orca' | 'noop';
-export type ReceiptIdlHashMode = 'subset-v1';
+export type ReceiptIdlHashMode = 'full-v1';
+
+const DEVNET_RECEIPT_PROGRAM_ID = 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm';
+const DEVNET_RECEIPT_IDL_HASH_MODE: ReceiptIdlHashMode = 'full-v1';
+const DEVNET_RECEIPT_IDL_HASH = 'a940da3a73fe037f9c596ad6f4771ab39706deef299ebe45aa0820be9b039161';
+const DEVNET_RECEIPT_IDL_PATH = 'deployments/devnet/receipt.idl.json';
 
 export type AutopilotConfig = {
   cluster: Cluster;
@@ -39,10 +44,10 @@ export type AutopilotConfig = {
 
 export const DEFAULT_CONFIG: AutopilotConfig = {
   cluster: 'devnet',
-  receiptProgramId: undefined,
-  receiptIdlHashMode: undefined,
-  receiptIdlHash: undefined,
-  receiptIdlPath: undefined,
+  receiptProgramId: DEVNET_RECEIPT_PROGRAM_ID,
+  receiptIdlHashMode: DEVNET_RECEIPT_IDL_HASH_MODE,
+  receiptIdlHash: DEVNET_RECEIPT_IDL_HASH,
+  receiptIdlPath: DEVNET_RECEIPT_IDL_PATH,
   expectedUpgradeAuthority: undefined,
   policy: {
     cadenceMs: 2_000,
@@ -271,11 +276,13 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
       DEFAULT_CONFIG.receiptProgramId,
     ),
     receiptIdlHashMode:
-      typeof input.receiptIdlHashMode === 'string'
-        ? (input.receiptIdlHashMode as ReceiptIdlHashMode)
+      !('receiptIdlHashMode' in input)
+        ? DEFAULT_CONFIG.receiptIdlHashMode
         : input.receiptIdlHashMode === undefined || input.receiptIdlHashMode === null
-          ? DEFAULT_CONFIG.receiptIdlHashMode
-          : (pushType(errors, 'receiptIdlHashMode', "'subset-v1' | undefined", input.receiptIdlHashMode), DEFAULT_CONFIG.receiptIdlHashMode),
+          ? undefined
+          : typeof input.receiptIdlHashMode === 'string'
+            ? (input.receiptIdlHashMode as ReceiptIdlHashMode)
+            : (pushType(errors, 'receiptIdlHashMode', "'full-v1' | undefined", input.receiptIdlHashMode), DEFAULT_CONFIG.receiptIdlHashMode),
     receiptIdlHash: readOptionalStringField(errors, input, 'receiptIdlHash', 'receiptIdlHash', DEFAULT_CONFIG.receiptIdlHash),
     receiptIdlPath: readOptionalStringField(errors, input, 'receiptIdlPath', 'receiptIdlPath', DEFAULT_CONFIG.receiptIdlPath),
     expectedUpgradeAuthority: readOptionalStringField(
@@ -368,9 +375,9 @@ export function validateConfig(input: unknown): ValidateConfigResult {
   }
   if (
     normalized.value.receiptIdlHashMode !== undefined &&
-    normalized.value.receiptIdlHashMode !== 'subset-v1'
+    normalized.value.receiptIdlHashMode !== 'full-v1'
   ) {
-    pushRange(errors, 'receiptIdlHashMode', "'subset-v1'", normalized.value.receiptIdlHashMode);
+    pushRange(errors, 'receiptIdlHashMode', "'full-v1'", normalized.value.receiptIdlHashMode);
   }
   if (
     normalized.value.receiptIdlHash !== undefined &&
@@ -394,6 +401,20 @@ export function validateConfig(input: unknown): ValidateConfigResult {
       'base58 pubkey string | undefined',
       normalized.value.expectedUpgradeAuthority,
     );
+  }
+  if (normalized.value.cluster === 'devnet') {
+    if (!normalized.value.receiptProgramId) {
+      pushRange(errors, 'receiptProgramId', 'required for devnet', normalized.value.receiptProgramId);
+    }
+    if (!normalized.value.receiptIdlHashMode) {
+      pushRange(errors, 'receiptIdlHashMode', 'required for devnet', normalized.value.receiptIdlHashMode);
+    }
+    if (!normalized.value.receiptIdlHash) {
+      pushRange(errors, 'receiptIdlHash', 'required for devnet', normalized.value.receiptIdlHash);
+    }
+    if (!normalized.value.receiptIdlPath) {
+      pushRange(errors, 'receiptIdlPath', 'required for devnet', normalized.value.receiptIdlPath);
+    }
   }
 
   const p = normalized.value.policy;

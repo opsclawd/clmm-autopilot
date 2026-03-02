@@ -27,23 +27,9 @@ export type ReceiptRuntimeIdentity = {
 
 type TypedError = Error & { code: CanonicalErrorCode; retryable: boolean; debug?: unknown };
 
-type ReceiptIdlSubsetV1 = {
-  version: 'subset-v1';
-  address: string | null;
-  instructions: Array<{
-    name: string;
-    discriminator: number[];
-    accounts: Array<{
-      name: string;
-      writable: boolean;
-      signer: boolean;
-      address?: string;
-      pda?: unknown;
-    }>;
-    args: Array<{ name: string; type: unknown }>;
-  }>;
-  accounts: Array<{ name: string; discriminator: number[] }>;
-  types: Array<{ name: string; type: unknown }>;
+type ReceiptIdlFullV1 = {
+  version: 'full-v1';
+  idl: unknown;
 };
 
 const DEFAULT_DEVNET_MANIFEST = defaultManifestJson as ReceiptDeploymentManifest;
@@ -86,18 +72,6 @@ function normalizeJson(value: unknown): unknown {
 
 function stableStringify(value: unknown): string {
   return JSON.stringify(normalizeJson(value));
-}
-
-function parseDiscriminator(value: unknown): number[] {
-  if (!Array.isArray(value)) return [];
-  const out: number[] = [];
-  for (const n of value) {
-    if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > 255) {
-      return [];
-    }
-    out.push(n);
-  }
-  return out;
 }
 
 function rotr(x: number, n: number): number {
@@ -164,70 +138,16 @@ function sha256(bytes: Uint8Array): Uint8Array {
   return out;
 }
 
-export function canonicalizeReceiptIdlSubsetV1(idl: unknown): ReceiptIdlSubsetV1 {
-  const root = idl && typeof idl === 'object' ? (idl as Record<string, unknown>) : {};
-
-  const instructionsRaw = Array.isArray(root.instructions) ? root.instructions : [];
-  const instructions = instructionsRaw.map((ixRaw): ReceiptIdlSubsetV1['instructions'][number] => {
-    const ix = ixRaw && typeof ixRaw === 'object' ? (ixRaw as Record<string, unknown>) : {};
-    const accountsRaw = Array.isArray(ix.accounts) ? ix.accounts : [];
-    const argsRaw = Array.isArray(ix.args) ? ix.args : [];
-
-    return {
-      name: typeof ix.name === 'string' ? ix.name : '',
-      discriminator: parseDiscriminator(ix.discriminator),
-      accounts: accountsRaw.map((accRaw) => {
-        const acc = accRaw && typeof accRaw === 'object' ? (accRaw as Record<string, unknown>) : {};
-        return {
-          name: typeof acc.name === 'string' ? acc.name : '',
-          writable: acc.writable === true,
-          signer: acc.signer === true,
-          ...(typeof acc.address === 'string' ? { address: acc.address } : {}),
-          ...(acc.pda !== undefined ? { pda: normalizeJson(acc.pda) } : {}),
-        };
-      }),
-      args: argsRaw.map((argRaw) => {
-        const arg = argRaw && typeof argRaw === 'object' ? (argRaw as Record<string, unknown>) : {};
-        return {
-          name: typeof arg.name === 'string' ? arg.name : '',
-          type: normalizeJson(arg.type),
-        };
-      }),
-    };
-  });
-
-  const accountsRaw = Array.isArray(root.accounts) ? root.accounts : [];
-  const accounts = accountsRaw.map((accRaw) => {
-    const acc = accRaw && typeof accRaw === 'object' ? (accRaw as Record<string, unknown>) : {};
-    return {
-      name: typeof acc.name === 'string' ? acc.name : '',
-      discriminator: parseDiscriminator(acc.discriminator),
-    };
-  });
-
-  const typesRaw = Array.isArray(root.types) ? root.types : [];
-  const types = typesRaw
-    .map((typeRaw) => {
-      const t = typeRaw && typeof typeRaw === 'object' ? (typeRaw as Record<string, unknown>) : {};
-      return {
-        name: typeof t.name === 'string' ? t.name : '',
-        type: normalizeJson(t.type),
-      };
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
-
+export function canonicalizeReceiptIdlFullV1(idl: unknown): ReceiptIdlFullV1 {
   return {
-    version: 'subset-v1',
-    address: typeof root.address === 'string' ? root.address : null,
-    instructions,
-    accounts,
-    types,
+    version: 'full-v1',
+    idl: normalizeJson(idl),
   };
 }
 
-export function computeReceiptIdlHashSubsetV1(idl: unknown): string {
-  const subset = canonicalizeReceiptIdlSubsetV1(idl);
-  const canonical = stableStringify(subset);
+export function computeReceiptIdlHashFullV1(idl: unknown): string {
+  const canonicalized = canonicalizeReceiptIdlFullV1(idl);
+  const canonical = stableStringify(canonicalized);
   const digest = sha256(new TextEncoder().encode(canonical));
   return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -254,8 +174,8 @@ function parseRequiredProgramId(value: string, source: string): PublicKey {
 }
 
 function assertHashMode(value: string | undefined, source: string): ReceiptIdlHashMode {
-  if (value !== 'subset-v1') {
-    fail('RECEIPT_IDL_MISMATCH', `${source}.idlHashMode must be 'subset-v1'`, { value });
+  if (value !== 'full-v1') {
+    fail('RECEIPT_IDL_MISMATCH', `${source}.idlHashMode must be 'full-v1'`, { value });
   }
   return value;
 }
@@ -264,7 +184,7 @@ function assertHashMatches(expected: string, idl: unknown, source: string): stri
   if (!/^[a-f0-9]{64}$/i.test(expected)) {
     fail('RECEIPT_IDL_MISMATCH', `${source}.idlHash must be a 64-char hex sha256`, { expected });
   }
-  const computed = computeReceiptIdlHashSubsetV1(idl);
+  const computed = computeReceiptIdlHashFullV1(idl);
   if (computed.toLowerCase() !== expected.toLowerCase()) {
     fail('RECEIPT_IDL_MISMATCH', `${source}.idlHash does not match runtime IDL hash`, {
       expected: expected.toLowerCase(),
@@ -293,10 +213,30 @@ function readIdlFromPath(idlPath: string, source: string): unknown {
   return artifact;
 }
 
+function assertDevnetConfigIdentity(config: AutopilotConfig): void {
+  if (!config.receiptProgramId || !config.receiptIdlHashMode || !config.receiptIdlHash || !config.receiptIdlPath) {
+    fail('RECEIPT_PROGRAM_NOT_CONFIGURED', 'Devnet receipt identity is not fully configured', {
+      receiptProgramId: config.receiptProgramId,
+      receiptIdlHashMode: config.receiptIdlHashMode,
+      receiptIdlHash: config.receiptIdlHash,
+      receiptIdlPath: config.receiptIdlPath,
+    });
+  }
+
+  parseRequiredProgramId(config.receiptProgramId, 'config');
+  assertHashMode(config.receiptIdlHashMode, 'config');
+  const idl = readIdlFromPath(config.receiptIdlPath, 'config');
+  assertHashMatches(config.receiptIdlHash, idl, 'config');
+}
+
 export function resolveReceiptRuntimeIdentity(
   config: AutopilotConfig,
   env: Record<string, string | undefined> = typeof process !== 'undefined' ? process.env : {},
 ): ReceiptRuntimeIdentity | null {
+  if (config.cluster === 'devnet') {
+    assertDevnetConfigIdentity(config);
+  }
+
   const forceConfig = env.RECEIPT_IDENTITY_SOURCE === 'config';
   const shouldUseManifest = config.cluster === 'devnet' && !forceConfig;
 

@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PROGRAM_NAME = 'receipt';
-const IDL_HASH_MODE = 'subset-v1';
+const IDL_HASH_MODE = 'full-v1';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');

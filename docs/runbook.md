@@ -76,7 +76,7 @@ If this fails, do not run harness until manifest/IDL drift is fixed.
 1. `anchor build`
 2. `anchor deploy --provider.cluster devnet`
 3. Copies `target/idl/receipt.json` to `deployments/devnet/receipt.idl.json`
-4. Computes `subset-v1` IDL hash
+4. Computes `full-v1` IDL hash
 5. Atomically writes `deployments/devnet/receipt.json`
 6. Verifies with `solana program show <PROGRAM_ID> --url devnet`
 7. Runs consistency guard
@@ -108,7 +108,7 @@ If this fails, do not run harness until manifest/IDL drift is fixed.
   - **Action:** Run `pnpm receipt:check:devnet`, then fix manifest fields or deploy flow.
 
 - `RECEIPT_IDL_MISMATCH`
-  - **Cause:** Runtime `subset-v1` hash of committed IDL artifact differs from configured hash.
+  - **Cause:** Runtime `full-v1` hash of committed IDL artifact differs from configured hash.
   - **Action:** Re-run deploy script to refresh `receipt.idl.json` + manifest atomically.
 
 - `RECEIPT_PROGRAM_VERIFICATION_FAILED`

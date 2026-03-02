@@ -497,10 +497,13 @@ export async function runDevnetE2E(
   if (result.status !== 'EXECUTED' || !result.txSignature || !result.receiptPda) {
     throw codedError(result.errorCode ?? 'EXECUTION_FAILED', result.errorMessage ?? 'Execution failed');
   }
+  if (result.receiptPda !== receiptPda.toBase58()) {
+    throw codedError(RECEIPT_MISMATCH_CODE, 'Execution returned unexpected receipt PDA');
+  }
 
   log(logger, 'tx.send-confirm.ok', { signature: result.txSignature, receiptPda: result.receiptPda });
 
-  const fetchedReceipt = await deps.fetchReceiptByPda(connection, new PublicKey(result.receiptPda));
+  const fetchedReceipt = await deps.fetchReceiptByPda(connection, receiptPda);
   if (!fetchedReceipt) throw codedError('DATA_UNAVAILABLE', 'Receipt was not found after confirmed send');
 
   verifyReceipt(fetchedReceipt, {

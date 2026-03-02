@@ -274,6 +274,18 @@ describe('runDevnetE2E refusals', () => {
 
   it('returns DATA_UNAVAILABLE when receipt is missing after confirmed send', async () => {
     const { env, cleanup } = await makeEnv();
+    const authority = Keypair.fromSecretKey(
+      Uint8Array.from(JSON.parse(await (await import('node:fs/promises')).readFile(env.AUTHORITY_KEYPAIR, 'utf8'))),
+    ).publicKey;
+    const snapshot = mockSnapshot(env.POSITION_ADDRESS);
+    const epoch = Math.floor((1_700_000_000_000 / 1000) / 86400);
+    const manifestProgramId = new PublicKey(getDefaultDevnetReceiptManifest().programId);
+    const [receiptPda] = deriveReceiptPda({
+      authority,
+      positionMint: snapshot.positionMint,
+      epoch,
+      programId: manifestProgramId,
+    });
     const fetchReceiptByPda = vi
       .fn()
       .mockResolvedValueOnce(null)
@@ -281,7 +293,7 @@ describe('runDevnetE2E refusals', () => {
 
     await expect(
       runDevnetE2E(env, () => {}, harnessDeps({
-        loadPositionSnapshot: vi.fn(async () => mockSnapshot(env.POSITION_ADDRESS)) as any,
+        loadPositionSnapshot: vi.fn(async () => snapshot) as any,
         fetchJupiterQuote: vi.fn(async () => ({
           inputMint: SOL,
           outputMint: USDC,
@@ -294,7 +306,7 @@ describe('runDevnetE2E refusals', () => {
         executeOnce: vi.fn(async () => ({
           status: 'EXECUTED',
           txSignature: 'sig-1',
-          receiptPda: new PublicKey(new Uint8Array(32).fill(12)).toBase58(),
+          receiptPda: receiptPda.toBase58(),
         })) as any,
         fetchReceiptByPda: fetchReceiptByPda as any,
         getSlot: vi.fn(async () => 123),

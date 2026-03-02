@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, type AutopilotConfig } from '@clmm-autopilot/core';
 import {
-  computeReceiptIdlHashSubsetV1,
+  computeReceiptIdlHashFullV1,
   getDefaultDevnetReceiptManifest,
   resolveReceiptRuntimeIdentity,
 } from '../receiptIdentity';
@@ -16,25 +16,39 @@ function mkConfig(overrides?: Partial<AutopilotConfig>): AutopilotConfig {
 }
 
 describe('receiptIdentity resolver', () => {
-  it('prefers manifest identity on devnet even when fallback config differs', () => {
+  it('prefers manifest identity on devnet when config identity is valid', () => {
     const manifest = getDefaultDevnetReceiptManifest();
-    const resolved = resolveReceiptRuntimeIdentity(
-      mkConfig({
-        receiptProgramId: '11111111111111111111111111111111',
-        receiptIdlHash: 'f'.repeat(64),
-      }),
-    );
+    const actualHash = computeReceiptIdlHashFullV1(defaultReceiptIdl);
+    const resolved = resolveReceiptRuntimeIdentity(mkConfig({
+      receiptProgramId: manifest.programId,
+      receiptIdlHashMode: 'full-v1',
+      receiptIdlHash: actualHash,
+      receiptIdlPath: manifest.idlPath,
+    }));
 
     expect(resolved?.source).toBe('manifest');
     expect(resolved?.programId.toBase58()).toBe(manifest.programId);
   });
 
+  it('throws RECEIPT_PROGRAM_NOT_CONFIGURED when devnet config identity is missing', () => {
+    expect(() =>
+      resolveReceiptRuntimeIdentity(
+        mkConfig({
+          receiptProgramId: undefined,
+          receiptIdlHashMode: undefined,
+          receiptIdlHash: undefined,
+          receiptIdlPath: undefined,
+        }),
+      ),
+    ).toThrowError(/Devnet receipt identity is not fully configured/);
+  });
+
   it('can force fallback config source for local overrides', () => {
-    const actualHash = computeReceiptIdlHashSubsetV1(defaultReceiptIdl);
+    const actualHash = computeReceiptIdlHashFullV1(defaultReceiptIdl);
     const resolved = resolveReceiptRuntimeIdentity(
       mkConfig({
         receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
-        receiptIdlHashMode: 'subset-v1',
+        receiptIdlHashMode: 'full-v1',
         receiptIdlHash: actualHash,
         receiptIdlPath: 'deployments/devnet/receipt.idl.json',
       }),
@@ -64,7 +78,7 @@ describe('receiptIdentity resolver', () => {
       resolveReceiptRuntimeIdentity(
         mkConfig({
           receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
-          receiptIdlHashMode: 'subset-v1',
+          receiptIdlHashMode: 'full-v1',
           receiptIdlHash: '0'.repeat(64),
           receiptIdlPath: 'deployments/devnet/receipt.idl.json',
         }),
@@ -74,12 +88,12 @@ describe('receiptIdentity resolver', () => {
   });
 
   it('throws RECEIPT_IDL_MISMATCH when forced config idlPath is missing/unloadable', () => {
-    const actualHash = computeReceiptIdlHashSubsetV1(defaultReceiptIdl);
+    const actualHash = computeReceiptIdlHashFullV1(defaultReceiptIdl);
     expect(() =>
       resolveReceiptRuntimeIdentity(
         mkConfig({
           receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
-          receiptIdlHashMode: 'subset-v1',
+          receiptIdlHashMode: 'full-v1',
           receiptIdlHash: actualHash,
           receiptIdlPath: 'deployments/devnet/does-not-exist.idl.json',
         }),

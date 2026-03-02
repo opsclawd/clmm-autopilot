@@ -136,7 +136,7 @@ describe('validateConfig', () => {
   it('validates fallback receipt identity fields', () => {
     const ok = validateConfig({
       receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
-      receiptIdlHashMode: 'subset-v1',
+      receiptIdlHashMode: 'full-v1',
       receiptIdlHash: 'a'.repeat(64),
       receiptIdlPath: 'deployments/devnet/receipt.idl.json',
     });
@@ -148,7 +148,7 @@ describe('validateConfig', () => {
       expect(badHash.errors.some((e) => e.path === 'receiptIdlHash')).toBe(true);
     }
 
-    const badMode = validateConfig({ receiptIdlHashMode: 'full-v1' });
+    const badMode = validateConfig({ receiptIdlHashMode: 'subset-v1' });
     expect(badMode.ok).toBe(false);
     if (!badMode.ok) {
       expect(badMode.errors.some((e) => e.path === 'receiptIdlHashMode')).toBe(true);
@@ -161,7 +161,13 @@ describe('validateConfig', () => {
       receiptIdlHash: undefined,
       receiptIdlPath: undefined,
     });
-    expect(devnetNoFallback.ok).toBe(true);
+    expect(devnetNoFallback.ok).toBe(false);
+    if (!devnetNoFallback.ok) {
+      expect(devnetNoFallback.errors.some((e) => e.path === 'receiptProgramId')).toBe(true);
+      expect(devnetNoFallback.errors.some((e) => e.path === 'receiptIdlHashMode')).toBe(true);
+      expect(devnetNoFallback.errors.some((e) => e.path === 'receiptIdlHash')).toBe(true);
+      expect(devnetNoFallback.errors.some((e) => e.path === 'receiptIdlPath')).toBe(true);
+    }
 
     const badProgramId = validateConfig({
       cluster: 'devnet',
