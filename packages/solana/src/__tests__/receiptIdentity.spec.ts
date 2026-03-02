@@ -73,6 +73,21 @@ describe('receiptIdentity resolver', () => {
     ).toThrowError(/idlHash does not match runtime IDL hash/);
   });
 
+  it('throws RECEIPT_IDL_MISMATCH when forced config idlPath is missing/unloadable', () => {
+    const actualHash = computeReceiptIdlHashSubsetV1(defaultReceiptIdl);
+    expect(() =>
+      resolveReceiptRuntimeIdentity(
+        mkConfig({
+          receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
+          receiptIdlHashMode: 'subset-v1',
+          receiptIdlHash: actualHash,
+          receiptIdlPath: 'deployments/devnet/does-not-exist.idl.json',
+        }),
+        { RECEIPT_IDENTITY_SOURCE: 'config' },
+      ),
+    ).toThrowError(/idlPath could not be loaded/);
+  });
+
   it('returns null for non-devnet clusters unless explicitly enabled', () => {
     const res = resolveReceiptRuntimeIdentity({ ...DEFAULT_CONFIG, cluster: 'localnet' });
     expect(res).toBeNull();

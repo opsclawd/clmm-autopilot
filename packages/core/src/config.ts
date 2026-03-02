@@ -116,6 +116,10 @@ function pushBackoff(errors: ConfigError[], path: string, message: string, actua
   });
 }
 
+function isLikelyBase58Pubkey(value: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
+}
+
 function readIntField(
   errors: ConfigError[],
   source: Record<string, unknown>,
@@ -362,6 +366,20 @@ export function validateConfig(input: unknown): ValidateConfigResult {
   if (!allowedClusters.has(normalized.value.cluster)) {
     pushRange(errors, 'cluster', "'devnet' | 'mainnet-beta' | 'localnet'", normalized.value.cluster);
   }
+  if (normalized.value.cluster === 'devnet') {
+    if (!normalized.value.receiptProgramId) {
+      pushRange(errors, 'receiptProgramId', 'required for devnet', normalized.value.receiptProgramId);
+    }
+    if (!normalized.value.receiptIdlHashMode) {
+      pushRange(errors, 'receiptIdlHashMode', 'required for devnet', normalized.value.receiptIdlHashMode);
+    }
+    if (!normalized.value.receiptIdlHash) {
+      pushRange(errors, 'receiptIdlHash', 'required for devnet', normalized.value.receiptIdlHash);
+    }
+    if (!normalized.value.receiptIdlPath) {
+      pushRange(errors, 'receiptIdlPath', 'required for devnet', normalized.value.receiptIdlPath);
+    }
+  }
   if (
     normalized.value.receiptIdlHashMode !== undefined &&
     normalized.value.receiptIdlHashMode !== 'subset-v1'
@@ -376,13 +394,13 @@ export function validateConfig(input: unknown): ValidateConfigResult {
   }
   if (
     normalized.value.receiptProgramId !== undefined &&
-    (normalized.value.receiptProgramId.length < 32 || normalized.value.receiptProgramId.length > 64)
+    !isLikelyBase58Pubkey(normalized.value.receiptProgramId)
   ) {
     pushRange(errors, 'receiptProgramId', 'base58 pubkey string', normalized.value.receiptProgramId);
   }
   if (
     normalized.value.expectedUpgradeAuthority !== undefined &&
-    (normalized.value.expectedUpgradeAuthority.length < 32 || normalized.value.expectedUpgradeAuthority.length > 64)
+    !isLikelyBase58Pubkey(normalized.value.expectedUpgradeAuthority)
   ) {
     pushRange(
       errors,

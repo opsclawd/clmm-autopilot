@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 
 const PROGRAM_NAME = 'receipt';
 const IDL_HASH_MODE = 'subset-v1';
-const anchorSyncFlag = process.argv.includes('--sync-anchor-id');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
@@ -57,19 +56,30 @@ function writeManifestAtomic(payload) {
   renameSync(tmp, manifestPath);
 }
 
+function replaceOrThrow(source, pattern, replacement, context) {
+  if (!pattern.test(source)) {
+    throw new Error(`Unable to update ${context}; pattern not found`);
+  }
+  return source.replace(pattern, replacement);
+}
+
 function syncAnchorIds(programId) {
   const libPath = resolve(repoRoot, 'programs/receipt/src/lib.rs');
   const anchorTomlPath = resolve(repoRoot, 'Anchor.toml');
 
-  const lib = readFileSync(libPath, 'utf8').replace(
+  const lib = replaceOrThrow(
+    readFileSync(libPath, 'utf8'),
     /declare_id!\("[1-9A-HJ-NP-Za-km-z]{32,44}"\);/,
     `declare_id!("${programId}");`,
+    `${PROGRAM_NAME} declare_id!`,
   );
   writeFileSync(libPath, lib, 'utf8');
 
-  const anchorToml = readFileSync(anchorTomlPath, 'utf8').replace(
+  const anchorToml = replaceOrThrow(
+    readFileSync(anchorTomlPath, 'utf8'),
     /(\[programs\.devnet\][\s\S]*?receipt\s*=\s*")[1-9A-HJ-NP-Za-km-z]{32,44}(")/,
     `$1${programId}$2`,
+    'Anchor.toml [programs.devnet].receipt',
   );
   writeFileSync(anchorTomlPath, anchorToml, 'utf8');
 }
@@ -103,10 +113,8 @@ try {
   writeManifestAtomic(manifest);
   console.log(`[m15] manifest updated: ${manifestPath}`);
 
-  if (anchorSyncFlag) {
-    syncAnchorIds(programId);
-    console.log('[m15] synced declare_id! and Anchor.toml devnet entry');
-  }
+  syncAnchorIds(programId);
+  console.log('[m15] synced declare_id! and Anchor.toml devnet entry');
 
   console.log('[m15] solana program show verification');
   runPassthrough('solana', ['program', 'show', programId, '--url', 'devnet']);

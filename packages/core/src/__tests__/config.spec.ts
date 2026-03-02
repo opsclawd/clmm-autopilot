@@ -153,5 +153,23 @@ describe('validateConfig', () => {
     if (!badMode.ok) {
       expect(badMode.errors.some((e) => e.path === 'receiptIdlHashMode')).toBe(true);
     }
+
+    const missingProgram = validateConfig({
+      cluster: 'devnet',
+      receiptProgramId: undefined,
+    });
+    expect(missingProgram.ok).toBe(false);
+    if (!missingProgram.ok) {
+      expect(missingProgram.errors.some((e) => e.path === 'receiptProgramId')).toBe(true);
+    }
+
+    const badProgramId = validateConfig({
+      cluster: 'devnet',
+      receiptProgramId: 'not-a-pubkey!',
+    });
+    expect(badProgramId.ok).toBe(false);
+    if (!badProgramId.ok) {
+      expect(badProgramId.errors.some((e) => e.path === 'receiptProgramId')).toBe(true);
+    }
   });
 });

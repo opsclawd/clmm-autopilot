@@ -12,8 +12,7 @@ pnpm e2e:devnet
 Deploy/update devnet receipt program identity (manual acceptance workflow):
 
 ```bash
-# Optional: sync declare_id!/Anchor.devnet in same run
-pnpm receipt:deploy:devnet -- --sync-anchor-id
+pnpm receipt:deploy:devnet
 ```
 
 Harness env vars:
