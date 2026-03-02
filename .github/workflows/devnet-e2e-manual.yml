@@ -33,5 +33,15 @@ jobs:
       - name: Verify devnet receipt manifest consistency
         run: pnpm receipt:check:devnet
 
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Verify receipt program on devnet
+        run: |
+          PROGRAM_ID="$(node -e "const fs=require('fs'); const m=JSON.parse(fs.readFileSync('deployments/devnet/receipt.json','utf8')); console.log(m.programId)")"
+          solana program show "$PROGRAM_ID" --url devnet
+
       - name: Run devnet e2e harness
         run: pnpm e2e:devnet

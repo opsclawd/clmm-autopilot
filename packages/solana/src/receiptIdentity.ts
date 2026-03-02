@@ -1,9 +1,7 @@
 import type { AutopilotConfig, ReceiptIdlHashMode } from '@clmm-autopilot/core';
-import { readFileSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { PublicKey } from '@solana/web3.js';
 import defaultManifestJson from '../../../deployments/devnet/receipt.json';
+import defaultReceiptIdlJson from '../../../deployments/devnet/receipt.idl.json';
 import type { CanonicalErrorCode } from './types';
 
 export type ReceiptDeploymentManifest = {
@@ -49,8 +47,10 @@ type ReceiptIdlSubsetV1 = {
 };
 
 const DEFAULT_DEVNET_MANIFEST = defaultManifestJson as ReceiptDeploymentManifest;
-const SRC_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(SRC_DIR, '../../..');
+const DEFAULT_DEVNET_IDL = defaultReceiptIdlJson as unknown;
+const KNOWN_IDL_ARTIFACTS: Record<string, unknown> = {
+  'deployments/devnet/receipt.idl.json': DEFAULT_DEVNET_IDL,
+};
 
 const SHA256_K = new Uint32Array([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -274,19 +274,23 @@ function assertHashMatches(expected: string, idl: unknown, source: string): stri
   return computed.toLowerCase();
 }
 
+function normalizeIdlPath(idlPath: string): string {
+  let normalized = idlPath.trim().replace(/\\/g, '/');
+  while (normalized.startsWith('./')) normalized = normalized.slice(2);
+  return normalized;
+}
+
 function readIdlFromPath(idlPath: string, source: string): unknown {
-  const absPath = isAbsolute(idlPath) ? idlPath : resolve(REPO_ROOT, idlPath);
-  let raw = '';
-  try {
-    raw = readFileSync(absPath, 'utf8');
-  } catch (cause) {
-    fail('RECEIPT_IDL_MISMATCH', `${source}.idlPath could not be loaded`, { idlPath, absPath, cause });
+  const normalized = normalizeIdlPath(idlPath);
+  const artifact = KNOWN_IDL_ARTIFACTS[normalized];
+  if (artifact === undefined) {
+    fail('RECEIPT_IDL_MISMATCH', `${source}.idlPath could not be loaded`, {
+      idlPath,
+      normalizedIdlPath: normalized,
+      available: Object.keys(KNOWN_IDL_ARTIFACTS),
+    });
   }
-  try {
-    return JSON.parse(raw);
-  } catch (cause) {
-    fail('RECEIPT_IDL_MISMATCH', `${source}.idlPath is not valid JSON`, { idlPath, absPath, cause });
-  }
+  return artifact;
 }
 
 export function resolveReceiptRuntimeIdentity(
