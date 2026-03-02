@@ -104,7 +104,7 @@ describe('receiptIdentity resolver', () => {
     ).toThrowError(/idlPath could not be loaded/);
   });
 
-  it('returns null for non-devnet clusters unless explicitly enabled', () => {
+  it('returns null for non-devnet clusters', () => {
     const res = resolveReceiptRuntimeIdentity({ ...DEFAULT_CONFIG, cluster: 'localnet' });
     expect(res).toBeNull();
   });

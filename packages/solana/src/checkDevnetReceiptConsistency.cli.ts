@@ -57,6 +57,16 @@ function main(): void {
   const manifestRaw = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
   assertDeployedMetadata(manifestRaw);
   const manifest = manifestRaw as ReceiptDeploymentManifest;
+  if (!DEFAULT_CONFIG.receiptProgramId) fail('DEFAULT_CONFIG.receiptProgramId must be set for devnet');
+  if (!DEFAULT_CONFIG.receiptIdlHashMode) fail('DEFAULT_CONFIG.receiptIdlHashMode must be set for devnet');
+  if (!DEFAULT_CONFIG.receiptIdlHash) fail('DEFAULT_CONFIG.receiptIdlHash must be set for devnet');
+  if (!DEFAULT_CONFIG.receiptIdlPath) fail('DEFAULT_CONFIG.receiptIdlPath must be set for devnet');
+
+  assertEqual('defaultConfig.receiptProgramId', DEFAULT_CONFIG.receiptProgramId, manifest.programId);
+  assertEqual('defaultConfig.receiptIdlHashMode', DEFAULT_CONFIG.receiptIdlHashMode, manifest.idlHashMode);
+  assertEqual('defaultConfig.receiptIdlHash', DEFAULT_CONFIG.receiptIdlHash, manifest.idlHash);
+  assertEqual('defaultConfig.receiptIdlPath', DEFAULT_CONFIG.receiptIdlPath, manifest.idlPath);
+
   const resolved = resolveReceiptRuntimeIdentity({ ...DEFAULT_CONFIG, cluster: 'devnet' });
   if (!resolved) fail('Resolver returned null for devnet identity');
 

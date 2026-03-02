@@ -12,6 +12,7 @@ const repoRoot = resolve(__dirname, '..');
 const targetIdl = resolve(repoRoot, 'target/idl/receipt.json');
 const deployedIdl = resolve(repoRoot, 'deployments/devnet/receipt.idl.json');
 const manifestPath = resolve(repoRoot, 'deployments/devnet/receipt.json');
+const devnetIdlPath = 'deployments/devnet/receipt.idl.json';
 
 function run(cmd, opts = {}) {
   const merged = {
@@ -84,6 +85,30 @@ function syncAnchorIds(programId) {
   writeFileSync(anchorTomlPath, anchorToml, 'utf8');
 }
 
+function syncCoreDevnetFallback(programId, idlHash) {
+  const coreConfigPath = resolve(repoRoot, 'packages/core/src/config.ts');
+  let configSrc = readFileSync(coreConfigPath, 'utf8');
+  configSrc = replaceOrThrow(
+    configSrc,
+    /const DEVNET_RECEIPT_PROGRAM_ID = '[1-9A-HJ-NP-Za-km-z]{32,44}';/,
+    `const DEVNET_RECEIPT_PROGRAM_ID = '${programId}';`,
+    'core DEVNET_RECEIPT_PROGRAM_ID',
+  );
+  configSrc = replaceOrThrow(
+    configSrc,
+    /const DEVNET_RECEIPT_IDL_HASH = '[a-f0-9]{64}';/i,
+    `const DEVNET_RECEIPT_IDL_HASH = '${idlHash}';`,
+    'core DEVNET_RECEIPT_IDL_HASH',
+  );
+  configSrc = replaceOrThrow(
+    configSrc,
+    /const DEVNET_RECEIPT_IDL_PATH = '[^']+';/,
+    `const DEVNET_RECEIPT_IDL_PATH = '${devnetIdlPath}';`,
+    'core DEVNET_RECEIPT_IDL_PATH',
+  );
+  writeFileSync(coreConfigPath, configSrc, 'utf8');
+}
+
 try {
   console.log('[m15] anchor build');
   runPassthrough('anchor', ['build']);
@@ -102,7 +127,7 @@ try {
   const manifest = {
     cluster: 'devnet',
     programId,
-    idlPath: 'deployments/devnet/receipt.idl.json',
+    idlPath: devnetIdlPath,
     idlHashMode: IDL_HASH_MODE,
     idlHash,
     deployedAt: new Date().toISOString(),
@@ -114,7 +139,8 @@ try {
   console.log(`[m15] manifest updated: ${manifestPath}`);
 
   syncAnchorIds(programId);
-  console.log('[m15] synced declare_id! and Anchor.toml devnet entry');
+  syncCoreDevnetFallback(programId, idlHash);
+  console.log('[m15] synced declare_id!, Anchor.toml devnet entry, and core devnet fallback identity');
 
   console.log('[m15] solana program show verification');
   runPassthrough('solana', ['program', 'show', programId, '--url', 'devnet']);

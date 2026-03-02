@@ -260,7 +260,7 @@ export function resolveReceiptRuntimeIdentity(
     fallbackProgramId && fallbackHashMode && fallbackHash && fallbackIdlPath,
   );
 
-  if (config.cluster !== 'devnet' && env.RECEIPT_ENABLE_NON_DEVNET !== '1') {
+  if (config.cluster !== 'devnet') {
     return null;
   }
 
