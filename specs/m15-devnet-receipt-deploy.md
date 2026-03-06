@@ -2,7 +2,7 @@
 # M15 — Deploy receipt program to devnet (real idempotency)
 
 ## Goal
-Deploy the Anchor “receipt/claim” program to Solana **devnet** and wire the deployed program id + matching IDL into the app config so devnet execution is truly end-to-end with **on-chain idempotency** (0 receipts before, 1 receipt after).
+Deploy the Anchor “receipt/claim” program to Solana **devnet** and wire the deployed program id + matching IDL into a committed devnet deployment manifest (runtime source of truth) so execution is truly end-to-end with **on-chain idempotency** (0 receipts before, 1 receipt after).
 
 ## Non-goals
 - Mainnet deployment.
@@ -15,7 +15,7 @@ Deploy the Anchor “receipt/claim” program to Solana **devnet** and wire the 
 ### In scope
 1) Anchor config hard separation (devnet vs mainnet/localnet)
 2) Build + deploy program to devnet
-3) Wire `receiptProgramId` + `receiptIdl` into app config for devnet
+3) Wire devnet runtime identity (`programId`, `idlPath`, `idlHashMode`, `idlHash`) into a deployment manifest consumed by runtime resolver
 4) Add a deterministic receipt sanity harness verifying:
    - precheck finds **0** receipts before execution
    - post-execution finds **1** receipt
@@ -38,18 +38,27 @@ Deploy the Anchor “receipt/claim” program to Solana **devnet** and wire the 
 - `[provider]` or `[provider.devnet]` (depending on your structure) must point to a devnet RPC URL.
 - Wallet/keypair path must be explicit and consistent with the operator workflow.
 
-### 2) App config
-Update `AutopilotConfig` (or equivalent) to support devnet receipt deployment:
+### 2) Runtime identity + app config
+Update runtime identity resolution to support devnet receipt deployment:
 
-Required config values for devnet:
+Required values for devnet runtime identity:
 - `cluster = "devnet"`
-- `receiptProgramId = "<DEVNET_PROGRAM_ID>"`
-- `receiptIdl` must match the deployed program’s IDL exactly.
+- `deployments/devnet/receipt.json` is the default source of truth on devnet
+- Manifest must include: `programId`, `idlPath`, `idlHashMode`, `idlHash`
+- Runtime IDL artifact at `idlPath` must match the manifest hash exactly
+
+`AutopilotConfig` identity fields remain fallback-only:
+- `receiptProgramId`
+- `receiptIdlHashMode`
+- `receiptIdlHash`
+- `receiptIdlPath`
+- They are only used when explicitly forcing fallback identity resolution (`RECEIPT_IDENTITY_SOURCE=config`).
 
 **Invariants**
-- If `cluster=devnet` and `receiptProgramId` is unset or invalid -> fail fast with canonical error (e.g., `RECEIPT_PROGRAM_NOT_CONFIGURED`).
-- If IDL does not match program (or cannot be loaded) -> fail fast with canonical error (e.g., `RECEIPT_IDL_MISMATCH`).
-- Client must never write receipts when configured for a cluster where the program is not deployed.
+- If `cluster=devnet` and manifest identity is missing/invalid -> fail fast with canonical error (e.g., `RECEIPT_PROGRAM_NOT_CONFIGURED`).
+- If `RECEIPT_IDENTITY_SOURCE=config` and fallback identity is incomplete/invalid -> fail fast with canonical error (e.g., `RECEIPT_PROGRAM_NOT_CONFIGURED`).
+- If IDL does not match program identity (or cannot be loaded) -> fail fast with canonical error (e.g., `RECEIPT_IDL_MISMATCH`).
+- Client must verify program deployment before receipt writes and must never write receipts when configured for a cluster where the program is not deployed.
 
 ## B) Build + deploy
 
@@ -87,7 +96,7 @@ Add/extend a devnet harness (or integration test) that verifies:
 
 1) Given:
    - `cluster=devnet`
-   - `receiptProgramId` configured
+   - manifest-driven receipt identity resolves successfully (or explicit `RECEIPT_IDENTITY_SOURCE=config` fallback resolves successfully)
    - a known position address eligible for trigger (or a controlled test position)
 2) Before execution:
    - `receipt precheck` returns **0** matching receipts for the current epoch (per your receipt PDA scheme)
@@ -120,8 +129,9 @@ Update operator documentation to include:
 
 ### Unit tests
 - Config validation:
-  - devnet config missing `receiptProgramId` => fail fast
-  - devnet config with invalid pubkey => fail fast
+  - fallback identity fields are optional in manifest mode
+  - when `RECEIPT_IDENTITY_SOURCE=config`, missing fallback identity => fail fast
+  - when `RECEIPT_IDENTITY_SOURCE=config`, invalid fallback pubkey/hash/path => fail fast
   - IDL missing/unloadable => fail fast
 
 ### Integration / devnet harness

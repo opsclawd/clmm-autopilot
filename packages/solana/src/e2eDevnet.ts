@@ -23,6 +23,7 @@ import { fetchJupiterQuote } from './jupiter';
 import { loadPositionSnapshot, type PositionSnapshot } from './orcaInspector';
 import { deriveReceiptPda, fetchReceiptByPda, type ReceiptAccount } from './receipt';
 import { resolveReceiptRuntimeIdentity, type ReceiptRuntimeIdentity } from './receiptIdentity';
+import { verifyReceiptProgramOnChain } from './receiptProgramVerification';
 import { getSwapAdapter } from './swap/registry';
 import { deriveSwapTickArrays } from './swap/tickArrays';
 
@@ -34,7 +35,6 @@ type HarnessError = Error & { code?: string };
 const RECEIPT_MISMATCH_CODE = 'RECEIPT_MISMATCH';
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 const ZERO_PUBKEY = '11111111111111111111111111111111';
-const BPF_UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 
 type HarnessLogger = (entry: Record<string, unknown>) => void;
 type ResolvedHarnessPosition = {
@@ -258,66 +258,6 @@ function verifyReceipt(receipt: ReceiptAccount, expected: {
   if (receiptHashHex !== expected.attestationHashHex) throw codedError(RECEIPT_MISMATCH_CODE, 'Receipt stored_hash mismatch vs local attestation hash');
 }
 
-function parsedInfoField(value: unknown, key: string): unknown {
-  if (!value || typeof value !== 'object') return undefined;
-  const data = value as { data?: unknown };
-  if (!data.data || typeof data.data !== 'object') return undefined;
-  const parsed = data.data as { parsed?: unknown };
-  if (!parsed.parsed || typeof parsed.parsed !== 'object') return undefined;
-  const info = parsed.parsed as { info?: unknown };
-  if (!info.info || typeof info.info !== 'object') return undefined;
-  return (info.info as Record<string, unknown>)[key];
-}
-
-async function verifyReceiptProgram(
-  connection: Connection,
-  identity: ReceiptRuntimeIdentity,
-  deps: HarnessDeps,
-  logger: HarnessLogger,
-): Promise<void> {
-  const programInfo = await deps.getAccountInfo(connection, identity.programId);
-  if (!programInfo) {
-    throw codedError('RECEIPT_PROGRAM_VERIFICATION_FAILED', 'Receipt program account not found on cluster');
-  }
-  if (!programInfo.executable) {
-    throw codedError('RECEIPT_PROGRAM_VERIFICATION_FAILED', 'Receipt program account is not executable');
-  }
-  if (!programInfo.owner.equals(BPF_UPGRADEABLE_LOADER)) {
-    throw codedError('RECEIPT_PROGRAM_VERIFICATION_FAILED', 'Receipt program is not owned by upgradeable loader');
-  }
-  log(logger, 'receipt.program.verify.ok', {
-    programId: identity.programId.toBase58(),
-    owner: programInfo.owner.toBase58(),
-  });
-
-  if (!identity.expectedUpgradeAuthority) return;
-
-  const parsedProgram = await deps.getParsedAccountInfo(connection, identity.programId);
-  const programDataAddress = parsedInfoField(parsedProgram.value, 'programData');
-  if (typeof programDataAddress !== 'string') {
-    throw codedError(
-      'RECEIPT_PROGRAM_VERIFICATION_FAILED',
-      'ProgramData address missing while expectedUpgradeAuthority is configured',
-    );
-  }
-  const parsedProgramData = await deps.getParsedAccountInfo(connection, new PublicKey(programDataAddress));
-  const parsedAuthority =
-    parsedInfoField(parsedProgramData.value, 'authority') ?? parsedInfoField(parsedProgramData.value, 'upgradeAuthority');
-  if (typeof parsedAuthority !== 'string') {
-    throw codedError(
-      'RECEIPT_PROGRAM_VERIFICATION_FAILED',
-      'Upgrade authority missing on ProgramData account while strict authority check is enabled',
-    );
-  }
-  if (parsedAuthority !== identity.expectedUpgradeAuthority.toBase58()) {
-    throw codedError('RECEIPT_PROGRAM_VERIFICATION_FAILED', 'Upgrade authority mismatch for receipt program');
-  }
-  log(logger, 'receipt.program.authority.ok', {
-    programData: programDataAddress,
-    expectedUpgradeAuthority: identity.expectedUpgradeAuthority.toBase58(),
-  });
-}
-
 async function resolveHarnessPosition(params: {
   env: HarnessEnv;
   authority: PublicKey;
@@ -442,7 +382,23 @@ export async function runDevnetE2E(
   if (!receiptIdentity) {
     throw codedError('RECEIPT_PROGRAM_NOT_CONFIGURED', 'Resolved receipt identity is missing for devnet harness');
   }
-  await verifyReceiptProgram(connection, receiptIdentity, deps, logger);
+  const verification = await verifyReceiptProgramOnChain(
+    {
+      getAccountInfo: (pubkey, commitment) => deps.getAccountInfo(connection, pubkey),
+      getParsedAccountInfo: (pubkey, commitment) => deps.getParsedAccountInfo(connection, pubkey),
+    },
+    receiptIdentity,
+  );
+  log(logger, 'receipt.program.verify.ok', {
+    programId: verification.programId,
+    owner: verification.owner,
+  });
+  if (verification.programDataAddress) {
+    log(logger, 'receipt.program.authority.ok', {
+      programData: verification.programDataAddress,
+      expectedUpgradeAuthority: receiptIdentity.expectedUpgradeAuthority?.toBase58(),
+    });
+  }
   const configuredAdapter = getSwapAdapter(config.execution.swapRouter, config.cluster);
 
   const runStartedMs = deps.nowMs();

@@ -170,12 +170,7 @@ describe('validateConfig', () => {
       receiptIdlHash: undefined,
       receiptIdlPath: undefined,
     });
-    expect(partialFallback.ok).toBe(false);
-    if (!partialFallback.ok) {
-      expect(partialFallback.errors.some((e) => e.path === 'receiptIdlHashMode')).toBe(true);
-      expect(partialFallback.errors.some((e) => e.path === 'receiptIdlHash')).toBe(true);
-      expect(partialFallback.errors.some((e) => e.path === 'receiptIdlPath')).toBe(true);
-    }
+    expect(partialFallback.ok).toBe(true);
 
     const badProgramId = validateConfig({
       cluster: 'devnet',

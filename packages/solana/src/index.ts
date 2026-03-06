@@ -4,6 +4,7 @@ export * from './errors';
 export * from './rpc';
 export * from './receipt';
 export * from './receiptIdentity';
+export * from './receiptProgramVerification';
 export * from './orcaInspector';
 export * from './executionBuilder';
 export * from './jupiter';

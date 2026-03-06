@@ -402,27 +402,6 @@ export function validateConfig(input: unknown): ValidateConfigResult {
       normalized.value.expectedUpgradeAuthority,
     );
   }
-  const fallbackFields = [
-    normalized.value.receiptProgramId,
-    normalized.value.receiptIdlHashMode,
-    normalized.value.receiptIdlHash,
-    normalized.value.receiptIdlPath,
-  ];
-  const fallbackConfiguredCount = fallbackFields.filter((field) => field !== undefined).length;
-  if (fallbackConfiguredCount > 0 && fallbackConfiguredCount < fallbackFields.length) {
-    if (!normalized.value.receiptProgramId) {
-      pushRange(errors, 'receiptProgramId', 'set all receipt identity fallback fields together or leave all unset', normalized.value.receiptProgramId);
-    }
-    if (!normalized.value.receiptIdlHashMode) {
-      pushRange(errors, 'receiptIdlHashMode', 'set all receipt identity fallback fields together or leave all unset', normalized.value.receiptIdlHashMode);
-    }
-    if (!normalized.value.receiptIdlHash) {
-      pushRange(errors, 'receiptIdlHash', 'set all receipt identity fallback fields together or leave all unset', normalized.value.receiptIdlHash);
-    }
-    if (!normalized.value.receiptIdlPath) {
-      pushRange(errors, 'receiptIdlPath', 'set all receipt identity fallback fields together or leave all unset', normalized.value.receiptIdlPath);
-    }
-  }
   const p = normalized.value.policy;
   if (!Number.isInteger(p.cadenceMs)) pushType(errors, 'policy.cadenceMs', 'integer', p.cadenceMs);
   else if (p.cadenceMs <= 0) pushRange(errors, 'policy.cadenceMs', '> 0', p.cadenceMs);

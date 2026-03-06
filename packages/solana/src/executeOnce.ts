@@ -17,6 +17,7 @@ import { normalizeSolanaError } from './errors';
 import { loadPositionSnapshot } from './orcaInspector';
 import { deriveReceiptPda, fetchReceiptByPda } from './receipt';
 import { resolveReceiptRuntimeIdentity } from './receiptIdentity';
+import { verifyReceiptProgramOnChain } from './receiptProgramVerification';
 import { refreshBlockhashIfNeeded, shouldRebuild, withBoundedRetry } from './reliability';
 import type { CanonicalErrorCode } from './types';
 import { SOL_MINT } from './ata';
@@ -226,6 +227,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   try {
     // Resolve receipt identity before policy branching so devnet misconfiguration fails fast even on HOLD.
     const receiptIdentity = resolveReceiptRuntimeIdentity(params.config);
+    if (receiptIdentity) {
+      await verifyReceiptProgramOnChain(params.connection, receiptIdentity);
+    }
     const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, params.config.execution);
     const effectiveRefresh = params.decisionOverride
       ? {

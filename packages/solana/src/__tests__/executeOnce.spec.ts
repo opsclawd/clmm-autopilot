@@ -4,6 +4,21 @@ import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { deriveReceiptPda } from '../receipt';
 
 const DEVNET_USDC_MINT = 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k';
+const RECEIPT_PROGRAM_ID = new PublicKey(DEFAULT_CONFIG.receiptProgramId!);
+const BPF_UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
+
+function getAccountInfoForProgramOnly(programId = RECEIPT_PROGRAM_ID) {
+  return vi.fn(async (pubkey: PublicKey) => {
+    if (!pubkey.equals(programId)) return null;
+    return {
+      executable: true,
+      owner: BPF_UPGRADEABLE_LOADER,
+      lamports: 1,
+      data: Buffer.alloc(0),
+      rentEpoch: 0,
+    };
+  });
+}
 
 const { buildExitTransactionMock, getSwapAdapterMock, buildSwapIxsMock, getQuoteMock } = vi.hoisted(() => ({
   buildExitTransactionMock: vi.fn(async () => ({}) as VersionedTransaction),
@@ -98,7 +113,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable,
       getBalance: vi.fn(async () => 50_000_000),
@@ -170,7 +185,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable,
       getBalance: vi.fn(async () => 50_000_000),
@@ -224,7 +239,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -276,7 +291,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -334,7 +349,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -386,7 +401,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -435,7 +450,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -489,7 +504,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
     } as any;
@@ -529,7 +544,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
     } as any;
@@ -569,7 +584,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -625,6 +640,48 @@ describe('executeOnce', () => {
     );
   });
 
+  it('fails fast when receipt program is not deployed, even if decision would be HOLD', async () => {
+    buildExitTransactionMock.mockClear();
+    vi.mocked(loadPositionSnapshot).mockClear();
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: vi.fn(async () => null),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [{ slot: 1, unixTs: 1, currentTickIndex: 11 }],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'noop' } },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+    });
+
+    expect(res.status).toBe('ERROR');
+    expect(res.errorCode).toBe('RECEIPT_PROGRAM_VERIFICATION_FAILED');
+    expect(loadPositionSnapshot).not.toHaveBeenCalled();
+    expect(buildExitTransactionMock).not.toHaveBeenCalled();
+  });
+
   it('fails fast on devnet when forced config identity is incomplete, even if decision would be HOLD', async () => {
     const prev = process.env.RECEIPT_IDENTITY_SOURCE;
     process.env.RECEIPT_IDENTITY_SOURCE = 'config';
@@ -634,7 +691,7 @@ describe('executeOnce', () => {
         getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
         confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
         simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-        getAccountInfo: vi.fn(async () => null),
+        getAccountInfo: getAccountInfoForProgramOnly(),
         getSlot: vi.fn(async () => 1),
         getAddressLookupTable: vi.fn(async () => ({ value: null })),
       } as any;
@@ -690,7 +747,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -738,7 +795,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
     } as any;
@@ -837,7 +894,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -904,7 +961,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
