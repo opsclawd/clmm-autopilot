@@ -187,6 +187,83 @@ describe('runDevnetE2E refusals', () => {
     await cleanup();
   });
 
+  it('forwards FORCE_DECISION into executeOnce when live policy would otherwise HOLD', async () => {
+    const { env, cleanup } = await makeEnv();
+    env.FORCE_DECISION = 'TRIGGER_DOWN';
+    const authority = Keypair.fromSecretKey(
+      Uint8Array.from(JSON.parse(await (await import('node:fs/promises')).readFile(env.AUTHORITY_KEYPAIR, 'utf8'))),
+    ).publicKey;
+    const snapshot = mockSnapshot(env.POSITION_ADDRESS, {
+      currentTickIndex: 0,
+      lowerTickIndex: -10,
+      upperTickIndex: 10,
+      inRange: true,
+    });
+    const nowMs = 1_700_000_000_000;
+    const epoch = Math.floor((nowMs / 1000) / 86400);
+    const manifestProgramId = new PublicKey(getDefaultDevnetReceiptManifest().programId);
+    const [receiptPda] = deriveReceiptPda({
+      authority,
+      positionMint: snapshot.positionMint,
+      epoch,
+      programId: manifestProgramId,
+    });
+
+    let attestationHash = new Uint8Array(32).fill(1);
+    const executeOnce = vi.fn()
+      .mockImplementationOnce(async (params: { attestationHash?: Uint8Array; decisionOverride?: { decision: string; reasonCode?: string } }) => {
+        expect(params.decisionOverride).toEqual({
+          decision: 'TRIGGER_DOWN',
+          reasonCode: 'FORCED_TRIGGER_DOWN',
+        });
+        attestationHash = new Uint8Array(params.attestationHash ?? attestationHash);
+        return {
+          status: 'EXECUTED',
+          txSignature: 'sig-forced',
+          receiptPda: receiptPda.toBase58(),
+        };
+      })
+      .mockImplementationOnce(async (params: { decisionOverride?: { decision: string; reasonCode?: string } }) => {
+        expect(params.decisionOverride).toEqual({
+          decision: 'TRIGGER_DOWN',
+          reasonCode: 'FORCED_TRIGGER_DOWN',
+        });
+        return {
+          status: 'ERROR',
+          errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+          errorMessage: 'already done',
+        };
+      });
+
+    await expect(
+      runDevnetE2E(
+        { ...env, SWAP_ROUTER: 'noop' },
+        () => {},
+        harnessDeps({
+          loadPositionSnapshot: vi.fn(async () => snapshot) as any,
+          executeOnce: executeOnce as any,
+          fetchReceiptByPda: vi
+            .fn()
+            .mockResolvedValueOnce(null)
+            .mockImplementationOnce(async () => ({
+              authority,
+              positionMint: snapshot.positionMint,
+              epoch,
+              direction: 0,
+              attestationHash,
+              slot: BigInt(1),
+              unixTs: BigInt(1),
+              bump: 255,
+            })) as any,
+          nowMs: () => nowMs,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(executeOnce).toHaveBeenCalledTimes(2);
+    await cleanup();
+  });
+
   it('fails with RECEIPT_PROGRAM_VERIFICATION_FAILED when program account is missing', async () => {
     const { env, cleanup } = await makeEnv();
     const executeOnce = vi.fn();

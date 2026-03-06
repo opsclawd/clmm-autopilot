@@ -561,6 +561,68 @@ describe('executeOnce', () => {
     expect(res.refresh?.decision.decision).toBe('HOLD');
   });
 
+  it('honors decisionOverride when live policy would otherwise HOLD', async () => {
+    buildExitTransactionMock.mockClear();
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: vi.fn(async () => null),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [{ slot: 1, unixTs: 1, currentTickIndex: 11 }],
+      decisionOverride: {
+        decision: 'TRIGGER_DOWN',
+        reasonCode: 'FORCED_TRIGGER_DOWN',
+      },
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: {
+        ...DEFAULT_CONFIG,
+        execution: {
+          ...DEFAULT_CONFIG.execution,
+          swapRouter: 'noop',
+          receiptPollMaxAttempts: 0,
+        },
+      },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      checkExistingReceipt: async () => false,
+      nowUnixMs: () => 1_700_000_000_000,
+    });
+
+    expect(res.status).toBe('EXECUTED');
+    expect(res.refresh?.decision.decision).toBe('TRIGGER_DOWN');
+    expect(res.refresh?.decision.reasonCode).toBe('FORCED_TRIGGER_DOWN');
+    expect(buildExitTransactionMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'DOWN',
+      expect.objectContaining({
+        receiptProgramId: expect.any(PublicKey),
+      }),
+    );
+  });
+
   it('fails fast on devnet when forced config identity is incomplete, even if decision would be HOLD', async () => {
     const prev = process.env.RECEIPT_IDENTITY_SOURCE;
     process.env.RECEIPT_IDENTITY_SOURCE = 'config';

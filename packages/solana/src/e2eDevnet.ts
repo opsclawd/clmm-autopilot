@@ -481,6 +481,7 @@ export async function runDevnetE2E(
     policyState: {},
     expectedMinOut,
     quoteAgeMs,
+    ...(forceDecision ? { decisionOverride: { decision: forceDecision, reasonCode } } : {}),
     ...(suppliedQuote ? { quote: suppliedQuote, quoteContext: { quoteTickIndex: snapshot.currentTickIndex, quotedAtSlot: latestSlot } } : {}),
     attestationHash,
     attestationPayloadBytes: attestationPayload,

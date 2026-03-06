@@ -107,6 +107,10 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
 
 export type ExecuteOnceParams = RefreshParams & {
   authority: PublicKey;
+  decisionOverride?: {
+    decision: Exclude<RefreshResult['decision']['decision'], 'HOLD'>;
+    reasonCode?: string;
+  };
   // Backward-compatible optional inputs (ignored by planner path when omitted).
   quote?: unknown;
   quoteContext?: { quotedAtSlot?: number; quoteTickIndex?: number };
@@ -222,13 +226,23 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     // Resolve receipt identity before policy branching so devnet misconfiguration fails fast even on HOLD.
     const receiptIdentity = resolveReceiptRuntimeIdentity(params.config);
     const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, params.config.execution);
+    const effectiveRefresh = params.decisionOverride
+      ? {
+          ...refreshed,
+          decision: {
+            ...refreshed.decision,
+            decision: params.decisionOverride.decision,
+            reasonCode: params.decisionOverride.reasonCode ?? refreshed.decision.reasonCode,
+          },
+        }
+      : refreshed;
     params.logger?.notify?.('snapshot fetched', { position: params.position.toBase58() });
 
     const router = params.config.execution.swapRouter;
     const adapter = router === 'noop' ? null : getSwapAdapter(router, params.config.cluster);
 
-    if (refreshed.decision.decision === 'HOLD') {
-      return { status: 'HOLD', refresh: refreshed };
+    if (effectiveRefresh.decision.decision === 'HOLD') {
+      return { status: 'HOLD', refresh: effectiveRefresh };
     }
 
     let snapshot = await withBoundedRetry(
@@ -237,7 +251,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       params.config.execution,
     );
 
-    const direction = refreshed.decision.decision === 'TRIGGER_UP' ? ('UP' as ExitDirection) : ('DOWN' as ExitDirection);
+    const direction = effectiveRefresh.decision.decision === 'TRIGGER_UP' ? ('UP' as ExitDirection) : ('DOWN' as ExitDirection);
 
     const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, params.config.execution);
     const epochSourceMs = nowUnixMs();
@@ -403,7 +417,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       if (existingReceipt) {
         return {
           status: 'ERROR',
-          refresh: refreshed,
+          refresh: effectiveRefresh,
           errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
           errorMessage: 'Execution receipt already exists for canonical epoch',
         };
@@ -561,7 +575,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
 
     return {
       status: 'EXECUTED',
-      refresh: refreshed,
+      refresh: effectiveRefresh,
       execution: {
         unsignedTxBuilt: true,
         simulated: true,
