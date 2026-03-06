@@ -499,6 +499,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         attestationHash,
         attestationPayloadBytes,
         receiptProgramId: receiptIdentity?.programId,
+        receiptIdlPath: receiptIdentity?.idlPath,
         lookupTableAccounts,
         returnVersioned: true,
         swapIxs: assembled.swapIxs,

@@ -75,6 +75,7 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     nowUnixMs: () => epochNowMs,
     receiptEpochUnixMs: epochNowMs,
     receiptProgramId: RECEIPT_PROGRAM_ID,
+    receiptIdlPath: getDefaultDevnetReceiptManifest().idlPath,
     minSolLamportsToSwap: 0,
     minUsdcMinorToSwap: 0,
     availableLamports: 5_000_000,

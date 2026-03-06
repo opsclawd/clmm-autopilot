@@ -89,6 +89,21 @@ describe('receiptIdentity resolver', () => {
     ).toThrowError(/idlHash does not match runtime IDL hash/);
   });
 
+  it('throws RECEIPT_IDL_MISMATCH when forced config program id does not match IDL address', () => {
+    const actualHash = computeReceiptIdlHashFullV1(defaultReceiptIdl);
+    expect(() =>
+      resolveReceiptRuntimeIdentity(
+        mkConfig({
+          receiptProgramId: '11111111111111111111111111111111',
+          receiptIdlHashMode: 'full-v1',
+          receiptIdlHash: actualHash,
+          receiptIdlPath: 'deployments/devnet/receipt.idl.json',
+        }),
+        { RECEIPT_IDENTITY_SOURCE: 'config' },
+      ),
+    ).toThrowError(/address does not match receipt program id/);
+  });
+
   it('throws RECEIPT_IDL_MISMATCH when forced config idlPath is missing/unloadable', () => {
     const actualHash = computeReceiptIdlHashFullV1(defaultReceiptIdl);
     expect(() =>

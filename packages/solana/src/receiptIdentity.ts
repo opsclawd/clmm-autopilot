@@ -25,6 +25,22 @@ export type ReceiptRuntimeIdentity = {
   expectedUpgradeAuthority?: PublicKey;
 };
 
+export type ReceiptIdlArg =
+  | { name: string; type: 'u32' | 'u8' | 'pubkey' }
+  | { name: string; type: { array: ['u8', number] } };
+
+export type ReceiptIdlInstruction = {
+  name: string;
+  discriminator?: number[];
+  accounts?: Array<{ name: string; writable?: boolean; signer?: boolean; address?: string }>;
+  args?: ReceiptIdlArg[];
+};
+
+export type ReceiptIdlArtifact = {
+  address?: string;
+  instructions?: ReceiptIdlInstruction[];
+};
+
 type TypedError = Error & { code: CanonicalErrorCode; retryable: boolean; debug?: unknown };
 
 type ReceiptIdlFullV1 = {
@@ -200,7 +216,7 @@ function normalizeIdlPath(idlPath: string): string {
   return normalized;
 }
 
-function readIdlFromPath(idlPath: string, source: string): unknown {
+export function loadReceiptIdlArtifact(idlPath: string, source = 'receipt'): ReceiptIdlArtifact {
   const normalized = normalizeIdlPath(idlPath);
   const artifact = KNOWN_IDL_ARTIFACTS[normalized];
   if (artifact === undefined) {
@@ -210,7 +226,28 @@ function readIdlFromPath(idlPath: string, source: string): unknown {
       available: Object.keys(KNOWN_IDL_ARTIFACTS),
     });
   }
-  return artifact;
+  return artifact as ReceiptIdlArtifact;
+}
+
+export function assertReceiptProgramMatchesIdlAddress(
+  programId: PublicKey | string,
+  idlPath: string,
+  source: string,
+): ReceiptIdlArtifact {
+  const idl = loadReceiptIdlArtifact(idlPath, source);
+  const expectedProgramId = typeof programId === 'string' ? programId : programId.toBase58();
+  const actualProgramId = typeof idl.address === 'string' ? idl.address.trim() : '';
+  if (!actualProgramId) {
+    fail('RECEIPT_IDL_MISMATCH', `${source}.address missing from receipt IDL`, { idlPath, expectedProgramId });
+  }
+  if (actualProgramId !== expectedProgramId) {
+    fail('RECEIPT_IDL_MISMATCH', `${source}.address does not match receipt program id`, {
+      expectedProgramId,
+      actualProgramId,
+      idlPath,
+    });
+  }
+  return idl;
 }
 
 function assertConfigIdentity(config: AutopilotConfig): void {
@@ -223,9 +260,9 @@ function assertConfigIdentity(config: AutopilotConfig): void {
     });
   }
 
-  parseRequiredProgramId(config.receiptProgramId, 'config');
+  const programId = parseRequiredProgramId(config.receiptProgramId, 'config');
   assertHashMode(config.receiptIdlHashMode, 'config');
-  const idl = readIdlFromPath(config.receiptIdlPath, 'config');
+  const idl = assertReceiptProgramMatchesIdlAddress(programId, config.receiptIdlPath, 'config');
   assertHashMatches(config.receiptIdlHash, idl, 'config');
 }
 
@@ -238,12 +275,13 @@ export function resolveReceiptRuntimeIdentity(
 
   if (shouldUseManifest) {
     const manifest = DEFAULT_DEVNET_MANIFEST;
+    const programId = parseRequiredProgramId(manifest.programId, 'manifest');
     const idlHashMode = assertHashMode(manifest.idlHashMode, 'manifest');
-    const manifestIdl = readIdlFromPath(manifest.idlPath, 'manifest');
+    const manifestIdl = assertReceiptProgramMatchesIdlAddress(programId, manifest.idlPath, 'manifest');
     const idlHash = assertHashMatches(manifest.idlHash, manifestIdl, 'manifest');
     return {
       source: 'manifest',
-      programId: parseRequiredProgramId(manifest.programId, 'manifest'),
+      programId,
       idlPath: manifest.idlPath,
       idlHashMode,
       idlHash,
@@ -274,12 +312,13 @@ export function resolveReceiptRuntimeIdentity(
   assertConfigIdentity(config);
 
   const idlHashMode = assertHashMode(fallbackHashMode!, 'config');
-  const configIdl = readIdlFromPath(fallbackIdlPath!, 'config');
+  const programId = parseRequiredProgramId(fallbackProgramId!, 'config');
+  const configIdl = assertReceiptProgramMatchesIdlAddress(programId, fallbackIdlPath!, 'config');
   const idlHash = assertHashMatches(fallbackHash!, configIdl, 'config');
 
   return {
     source: 'config',
-    programId: parseRequiredProgramId(fallbackProgramId!, 'config'),
+    programId,
     idlPath: fallbackIdlPath!,
     idlHashMode,
     idlHash,

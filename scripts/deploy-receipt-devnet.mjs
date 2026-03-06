@@ -118,6 +118,12 @@ try {
   const programId = parseProgramIdFromDeployOutput(deployOutput);
   console.log(`[m15] deployed program id: ${programId}`);
 
+  syncAnchorIds(programId);
+  console.log('[m15] synced declare_id! and Anchor.toml devnet entry to deployed program id');
+
+  console.log('[m15] anchor build (refresh IDL/artifacts against deployed program id)');
+  runPassthrough('anchor', ['build']);
+
   copyFileSync(targetIdl, deployedIdl);
   const idlHash = computeIdlHash(deployedIdl);
 
@@ -138,9 +144,8 @@ try {
   writeManifestAtomic(manifest);
   console.log(`[m15] manifest updated: ${manifestPath}`);
 
-  syncAnchorIds(programId);
   syncCoreDevnetFallback(programId, idlHash);
-  console.log('[m15] synced declare_id!, Anchor.toml devnet entry, and core devnet fallback identity');
+  console.log('[m15] synced core devnet fallback identity');
 
   console.log('[m15] solana program show verification');
   runPassthrough('solana', ['program', 'show', programId, '--url', 'devnet']);

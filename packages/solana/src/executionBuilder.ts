@@ -48,6 +48,7 @@ export type BuildExitConfig = {
   nowUnixSec?: () => number;
   receiptEpochUnixMs: number;
   receiptProgramId?: PublicKey;
+  receiptIdlPath?: string;
 
   availableLamports: number;
   requirements: FeeRequirementsBreakdown;
@@ -248,6 +249,7 @@ export async function buildExitTransaction(
         direction: direction === 'DOWN' ? 0 : 1,
         attestationHash: config.attestationHash,
         programId: config.receiptProgramId,
+        idlPath: config.receiptIdlPath,
       })
     : null;
 

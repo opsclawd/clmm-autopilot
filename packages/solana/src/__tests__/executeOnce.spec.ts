@@ -619,6 +619,7 @@ describe('executeOnce', () => {
       'DOWN',
       expect.objectContaining({
         receiptProgramId: expect.any(PublicKey),
+        receiptIdlPath: 'deployments/devnet/receipt.idl.json',
       }),
     );
   });

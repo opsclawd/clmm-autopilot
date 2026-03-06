@@ -66,7 +66,8 @@ Logs are JSON (structured) and failure exits non-zero.
 `pnpm receipt:check:devnet` is mandatory before harness/manual workflow. It asserts:
 
 1. Runtime resolver identity equals manifest identity (`programId`, `idlHashMode`, `idlHash`, `idlPath`)
-2. `idlPath` exists on disk
+2. `receipt.idl.json.address` equals the resolved/manifests `programId`
+3. `idlPath` exists on disk
 
 If this fails, do not run harness until manifest/IDL drift is fixed.
 
@@ -76,11 +77,13 @@ If this fails, do not run harness until manifest/IDL drift is fixed.
 
 1. `anchor build`
 2. `anchor deploy --provider.cluster devnet`
-3. Copies `target/idl/receipt.json` to `deployments/devnet/receipt.idl.json`
-4. Computes `full-v1` IDL hash
-5. Atomically writes `deployments/devnet/receipt.json`
-6. Verifies with `solana program show <PROGRAM_ID> --url devnet`
-7. Runs consistency guard
+3. Syncs `declare_id!()` and `Anchor.toml` to the deployed program id
+4. Re-runs `anchor build` so committed IDL/artifacts embed the deployed program id
+5. Copies `target/idl/receipt.json` to `deployments/devnet/receipt.idl.json`
+6. Computes `full-v1` IDL hash
+7. Atomically writes `deployments/devnet/receipt.json`
+8. Verifies with `solana program show <PROGRAM_ID> --url devnet`
+9. Runs consistency guard
 
 ## Failure → Action mapping
 
