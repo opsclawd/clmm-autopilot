@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, type AutopilotConfig } from '@clmm-autopilot/core';
 import {
+  canonicalizeReceiptIdlFullV1,
   computeReceiptIdlHashFullV1,
   getDefaultDevnetReceiptManifest,
   resolveReceiptRuntimeIdentity,
@@ -15,7 +17,26 @@ function mkConfig(overrides?: Partial<AutopilotConfig>): AutopilotConfig {
   };
 }
 
+function normalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((v) => normalizeJson(v));
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b));
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of entries) out[k] = normalizeJson(v);
+    return out;
+  }
+  return value;
+}
+
 describe('receiptIdentity resolver', () => {
+  it('computes full-v1 hash using standard sha256 over canonical payload', () => {
+    const canonical = JSON.stringify(normalizeJson(canonicalizeReceiptIdlFullV1(defaultReceiptIdl)));
+    const expected = createHash('sha256').update(canonical).digest('hex');
+    expect(computeReceiptIdlHashFullV1(defaultReceiptIdl)).toBe(expected);
+  });
+
   it('prefers manifest identity on devnet when config identity is valid', () => {
     const manifest = getDefaultDevnetReceiptManifest();
     const actualHash = computeReceiptIdlHashFullV1(defaultReceiptIdl);

@@ -14,6 +14,10 @@ if (!existsSync(manifestPath)) {
 }
 
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+if (manifest.cluster !== 'devnet') {
+  console.error(`manifest cluster must be 'devnet' (received: ${String(manifest.cluster)})`);
+  process.exit(1);
+}
 for (const field of ['programId', 'idlPath', 'idlHashMode', 'idlHash']) {
   if (typeof manifest[field] !== 'string' || manifest[field].trim() === '') {
     console.error(`manifest field missing/invalid: ${field}`);

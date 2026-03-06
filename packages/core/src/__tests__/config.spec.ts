@@ -161,12 +161,20 @@ describe('validateConfig', () => {
       receiptIdlHash: undefined,
       receiptIdlPath: undefined,
     });
-    expect(devnetNoFallback.ok).toBe(false);
-    if (!devnetNoFallback.ok) {
-      expect(devnetNoFallback.errors.some((e) => e.path === 'receiptProgramId')).toBe(true);
-      expect(devnetNoFallback.errors.some((e) => e.path === 'receiptIdlHashMode')).toBe(true);
-      expect(devnetNoFallback.errors.some((e) => e.path === 'receiptIdlHash')).toBe(true);
-      expect(devnetNoFallback.errors.some((e) => e.path === 'receiptIdlPath')).toBe(true);
+    expect(devnetNoFallback.ok).toBe(true);
+
+    const partialFallback = validateConfig({
+      cluster: 'devnet',
+      receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
+      receiptIdlHashMode: undefined,
+      receiptIdlHash: undefined,
+      receiptIdlPath: undefined,
+    });
+    expect(partialFallback.ok).toBe(false);
+    if (!partialFallback.ok) {
+      expect(partialFallback.errors.some((e) => e.path === 'receiptIdlHashMode')).toBe(true);
+      expect(partialFallback.errors.some((e) => e.path === 'receiptIdlHash')).toBe(true);
+      expect(partialFallback.errors.some((e) => e.path === 'receiptIdlPath')).toBe(true);
     }
 
     const badProgramId = validateConfig({

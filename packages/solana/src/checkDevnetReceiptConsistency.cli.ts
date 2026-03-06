@@ -43,6 +43,10 @@ function extractAnchorDevnetProgramId(source: string): string {
 }
 
 function assertDeployedMetadata(manifest: Record<string, unknown>): void {
+  if (manifest.cluster !== 'devnet') {
+    fail("Manifest cluster must be 'devnet'", { cluster: manifest.cluster });
+  }
+
   const deployedAt = assertManifestStringField(manifest, 'deployedAt');
   const parsed = Date.parse(deployedAt);
   if (!Number.isFinite(parsed)) {
