@@ -9,7 +9,6 @@ jobs:
     env:
       RPC_URL: ${{ secrets.RPC_URL }}
       AUTHORITY_KEYPAIR: /tmp/devnet-authority.json
-      POSITION_ADDRESS: ${{ secrets.POSITION_ADDRESS }}
       SWAP_ROUTER: noop
       FORCE_DECISION: TRIGGER_DOWN
       REQUIRE_RECEIPT_PROOF: "1"
@@ -32,6 +31,14 @@ jobs:
         run: |
           test -n "${{ secrets.AUTHORITY_KEYPAIR_JSON }}"
           printf '%s' '${{ secrets.AUTHORITY_KEYPAIR_JSON }}' > "$AUTHORITY_KEYPAIR"
+
+      - name: Discover devnet position candidates
+        run: |
+          WALLET_ADDRESS="$(node -e "const fs=require('fs'); const {Keypair}=require('@solana/web3.js'); const secret=Uint8Array.from(JSON.parse(fs.readFileSync(process.env.AUTHORITY_KEYPAIR,'utf8'))); console.log(Keypair.fromSecretKey(secret).publicKey.toBase58())")"
+          echo "WALLET_ADDRESS=$WALLET_ADDRESS" >> "$GITHUB_ENV"
+          node scripts/find-devnet-whirlpool-positions.mjs --wallet "$WALLET_ADDRESS" > /tmp/devnet-positions.json
+          POSITION_ADDRESS_CANDIDATES="$(node -e "const fs=require('fs'); const payload=JSON.parse(fs.readFileSync('/tmp/devnet-positions.json','utf8')); const positions=[...new Set((payload.positions||[]).map((entry)=>entry.positionAddress).filter(Boolean))]; if (positions.length===0) { console.error('No devnet whirlpool positions found for wallet'); process.exit(1); } console.log(positions.join(','));")"
+          echo "POSITION_ADDRESS_CANDIDATES=$POSITION_ADDRESS_CANDIDATES" >> "$GITHUB_ENV"
 
       - name: Verify devnet receipt manifest consistency
         run: pnpm receipt:check:devnet

@@ -26,6 +26,22 @@ function assertManifestStringField(manifest: Record<string, unknown>, field: str
   return value.trim();
 }
 
+function extractDeclareId(source: string): string {
+  const match = source.match(/declare_id!\("([1-9A-HJ-NP-Za-km-z]{32,44})"\);/);
+  if (!match?.[1]) {
+    fail('Unable to parse programs/receipt/src/lib.rs declare_id!()');
+  }
+  return match[1];
+}
+
+function extractAnchorDevnetProgramId(source: string): string {
+  const match = source.match(/\[programs\.devnet\][\s\S]*?receipt\s*=\s*"([1-9A-HJ-NP-Za-km-z]{32,44})"/);
+  if (!match?.[1]) {
+    fail('Unable to parse Anchor.toml [programs.devnet].receipt');
+  }
+  return match[1];
+}
+
 function assertDeployedMetadata(manifest: Record<string, unknown>): void {
   const deployedAt = assertManifestStringField(manifest, 'deployedAt');
   const parsed = Date.parse(deployedAt);
@@ -53,10 +69,18 @@ function main(): void {
   const srcDir = dirname(fileURLToPath(import.meta.url));
   const repoRoot = resolve(srcDir, '../../..');
   const manifestPath = resolve(repoRoot, 'deployments/devnet/receipt.json');
+  const libPath = resolve(repoRoot, 'programs/receipt/src/lib.rs');
+  const anchorTomlPath = resolve(repoRoot, 'Anchor.toml');
 
   const manifestRaw = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
   assertDeployedMetadata(manifestRaw);
   const manifest = manifestRaw as ReceiptDeploymentManifest;
+  assertEqual('programs/receipt/src/lib.rs declare_id!', extractDeclareId(readFileSync(libPath, 'utf8')), manifest.programId);
+  assertEqual(
+    'Anchor.toml [programs.devnet].receipt',
+    extractAnchorDevnetProgramId(readFileSync(anchorTomlPath, 'utf8')),
+    manifest.programId,
+  );
   if (!DEFAULT_CONFIG.receiptProgramId) fail('DEFAULT_CONFIG.receiptProgramId must be set for devnet');
   if (!DEFAULT_CONFIG.receiptIdlHashMode) fail('DEFAULT_CONFIG.receiptIdlHashMode must be set for devnet');
   if (!DEFAULT_CONFIG.receiptIdlHash) fail('DEFAULT_CONFIG.receiptIdlHash must be set for devnet');

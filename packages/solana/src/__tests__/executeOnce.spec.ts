@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { deriveReceiptPda } from '../receipt';
 
 const DEVNET_USDC_MINT = 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k';
 
@@ -812,6 +813,82 @@ describe('executeOnce', () => {
     expect(res.status).toBe('ERROR');
     expect(res.errorCode).toBe('ALREADY_EXECUTED_THIS_EPOCH');
     expect(buildExitTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it('uses provided receiptEpochUnixMs for receipt precheck and tx builder', async () => {
+    buildExitTransactionMock.mockClear();
+    buildExitTransactionMock.mockResolvedValue({} as VersionedTransaction);
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const fixedReceiptEpochUnixMs = 172_800_000;
+    const fixedEpoch = Math.floor(fixedReceiptEpochUnixMs / 1000 / 86400);
+    const expectedProgramId = new PublicKey(DEFAULT_CONFIG.receiptProgramId!);
+    const expectedPositionMint = new PublicKey(new Uint8Array(32).fill(3));
+    const [expectedReceiptPda] = deriveReceiptPda({
+      authority,
+      positionMint: expectedPositionMint,
+      epoch: fixedEpoch,
+      programId: expectedProgramId,
+    });
+    const checkExistingReceipt = vi.fn(async (receiptPda: PublicKey) => {
+      expect(receiptPda.toBase58()).toBe(expectedReceiptPda.toBase58());
+      return false;
+    });
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: vi.fn(async () => null),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      receiptEpochUnixMs: fixedReceiptEpochUnixMs,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: {
+        ...DEFAULT_CONFIG,
+        execution: {
+          ...DEFAULT_CONFIG.execution,
+          swapRouter: "noop",
+          receiptPollMaxAttempts: 0,
+        },
+      },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      checkExistingReceipt,
+    });
+
+    expect(res.status).toBe('EXECUTED');
+    expect(checkExistingReceipt).toHaveBeenCalledTimes(1);
+    expect(buildExitTransactionMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        receiptEpochUnixMs: fixedReceiptEpochUnixMs,
+      }),
+    );
   });
 
   it('returns NOT_SOL_USDC and never reaches tx builder for non-SOL/USDC snapshot', async () => {

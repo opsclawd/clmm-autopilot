@@ -107,6 +107,7 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
 
 export type ExecuteOnceParams = RefreshParams & {
   authority: PublicKey;
+  receiptEpochUnixMs?: number;
   decisionOverride?: {
     decision: Exclude<RefreshResult['decision']['decision'], 'HOLD'>;
     reasonCode?: string;
@@ -254,7 +255,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     const direction = effectiveRefresh.decision.decision === 'TRIGGER_UP' ? ('UP' as ExitDirection) : ('DOWN' as ExitDirection);
 
     const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, params.config.execution);
-    const epochSourceMs = nowUnixMs();
+    const epochSourceMs = params.receiptEpochUnixMs ?? nowUnixMs();
     const epoch = unixDaysFromUnixMs(epochSourceMs);
 
     const buildPlan = async (

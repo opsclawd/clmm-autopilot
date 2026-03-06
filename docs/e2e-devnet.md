@@ -9,6 +9,8 @@ pnpm receipt:check:devnet
 pnpm e2e:devnet
 ```
 
+For repeatable same-day receipt proofs, prefer `POSITION_ADDRESS_CANDIDATES` with multiple wallet-owned positions. The harness will skip candidates that already have a receipt for the current UTC-day epoch and use the first fresh SOL/USDC position.
+
 Expected behavior:
 
 - Exits `0` on HOLD (policy not triggered)
@@ -36,3 +38,4 @@ Manual/CI receipt-proof mode:
 
 - Set `REQUIRE_RECEIPT_PROOF=1` to fail on `HOLD`
 - Optionally set `FORCE_DECISION=TRIGGER_DOWN|TRIGGER_UP` to guarantee trigger-path execution for idempotency proof
+- Set either `POSITION_ADDRESS` or `POSITION_ADDRESS_CANDIDATES`

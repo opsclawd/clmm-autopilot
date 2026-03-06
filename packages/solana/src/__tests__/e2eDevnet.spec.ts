@@ -158,6 +158,14 @@ describe('runDevnetE2E refusals', () => {
     await cleanup();
   });
 
+  it('returns CONFIG_INVALID when no position source is configured', async () => {
+    const { env, cleanup } = await makeEnv();
+    delete env.POSITION_ADDRESS;
+
+    await expect(runDevnetE2E(env, () => {})).rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+    await cleanup();
+  });
+
   it('returns CONFIG_INVALID when FORCE_DECISION is malformed', async () => {
     const { env, cleanup } = await makeEnv();
     env.FORCE_DECISION = 'bad-value';
@@ -211,11 +219,16 @@ describe('runDevnetE2E refusals', () => {
 
     let attestationHash = new Uint8Array(32).fill(1);
     const executeOnce = vi.fn()
-      .mockImplementationOnce(async (params: { attestationHash?: Uint8Array; decisionOverride?: { decision: string; reasonCode?: string } }) => {
+      .mockImplementationOnce(async (params: {
+        attestationHash?: Uint8Array;
+        receiptEpochUnixMs?: number;
+        decisionOverride?: { decision: string; reasonCode?: string };
+      }) => {
         expect(params.decisionOverride).toEqual({
           decision: 'TRIGGER_DOWN',
           reasonCode: 'FORCED_TRIGGER_DOWN',
         });
+        expect(params.receiptEpochUnixMs).toBe(nowMs);
         attestationHash = new Uint8Array(params.attestationHash ?? attestationHash);
         return {
           status: 'EXECUTED',
@@ -223,11 +236,15 @@ describe('runDevnetE2E refusals', () => {
           receiptPda: receiptPda.toBase58(),
         };
       })
-      .mockImplementationOnce(async (params: { decisionOverride?: { decision: string; reasonCode?: string } }) => {
+      .mockImplementationOnce(async (params: {
+        receiptEpochUnixMs?: number;
+        decisionOverride?: { decision: string; reasonCode?: string };
+      }) => {
         expect(params.decisionOverride).toEqual({
           decision: 'TRIGGER_DOWN',
           reasonCode: 'FORCED_TRIGGER_DOWN',
         });
+        expect(params.receiptEpochUnixMs).toBe(nowMs);
         return {
           status: 'ERROR',
           errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
@@ -394,6 +411,103 @@ describe('runDevnetE2E refusals', () => {
     await cleanup();
   });
 
+  it('uses POSITION_ADDRESS_CANDIDATES to skip used positions and pick a fresh one', async () => {
+    const { env, cleanup } = await makeEnv();
+    delete env.POSITION_ADDRESS;
+    const usedPosition = new PublicKey(new Uint8Array(32).fill(41)).toBase58();
+    const freshPosition = new PublicKey(new Uint8Array(32).fill(42)).toBase58();
+    env.POSITION_ADDRESS_CANDIDATES = `${usedPosition},${freshPosition}`;
+    const authority = Keypair.fromSecretKey(
+      Uint8Array.from(JSON.parse(await (await import('node:fs/promises')).readFile(env.AUTHORITY_KEYPAIR, 'utf8'))),
+    ).publicKey;
+    const nowMs = 1_700_000_000_000;
+    const epoch = Math.floor((nowMs / 1000) / 86400);
+    const usedSnapshot = mockSnapshot(usedPosition, {
+      positionMint: new PublicKey(new Uint8Array(32).fill(43)),
+    });
+    const freshSnapshot = mockSnapshot(freshPosition, {
+      positionMint: new PublicKey(new Uint8Array(32).fill(44)),
+    });
+    const manifestProgramId = new PublicKey(getDefaultDevnetReceiptManifest().programId);
+    const [usedReceiptPda] = deriveReceiptPda({
+      authority,
+      positionMint: usedSnapshot.positionMint,
+      epoch,
+      programId: manifestProgramId,
+    });
+    const [freshReceiptPda] = deriveReceiptPda({
+      authority,
+      positionMint: freshSnapshot.positionMint,
+      epoch,
+      programId: manifestProgramId,
+    });
+
+    let attestationHash = new Uint8Array(32).fill(1);
+    const loadPositionSnapshot = vi.fn()
+      .mockResolvedValueOnce(usedSnapshot)
+      .mockResolvedValueOnce(freshSnapshot);
+    const fetchReceiptByPda = vi.fn()
+      .mockResolvedValueOnce({
+        authority,
+        positionMint: usedSnapshot.positionMint,
+        epoch,
+        direction: 0,
+        attestationHash: new Uint8Array(32),
+        slot: BigInt(1),
+        unixTs: BigInt(1),
+        bump: 255,
+      })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockImplementationOnce(async () => ({
+        authority,
+        positionMint: freshSnapshot.positionMint,
+        epoch,
+        direction: 0,
+        attestationHash,
+        slot: BigInt(1),
+        unixTs: BigInt(1),
+        bump: 255,
+      }));
+    const executeOnce = vi.fn()
+      .mockImplementationOnce(async (params: { position: PublicKey; attestationHash?: Uint8Array; receiptEpochUnixMs?: number }) => {
+        expect(params.position.toBase58()).toBe(freshPosition);
+        expect(params.receiptEpochUnixMs).toBe(nowMs);
+        attestationHash = new Uint8Array(params.attestationHash ?? attestationHash);
+        return {
+          status: 'EXECUTED',
+          txSignature: 'sig-candidate',
+          receiptPda: freshReceiptPda.toBase58(),
+        };
+      })
+      .mockResolvedValueOnce({
+        status: 'ERROR',
+        errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+        errorMessage: 'already done',
+      });
+
+    await expect(
+      runDevnetE2E(
+        { ...env, SWAP_ROUTER: 'noop' },
+        () => {},
+        harnessDeps({
+          loadPositionSnapshot: loadPositionSnapshot as any,
+          executeOnce: executeOnce as any,
+          fetchReceiptByPda: fetchReceiptByPda as any,
+          nowMs: () => nowMs,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(loadPositionSnapshot).toHaveBeenCalledTimes(2);
+    expect(loadPositionSnapshot).toHaveBeenNthCalledWith(1, expect.anything(), new PublicKey(usedPosition), 'devnet');
+    expect(loadPositionSnapshot).toHaveBeenNthCalledWith(2, expect.anything(), new PublicKey(freshPosition), 'devnet');
+    expect(fetchReceiptByPda).toHaveBeenNthCalledWith(1, expect.anything(), usedReceiptPda);
+    expect(fetchReceiptByPda).toHaveBeenNthCalledWith(2, expect.anything(), freshReceiptPda);
+    expect(fetchReceiptByPda).toHaveBeenNthCalledWith(3, expect.anything(), freshReceiptPda);
+    await cleanup();
+  });
+
   it('returns RECEIPT_MISMATCH when fetched receipt hash does not match local hash', async () => {
     const { env, cleanup } = await makeEnv();
     const authority = Keypair.fromSecretKey(
@@ -459,7 +573,8 @@ describe('runDevnetE2E refusals', () => {
 
     let attestationHash = new Uint8Array(32).fill(1);
     const executeOnce = vi.fn()
-      .mockImplementationOnce(async (params: { attestationHash?: Uint8Array }) => {
+      .mockImplementationOnce(async (params: { attestationHash?: Uint8Array; receiptEpochUnixMs?: number }) => {
+        expect(params.receiptEpochUnixMs).toBe(nowMs);
         const runtimeHash = params.attestationHash ?? attestationHash;
         attestationHash = new Uint8Array(runtimeHash);
         return {
@@ -468,10 +583,13 @@ describe('runDevnetE2E refusals', () => {
           receiptPda: receiptPda.toBase58(),
         };
       })
-      .mockResolvedValueOnce({
-        status: 'ERROR',
-        errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
-        errorMessage: 'already done',
+      .mockImplementationOnce(async (params: { receiptEpochUnixMs?: number }) => {
+        expect(params.receiptEpochUnixMs).toBe(nowMs);
+        return {
+          status: 'ERROR',
+          errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+          errorMessage: 'already done',
+        };
       });
 
     await expect(

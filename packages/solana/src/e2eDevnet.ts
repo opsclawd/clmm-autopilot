@@ -37,6 +37,10 @@ const ZERO_PUBKEY = '11111111111111111111111111111111';
 const BPF_UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 
 type HarnessLogger = (entry: Record<string, unknown>) => void;
+type ResolvedHarnessPosition = {
+  position: PublicKey;
+  snapshot?: PositionSnapshot;
+};
 
 type HarnessDeps = {
   loadPositionSnapshot: typeof loadPositionSnapshot;
@@ -70,10 +74,49 @@ function codedError(code: string, message: string): HarnessError {
   return err;
 }
 
-function parseRequiredEnv(env: HarnessEnv, key: 'RPC_URL' | 'AUTHORITY_KEYPAIR' | 'POSITION_ADDRESS'): string {
+function parseRequiredEnv(env: HarnessEnv, key: 'RPC_URL' | 'AUTHORITY_KEYPAIR'): string {
   const value = env[key]?.trim();
   if (!value) throw codedError('CONFIG_INVALID', `Missing required env: ${key}`);
   return value;
+}
+
+function parseOptionalEnv(env: HarnessEnv, key: 'POSITION_ADDRESS' | 'POSITION_ADDRESS_CANDIDATES'): string | undefined {
+  const value = env[key]?.trim();
+  return value ? value : undefined;
+}
+
+function parsePublicKeyValue(value: string, key: 'POSITION_ADDRESS' | 'POSITION_ADDRESS_CANDIDATES'): PublicKey {
+  try {
+    return new PublicKey(value);
+  } catch {
+    throw codedError('CONFIG_INVALID', `${key} must contain valid base58 public keys`);
+  }
+}
+
+function parseCandidatePositions(env: HarnessEnv): PublicKey[] {
+  const raw = parseOptionalEnv(env, 'POSITION_ADDRESS_CANDIDATES');
+  if (!raw) return [];
+
+  const seen = new Set<string>();
+  const positions: PublicKey[] = [];
+  for (const candidate of raw.split(/[,\s]+/)) {
+    const trimmed = candidate.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    positions.push(parsePublicKeyValue(trimmed, 'POSITION_ADDRESS_CANDIDATES'));
+  }
+  return positions;
+}
+
+function assertPositionSourceConfigured(env: HarnessEnv): void {
+  const explicitPosition = parseOptionalEnv(env, 'POSITION_ADDRESS');
+  if (explicitPosition) {
+    parsePublicKeyValue(explicitPosition, 'POSITION_ADDRESS');
+    return;
+  }
+  if (parseCandidatePositions(env).length === 0) {
+    throw codedError('CONFIG_INVALID', 'Missing required env: POSITION_ADDRESS or POSITION_ADDRESS_CANDIDATES');
+  }
 }
 
 function parseSwapRouter(env: HarnessEnv): AutopilotConfig['execution']['swapRouter'] {
@@ -275,6 +318,104 @@ async function verifyReceiptProgram(
   });
 }
 
+async function resolveHarnessPosition(params: {
+  env: HarnessEnv;
+  authority: PublicKey;
+  connection: Connection;
+  epoch: number;
+  receiptIdentity: ReceiptRuntimeIdentity;
+  deps: HarnessDeps;
+  logger: HarnessLogger;
+}): Promise<ResolvedHarnessPosition> {
+  const explicitPosition = parseOptionalEnv(params.env, 'POSITION_ADDRESS');
+  if (explicitPosition) {
+    return {
+      position: parsePublicKeyValue(explicitPosition, 'POSITION_ADDRESS'),
+    };
+  }
+
+  const candidates = parseCandidatePositions(params.env);
+  if (candidates.length === 0) {
+    throw codedError('CONFIG_INVALID', 'Missing required env: POSITION_ADDRESS or POSITION_ADDRESS_CANDIDATES');
+  }
+
+  let skippedAlreadyExecuted = 0;
+  let skippedWrongPair = 0;
+  const skippedErrors: Array<{ position: string; code: string; message: string }> = [];
+
+  for (const candidate of candidates) {
+    try {
+      const snapshot = await params.deps.loadPositionSnapshot(params.connection, candidate, 'devnet');
+      try {
+        assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), 'devnet');
+      } catch {
+        skippedWrongPair += 1;
+        log(params.logger, 'position.candidate.skip', {
+          position: candidate.toBase58(),
+          reason: 'NOT_SOL_USDC',
+        });
+        continue;
+      }
+
+      const [receiptPda] = deriveReceiptPda({
+        authority: params.authority,
+        positionMint: snapshot.positionMint,
+        epoch: params.epoch,
+        programId: params.receiptIdentity.programId,
+      });
+      const existing = await params.deps.fetchReceiptByPda(params.connection, receiptPda);
+      if (existing) {
+        skippedAlreadyExecuted += 1;
+        log(params.logger, 'position.candidate.skip', {
+          position: candidate.toBase58(),
+          reason: 'ALREADY_EXECUTED_THIS_EPOCH',
+          receiptPda: receiptPda.toBase58(),
+        });
+        continue;
+      }
+
+      log(params.logger, 'position.candidate.select', {
+        position: candidate.toBase58(),
+        receiptPda: receiptPda.toBase58(),
+        epoch: params.epoch,
+      });
+      return {
+        position: candidate,
+        snapshot,
+      };
+    } catch (error) {
+      const candidateError = error as HarnessError;
+      skippedErrors.push({
+        position: candidate.toBase58(),
+        code: candidateError.code ?? 'UNKNOWN',
+        message: candidateError.message,
+      });
+      log(params.logger, 'position.candidate.skip', {
+        position: candidate.toBase58(),
+        reason: candidateError.code ?? 'UNKNOWN',
+      });
+    }
+  }
+
+  if (skippedAlreadyExecuted > 0 && skippedWrongPair + skippedAlreadyExecuted === candidates.length && skippedErrors.length === 0) {
+    throw codedError('ALREADY_EXECUTED_THIS_EPOCH', 'All candidate positions already have receipts for this epoch');
+  }
+  if (skippedWrongPair === candidates.length && skippedErrors.length === 0) {
+    throw codedError('NOT_SOL_USDC', 'No candidate positions resolved to SOL/USDC');
+  }
+  if (skippedErrors.length > 0 && skippedAlreadyExecuted === 0 && skippedWrongPair === 0) {
+    throw codedError(skippedErrors[0].code, skippedErrors[0].message);
+  }
+
+  const summary = [
+    `checked=${candidates.length}`,
+    `alreadyExecuted=${skippedAlreadyExecuted}`,
+    `wrongPair=${skippedWrongPair}`,
+    `errors=${skippedErrors.length}`,
+  ].join(', ');
+  throw codedError('CONFIG_INVALID', `No candidate positions available for receipt proof (${summary})`);
+}
+
 export async function runDevnetE2E(
   env: HarnessEnv = process.env,
   logger: HarnessLogger = (entry) => console.log(JSON.stringify(entry)),
@@ -282,17 +423,11 @@ export async function runDevnetE2E(
 ): Promise<void> {
   const rpcUrl = parseRequiredEnv(env, 'RPC_URL');
   const authorityPath = parseRequiredEnv(env, 'AUTHORITY_KEYPAIR');
-  const positionAddress = parseRequiredEnv(env, 'POSITION_ADDRESS');
   const forceDecision = parseForceDecision(env);
   const requireReceiptProof = parseBooleanEnvFlag(env, 'REQUIRE_RECEIPT_PROOF');
 
   const authority = await loadAuthorityFromPath(authorityPath);
-  let position: PublicKey;
-  try {
-    position = new PublicKey(positionAddress);
-  } catch {
-    throw codedError('CONFIG_INVALID', 'POSITION_ADDRESS must be a valid base58 public key');
-  }
+  assertPositionSourceConfigured(env);
   const connection = new Connection(rpcUrl, 'confirmed');
 
   const config: AutopilotConfig = {
@@ -310,8 +445,22 @@ export async function runDevnetE2E(
   await verifyReceiptProgram(connection, receiptIdentity, deps, logger);
   const configuredAdapter = getSwapAdapter(config.execution.swapRouter, config.cluster);
 
+  const runStartedMs = deps.nowMs();
+  const unixTs = Math.floor(runStartedMs / 1000);
+  const epoch = unixDaysFromUnixTs(unixTs);
+  const resolvedPosition = await resolveHarnessPosition({
+    env,
+    authority: authority.publicKey,
+    connection,
+    epoch,
+    receiptIdentity,
+    deps,
+    logger,
+  });
+  const position = resolvedPosition.position;
+
   log(logger, 'snapshot.fetch.start', { position: position.toBase58() });
-  const snapshot = await deps.loadPositionSnapshot(connection, position, 'devnet');
+  const snapshot = resolvedPosition.snapshot ?? await deps.loadPositionSnapshot(connection, position, 'devnet');
   assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), 'devnet');
   log(logger, 'snapshot.fetch.ok', {
     currentTick: snapshot.currentTickIndex,
@@ -320,8 +469,6 @@ export async function runDevnetE2E(
     pair: snapshot.pairLabel,
   });
 
-  const runStartedMs = deps.nowMs();
-  const unixTs = Math.floor(runStartedMs / 1000);
   const latestSlot = await deps.getSlot(connection);
   const samples = buildSamples(snapshot.currentTickIndex, unixTs, latestSlot);
 
@@ -347,7 +494,6 @@ export async function runDevnetE2E(
     return;
   }
 
-  const epoch = unixDaysFromUnixTs(unixTs);
   const [receiptPda] = deriveReceiptPda({
     authority: authority.publicKey,
     positionMint: snapshot.positionMint,
@@ -485,6 +631,7 @@ export async function runDevnetE2E(
     ...(suppliedQuote ? { quote: suppliedQuote, quoteContext: { quoteTickIndex: snapshot.currentTickIndex, quotedAtSlot: latestSlot } } : {}),
     attestationHash,
     attestationPayloadBytes: attestationPayload,
+    receiptEpochUnixMs: runStartedMs,
     nowUnixMs: () => deps.nowMs(),
     signAndSend: async (tx: VersionedTransaction) => {
       tx.sign([authority]);
