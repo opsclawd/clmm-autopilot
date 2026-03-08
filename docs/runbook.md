@@ -1,19 +1,30 @@
-# Operator Runbook (M12)
+# Operator Runbook (M15)
 
 ## Commands
 
 ```bash
 pnpm install
 pnpm -r test
+pnpm receipt:check:devnet
 pnpm e2e:devnet
+```
+
+Deploy/update devnet receipt program identity (manual acceptance workflow):
+
+```bash
+pnpm receipt:deploy:devnet
 ```
 
 Harness env vars:
 
 - `RPC_URL` (required)
 - `AUTHORITY_KEYPAIR` (required, dev-only local keypair JSON path)
-- `POSITION_ADDRESS` (required, devnet position account)
+- `POSITION_ADDRESS` (optional when `POSITION_ADDRESS_CANDIDATES` is set; exact devnet position account)
+- `POSITION_ADDRESS_CANDIDATES` (optional comma-separated fallback list; harness picks the first SOL/USDC candidate without a receipt for the current UTC-day epoch)
 - `SWAP_ROUTER` (optional: `noop` | `orca` | `jupiter`, default `noop` for deterministic harness runs)
+- `FORCE_DECISION` (optional: `TRIGGER_DOWN` | `TRIGGER_UP`; overrides live policy decision to force receipt proof path)
+- `REQUIRE_RECEIPT_PROOF` (optional: `1|0|true|false`, default `0`; when enabled, `HOLD` is treated as failure)
+- `RECEIPT_IDENTITY_SOURCE` (optional, advanced: set to `config` to force legacy config fallback identity instead of devnet manifest)
 
 Example:
 
@@ -21,38 +32,68 @@ Example:
 set -a
 source .env
 set +a
+pnpm receipt:check:devnet
 pnpm e2e:devnet
+```
+
+To generate a reusable candidate list from a wallet before running the harness:
+
+```bash
+node scripts/find-devnet-whirlpool-positions.mjs --wallet "$WALLET_ADDRESS"
 ```
 
 ## What `pnpm e2e:devnet` does
 
-1. Fetches position snapshot from devnet
-2. Enforces SOL/USDC guardrail (`NOT_SOL_USDC` on mismatch)
-3. Evaluates policy decision from canonical tick samples
-4. If HOLD: exits `0`
-5. If TRIGGER: checks receipt PDA for canonical epoch (`ALREADY_EXECUTED_THIS_EPOCH` if found)
-6. If swap is planned and router is not `noop`, fetches swap quote via configured router adapter (`execution.swapRouter`), then computes canonical M9/M14 attestation payload/hash
-7. Builds tx + simulates (simulation gate)
-8. Sends + confirms
-9. Fetches receipt and verifies:
-   - authority
-   - position_mint
-   - epoch
-   - direction
-   - stored hash equals local attestation hash
+0. Resolves receipt identity from `deployments/devnet/receipt.json` (manifest is source of truth on devnet unless explicitly overridden with `RECEIPT_IDENTITY_SOURCE=config`)
+1. Verifies receipt program account exists + executable + upgradeable-loader owner
+2. If `expectedUpgradeAuthority` is set in manifest, enforces strict authority match
+3. Fetches position snapshot from devnet
+4. Enforces SOL/USDC guardrail (`NOT_SOL_USDC` on mismatch)
+5. Evaluates policy decision from canonical tick samples
+6. Optionally overrides decision when `FORCE_DECISION` is configured
+7. If HOLD:
+   - exits `0` when `REQUIRE_RECEIPT_PROOF` is unset/false
+   - fails fast when `REQUIRE_RECEIPT_PROOF=1`
+8. If TRIGGER: checks canonical receipt PDA pre-state (must be `count=0`)
+   - when `POSITION_ADDRESS_CANDIDATES` is set, the harness first skips candidates that already have a receipt for the current epoch
+9. If swap is planned and router is not `noop`, fetches swap quote via configured adapter (`execution.swapRouter`) and computes canonical attestation payload/hash
+10. Builds tx + simulates (simulation gate)
+11. Sends + confirms
+12. Checks canonical receipt PDA post-state (must be `count=1`) and verifies:
+    - authority
+    - position_mint
+    - epoch
+    - direction
+    - stored hash equals local attestation hash
+13. Executes the same flow a second time in the same epoch and requires deterministic rejection with `ALREADY_EXECUTED_THIS_EPOCH`
 
 Logs are JSON (structured) and failure exits non-zero.
 
-## Current Deferred Flags (Intentional)
+## Consistency guard
 
-The following runtime flags remain enabled for this milestone and are intentional:
+`pnpm receipt:check:devnet` is mandatory before harness/manual workflow. It asserts:
 
-- `DISABLE_RECEIPT_PROGRAM_FOR_TESTING=true` in `packages/solana/src/receipt.ts`
+1. `programs/receipt/src/lib.rs` `declare_id!()` equals the manifest `programId`
+2. `Anchor.toml` `[programs.devnet].receipt` equals the manifest `programId`
+3. Runtime resolver identity equals manifest identity (`programId`, `idlHashMode`, `idlHash`, `idlPath`)
+4. `receipt.idl.json.address` equals the resolved/manifests `programId`
+5. `idlPath` exists on disk
 
-Expected impact while flags are ON:
+If this fails, do not run harness until manifest/IDL drift is fixed.
 
-- Receipt instruction is not appended in live tx builder path.
-- M5/M12 behavior is partially deferred until those flags are disabled in later milestones.
+## Deploy flow details
+
+`pnpm receipt:deploy:devnet` runs:
+
+1. `anchor build`
+2. `anchor deploy --provider.cluster devnet`
+3. Syncs `declare_id!()` and `Anchor.toml` to the deployed program id
+4. Re-runs `anchor build` so committed IDL/artifacts embed the deployed program id
+5. Copies `target/idl/receipt.json` to `deployments/devnet/receipt.idl.json`
+6. Computes `full-v1` IDL hash
+7. Atomically writes `deployments/devnet/receipt.json`
+8. Verifies with `solana program show <PROGRAM_ID> --url devnet`
+9. Runs consistency guard
 
 ## Failure → Action mapping
 
@@ -75,6 +116,18 @@ Expected impact while flags are ON:
 - `ALREADY_EXECUTED_THIS_EPOCH`
   - **Cause:** Receipt PDA already exists for `(position_mint, authority, unixDays)`.
   - **Action:** Do not retry in same UTC day epoch; wait for next epoch/day or use a different position.
+
+- `RECEIPT_PROGRAM_NOT_CONFIGURED`
+  - **Cause:** Forced config fallback identity is incomplete/invalid (`RECEIPT_IDENTITY_SOURCE=config`) or non-devnet fallback identity was requested but incomplete.
+  - **Action:** Prefer manifest mode (unset `RECEIPT_IDENTITY_SOURCE`) or provide complete config fallback fields.
+
+- `RECEIPT_IDL_MISMATCH`
+  - **Cause:** Runtime `full-v1` hash of committed IDL artifact differs from configured hash.
+  - **Action:** Re-run deploy script to refresh `receipt.idl.json` + manifest atomically.
+
+- `RECEIPT_PROGRAM_VERIFICATION_FAILED`
+  - **Cause:** Program missing, non-executable, wrong owner, strict authority mismatch, or `HOLD` while `REQUIRE_RECEIPT_PROOF=1`.
+  - **Action:** Verify `solana program show`, confirm manifest program id, reconcile optional `expectedUpgradeAuthority`, and if needed set `FORCE_DECISION` or use a trigger-eligible position.
 
 - `dust swap skipped`
   - **Cause:** Swap amount below configured dust threshold.

@@ -15,7 +15,9 @@ import { buildExitTransaction, type ExitDirection } from './executionBuilder';
 import { computeExecutionRequirements } from './requirements';
 import { normalizeSolanaError } from './errors';
 import { loadPositionSnapshot } from './orcaInspector';
-import { deriveReceiptPda, DISABLE_RECEIPT_PROGRAM_FOR_TESTING, fetchReceiptByPda } from './receipt';
+import { deriveReceiptPda, fetchReceiptByPda } from './receipt';
+import { resolveReceiptRuntimeIdentity } from './receiptIdentity';
+import { verifyReceiptProgramOnChain } from './receiptProgramVerification';
 import { refreshBlockhashIfNeeded, shouldRebuild, withBoundedRetry } from './reliability';
 import type { CanonicalErrorCode } from './types';
 import { SOL_MINT } from './ata';
@@ -106,6 +108,12 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
 
 export type ExecuteOnceParams = RefreshParams & {
   authority: PublicKey;
+  receiptIdentityEnv?: Record<string, string | undefined>;
+  receiptEpochUnixMs?: number;
+  decisionOverride?: {
+    decision: Exclude<RefreshResult['decision']['decision'], 'HOLD'>;
+    reasonCode?: string;
+  };
   // Backward-compatible optional inputs (ignored by planner path when omitted).
   quote?: unknown;
   quoteContext?: { quotedAtSlot?: number; quoteTickIndex?: number };
@@ -218,14 +226,29 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
 
   try {
+    // Resolve receipt identity before policy branching so devnet misconfiguration fails fast even on HOLD.
+    const receiptIdentity = resolveReceiptRuntimeIdentity(params.config, params.receiptIdentityEnv);
+    if (receiptIdentity) {
+      await verifyReceiptProgramOnChain(params.connection, receiptIdentity);
+    }
     const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, params.config.execution);
+    const effectiveRefresh = params.decisionOverride
+      ? {
+          ...refreshed,
+          decision: {
+            ...refreshed.decision,
+            decision: params.decisionOverride.decision,
+            reasonCode: params.decisionOverride.reasonCode ?? refreshed.decision.reasonCode,
+          },
+        }
+      : refreshed;
     params.logger?.notify?.('snapshot fetched', { position: params.position.toBase58() });
 
     const router = params.config.execution.swapRouter;
     const adapter = router === 'noop' ? null : getSwapAdapter(router, params.config.cluster);
 
-    if (refreshed.decision.decision === 'HOLD') {
-      return { status: 'HOLD', refresh: refreshed };
+    if (effectiveRefresh.decision.decision === 'HOLD') {
+      return { status: 'HOLD', refresh: effectiveRefresh };
     }
 
     let snapshot = await withBoundedRetry(
@@ -234,10 +257,10 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       params.config.execution,
     );
 
-    const direction = refreshed.decision.decision === 'TRIGGER_UP' ? ('UP' as ExitDirection) : ('DOWN' as ExitDirection);
+    const direction = effectiveRefresh.decision.decision === 'TRIGGER_UP' ? ('UP' as ExitDirection) : ('DOWN' as ExitDirection);
 
     const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, params.config.execution);
-    const epochSourceMs = nowUnixMs();
+    const epochSourceMs = params.receiptEpochUnixMs ?? nowUnixMs();
     const epoch = unixDaysFromUnixMs(epochSourceMs);
 
     const buildPlan = async (
@@ -385,17 +408,22 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       params.logger?.notify?.('quote rebuilt', { reasonCode: rebuildCheck.reasonCode ?? 'QUOTE_STALE' });
     }
 
-    const receiptPda = DISABLE_RECEIPT_PROGRAM_FOR_TESTING
-      ? null
-      : deriveReceiptPda({ authority: params.authority, positionMint: snapshot.positionMint, epoch })[0];
-    if (!DISABLE_RECEIPT_PROGRAM_FOR_TESTING && receiptPda) {
+    const receiptPda = receiptIdentity
+      ? deriveReceiptPda({
+          authority: params.authority,
+          positionMint: snapshot.positionMint,
+          epoch,
+          programId: receiptIdentity.programId,
+        })[0]
+      : null;
+    if (receiptPda) {
       const existingReceipt = params.checkExistingReceipt
         ? await params.checkExistingReceipt(receiptPda)
         : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, params.config.execution));
       if (existingReceipt) {
         return {
           status: 'ERROR',
-          refresh: refreshed,
+          refresh: effectiveRefresh,
           errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
           errorMessage: 'Execution receipt already exists for canonical epoch',
         };
@@ -476,6 +504,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         }),
         attestationHash,
         attestationPayloadBytes,
+        receiptProgramId: receiptIdentity?.programId,
+        receiptIdlPath: receiptIdentity?.idlPath,
         lookupTableAccounts,
         returnVersioned: true,
         swapIxs: assembled.swapIxs,
@@ -542,7 +572,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     );
 
     let receipt = null;
-    if (!DISABLE_RECEIPT_PROGRAM_FOR_TESTING && receiptPda) {
+    if (receiptPda) {
       for (let i = 0; i < params.config.execution.receiptPollMaxAttempts; i += 1) {
         receipt = await fetchReceiptByPda(params.connection, receiptPda);
         if (receipt) break;
@@ -552,7 +582,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
 
     return {
       status: 'EXECUTED',
-      refresh: refreshed,
+      refresh: effectiveRefresh,
       execution: {
         unsignedTxBuilt: true,
         simulated: true,

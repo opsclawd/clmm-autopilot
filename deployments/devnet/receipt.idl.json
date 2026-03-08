@@ -1,0 +1,168 @@
+{
+  "address": "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm",
+  "metadata": {
+    "name": "receipt",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Execution receipt program (placeholder)"
+  },
+  "instructions": [
+    {
+      "name": "record_execution",
+      "discriminator": [
+        231,
+        245,
+        144,
+        129,
+        178,
+        195,
+        89,
+        160
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "receipt",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  99,
+                  101,
+                  105,
+                  112,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              },
+              {
+                "kind": "arg",
+                "path": "position_mint"
+              },
+              {
+                "kind": "arg",
+                "path": "epoch"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "epoch",
+          "type": "u32"
+        },
+        {
+          "name": "direction",
+          "type": "u8"
+        },
+        {
+          "name": "position_mint",
+          "type": "pubkey"
+        },
+        {
+          "name": "attestation_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Receipt",
+      "discriminator": [
+        39,
+        154,
+        73,
+        106,
+        80,
+        102,
+        145,
+        153
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidDirection",
+      "msg": "Direction must be 0 (DOWN) or 1 (UP)"
+    },
+    {
+      "code": 6001,
+      "name": "DuplicateExecutionReceipt",
+      "msg": "Execution receipt already exists for this authority/position/epoch"
+    }
+  ],
+  "types": [
+    {
+      "name": "Receipt",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "position_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "epoch",
+            "type": "u32"
+          },
+          {
+            "name": "direction",
+            "type": "u8"
+          },
+          {
+            "name": "attestation_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          },
+          {
+            "name": "unix_ts",
+            "type": "i64"
+          },
+          {
+            "name": "initialized",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}

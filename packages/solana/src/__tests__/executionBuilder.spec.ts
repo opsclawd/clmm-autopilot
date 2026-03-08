@@ -8,10 +8,11 @@ import {
 } from '@solana/web3.js';
 import { SWAP_OK, SWAP_SKIP_DUST_SOL, SWAP_SKIP_DUST_USDC, computeAttestationHash, encodeAttestationPayload } from '@clmm-autopilot/core';
 import { buildExitTransaction, type BuildExitConfig, type ExitQuote } from '../executionBuilder';
-import { DISABLE_RECEIPT_PROGRAM_FOR_TESTING, RECEIPT_PROGRAM_ID } from '../receipt';
+import { getDefaultDevnetReceiptManifest } from '../receiptIdentity';
 
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 const USDC_MINT = new PublicKey('BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k');
+const RECEIPT_PROGRAM_ID = new PublicKey(getDefaultDevnetReceiptManifest().programId);
 
 const pk = (seed: number) => new PublicKey(new Uint8Array(32).fill(seed));
 
@@ -73,6 +74,8 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     quoteFreshnessMs: 2_000,
     nowUnixMs: () => epochNowMs,
     receiptEpochUnixMs: epochNowMs,
+    receiptProgramId: RECEIPT_PROGRAM_ID,
+    receiptIdlPath: getDefaultDevnetReceiptManifest().idlPath,
     minSolLamportsToSwap: 0,
     minUsdcMinorToSwap: 0,
     availableLamports: 5_000_000,
@@ -137,10 +140,6 @@ describe('buildExitTransaction', () => {
     const result = await buildExitTransaction(baseSnapshot, 'DOWN', buildConfig());
     expect(result).toBeInstanceOf(TransactionMessage);
     const msg = result as TransactionMessage;
-    if (DISABLE_RECEIPT_PROGRAM_FOR_TESTING) {
-      expect(msg.instructions.some((i) => i.programId.equals(RECEIPT_PROGRAM_ID))).toBe(false);
-      return;
-    }
     expect(msg.instructions[msg.instructions.length - 1].programId.equals(RECEIPT_PROGRAM_ID)).toBe(true);
   });
 
@@ -219,7 +218,7 @@ describe('buildExitTransaction', () => {
     expect(tx.message.version).toBe(0);
   });
 
-  it('dust SOL exposure (DOWN) omits Jupiter and handles receipt flag', async () => {
+  it('dust SOL exposure (DOWN) omits Jupiter and still appends receipt', async () => {
     const dustQuote = {
       ...buildConfig().quote,
       inAmount: 99n,
@@ -280,7 +279,7 @@ describe('buildExitTransaction', () => {
 
     const msg = (await buildExitTransaction(baseSnapshot, 'DOWN', cfg)) as TransactionMessage;
     expect(msg.instructions.some((i) => i.programId.equals(pk(33)))).toBe(false);
-    expect(msg.instructions.some((i) => i.programId.equals(RECEIPT_PROGRAM_ID))).toBe(!DISABLE_RECEIPT_PROGRAM_FOR_TESTING);
+    expect(msg.instructions.some((i) => i.programId.equals(RECEIPT_PROGRAM_ID))).toBe(true);
 
     const execHash = computeAttestationHash({
       cluster: 'devnet',
@@ -306,7 +305,7 @@ describe('buildExitTransaction', () => {
     expect(Buffer.from(execHash).equals(Buffer.from(cfg.attestationHash))).toBe(false);
   });
 
-  it('dust USDC exposure (UP) omits Jupiter and handles receipt flag', async () => {
+  it('dust USDC exposure (UP) omits Jupiter and still appends receipt', async () => {
     const dustQuote = {
       ...buildConfig().quote,
       inputMint: USDC_MINT,
@@ -368,6 +367,6 @@ describe('buildExitTransaction', () => {
 
     const msg = (await buildExitTransaction(baseSnapshot, 'UP', cfg)) as TransactionMessage;
     expect(msg.instructions.some((i) => i.programId.equals(pk(33)))).toBe(false);
-    expect(msg.instructions.some((i) => i.programId.equals(RECEIPT_PROGRAM_ID))).toBe(!DISABLE_RECEIPT_PROGRAM_FOR_TESTING);
+    expect(msg.instructions.some((i) => i.programId.equals(RECEIPT_PROGRAM_ID))).toBe(true);
   });
 });

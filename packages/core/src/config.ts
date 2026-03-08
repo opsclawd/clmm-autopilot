@@ -1,8 +1,20 @@
 export type Cluster = 'devnet' | 'mainnet-beta' | 'localnet';
 export type SwapRouter = 'jupiter' | 'orca' | 'noop';
+export type ReceiptIdlHashMode = 'full-v1';
+
+const DEVNET_RECEIPT_PROGRAM_ID = 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm';
+const DEVNET_RECEIPT_IDL_HASH_MODE: ReceiptIdlHashMode = 'full-v1';
+const DEVNET_RECEIPT_IDL_HASH = 'a940da3a73fe037f9c596ad6f4771ab39706deef299ebe45aa0820be9b039161';
+const DEVNET_RECEIPT_IDL_PATH = 'deployments/devnet/receipt.idl.json';
 
 export type AutopilotConfig = {
   cluster: Cluster;
+  // Fallback-only receipt identity fields; solana runtime resolver prefers manifest values on devnet.
+  receiptProgramId?: string;
+  receiptIdlHashMode?: ReceiptIdlHashMode;
+  receiptIdlHash?: string;
+  receiptIdlPath?: string;
+  expectedUpgradeAuthority?: string;
   policy: {
     cadenceMs: number;
     requiredConsecutive: number;
@@ -32,6 +44,11 @@ export type AutopilotConfig = {
 
 export const DEFAULT_CONFIG: AutopilotConfig = {
   cluster: 'devnet',
+  receiptProgramId: DEVNET_RECEIPT_PROGRAM_ID,
+  receiptIdlHashMode: DEVNET_RECEIPT_IDL_HASH_MODE,
+  receiptIdlHash: DEVNET_RECEIPT_IDL_HASH,
+  receiptIdlPath: DEVNET_RECEIPT_IDL_PATH,
+  expectedUpgradeAuthority: undefined,
   policy: {
     cadenceMs: 2_000,
     requiredConsecutive: 3,
@@ -104,6 +121,10 @@ function pushBackoff(errors: ConfigError[], path: string, message: string, actua
   });
 }
 
+function isLikelyBase58Pubkey(value: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
+}
+
 function readIntField(
   errors: ConfigError[],
   source: Record<string, unknown>,
@@ -137,6 +158,24 @@ function readOptionalIntField(
     return fallback;
   }
   return Math.trunc(n);
+}
+
+function readOptionalStringField(
+  errors: ConfigError[],
+  source: Record<string, unknown>,
+  key: string,
+  path: string,
+  fallback: string | undefined,
+): string | undefined {
+  if (!(key in source)) return fallback;
+  const raw = source[key];
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'string') {
+    pushType(errors, path, 'string | undefined', raw);
+    return fallback;
+  }
+  const trimmed = raw.trim();
+  return trimmed === '' ? undefined : trimmed;
 }
 
 function validateBackoffSchedule(schedule: number[]): string | null {
@@ -229,6 +268,30 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
 
   const normalized: AutopilotConfig = {
     cluster,
+    receiptProgramId: readOptionalStringField(
+      errors,
+      input,
+      'receiptProgramId',
+      'receiptProgramId',
+      DEFAULT_CONFIG.receiptProgramId,
+    ),
+    receiptIdlHashMode:
+      !('receiptIdlHashMode' in input)
+        ? DEFAULT_CONFIG.receiptIdlHashMode
+        : input.receiptIdlHashMode === undefined || input.receiptIdlHashMode === null
+          ? undefined
+          : typeof input.receiptIdlHashMode === 'string'
+            ? (input.receiptIdlHashMode as ReceiptIdlHashMode)
+            : (pushType(errors, 'receiptIdlHashMode', "'full-v1' | undefined", input.receiptIdlHashMode), DEFAULT_CONFIG.receiptIdlHashMode),
+    receiptIdlHash: readOptionalStringField(errors, input, 'receiptIdlHash', 'receiptIdlHash', DEFAULT_CONFIG.receiptIdlHash),
+    receiptIdlPath: readOptionalStringField(errors, input, 'receiptIdlPath', 'receiptIdlPath', DEFAULT_CONFIG.receiptIdlPath),
+    expectedUpgradeAuthority: readOptionalStringField(
+      errors,
+      input,
+      'expectedUpgradeAuthority',
+      'expectedUpgradeAuthority',
+      DEFAULT_CONFIG.expectedUpgradeAuthority,
+    ),
     policy: {
       cadenceMs: readIntField(errors, policyIn, 'cadenceMs', 'policy.cadenceMs', DEFAULT_CONFIG.policy.cadenceMs),
       requiredConsecutive: readIntField(
@@ -310,7 +373,35 @@ export function validateConfig(input: unknown): ValidateConfigResult {
   if (!allowedClusters.has(normalized.value.cluster)) {
     pushRange(errors, 'cluster', "'devnet' | 'mainnet-beta' | 'localnet'", normalized.value.cluster);
   }
-
+  if (
+    normalized.value.receiptIdlHashMode !== undefined &&
+    normalized.value.receiptIdlHashMode !== 'full-v1'
+  ) {
+    pushRange(errors, 'receiptIdlHashMode', "'full-v1'", normalized.value.receiptIdlHashMode);
+  }
+  if (
+    normalized.value.receiptIdlHash !== undefined &&
+    !/^[a-f0-9]{64}$/i.test(normalized.value.receiptIdlHash)
+  ) {
+    pushRange(errors, 'receiptIdlHash', '64-char hex sha256', normalized.value.receiptIdlHash);
+  }
+  if (
+    normalized.value.receiptProgramId !== undefined &&
+    !isLikelyBase58Pubkey(normalized.value.receiptProgramId)
+  ) {
+    pushRange(errors, 'receiptProgramId', 'base58 pubkey string', normalized.value.receiptProgramId);
+  }
+  if (
+    normalized.value.expectedUpgradeAuthority !== undefined &&
+    !isLikelyBase58Pubkey(normalized.value.expectedUpgradeAuthority)
+  ) {
+    pushRange(
+      errors,
+      'expectedUpgradeAuthority',
+      'base58 pubkey string | undefined',
+      normalized.value.expectedUpgradeAuthority,
+    );
+  }
   const p = normalized.value.policy;
   if (!Number.isInteger(p.cadenceMs)) pushType(errors, 'policy.cadenceMs', 'integer', p.cadenceMs);
   else if (p.cadenceMs <= 0) pushRange(errors, 'policy.cadenceMs', '> 0', p.cadenceMs);

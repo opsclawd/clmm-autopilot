@@ -1,9 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
-import { DISABLE_RECEIPT_PROGRAM_FOR_TESTING } from '../receipt';
+import { deriveReceiptPda } from '../receipt';
 
 const DEVNET_USDC_MINT = 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k';
+const RECEIPT_PROGRAM_ID = new PublicKey(DEFAULT_CONFIG.receiptProgramId!);
+const BPF_UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
+
+function getAccountInfoForProgramOnly(programId = RECEIPT_PROGRAM_ID) {
+  return vi.fn(async (pubkey: PublicKey) => {
+    if (!pubkey.equals(programId)) return null;
+    return {
+      executable: true,
+      owner: BPF_UPGRADEABLE_LOADER,
+      lamports: 1,
+      data: Buffer.alloc(0),
+      rentEpoch: 0,
+    };
+  });
+}
 
 const { buildExitTransactionMock, getSwapAdapterMock, buildSwapIxsMock, getQuoteMock } = vi.hoisted(() => ({
   buildExitTransactionMock: vi.fn(async () => ({}) as VersionedTransaction),
@@ -98,7 +113,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable,
       getBalance: vi.fn(async () => 50_000_000),
@@ -170,7 +185,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable,
       getBalance: vi.fn(async () => 50_000_000),
@@ -224,7 +239,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -276,7 +291,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -334,7 +349,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -386,7 +401,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -435,7 +450,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -489,7 +504,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
     } as any;
@@ -529,7 +544,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
     } as any;
@@ -562,6 +577,210 @@ describe('executeOnce', () => {
     expect(res.refresh?.decision.decision).toBe('HOLD');
   });
 
+  it('honors decisionOverride when live policy would otherwise HOLD', async () => {
+    buildExitTransactionMock.mockClear();
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: getAccountInfoForProgramOnly(),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [{ slot: 1, unixTs: 1, currentTickIndex: 11 }],
+      decisionOverride: {
+        decision: 'TRIGGER_DOWN',
+        reasonCode: 'FORCED_TRIGGER_DOWN',
+      },
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: {
+        ...DEFAULT_CONFIG,
+        execution: {
+          ...DEFAULT_CONFIG.execution,
+          swapRouter: 'noop',
+          receiptPollMaxAttempts: 0,
+        },
+      },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      checkExistingReceipt: async () => false,
+      nowUnixMs: () => 1_700_000_000_000,
+    });
+
+    expect(res.status).toBe('EXECUTED');
+    expect(res.refresh?.decision.decision).toBe('TRIGGER_DOWN');
+    expect(res.refresh?.decision.reasonCode).toBe('FORCED_TRIGGER_DOWN');
+    expect(buildExitTransactionMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'DOWN',
+      expect.objectContaining({
+        receiptProgramId: expect.any(PublicKey),
+        receiptIdlPath: 'deployments/devnet/receipt.idl.json',
+      }),
+    );
+  });
+
+  it('fails fast when receipt program is not deployed, even if decision would be HOLD', async () => {
+    buildExitTransactionMock.mockClear();
+    vi.mocked(loadPositionSnapshot).mockClear();
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: vi.fn(async () => null),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [{ slot: 1, unixTs: 1, currentTickIndex: 11 }],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'noop' } },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+    });
+
+    expect(res.status).toBe('ERROR');
+    expect(res.errorCode).toBe('RECEIPT_PROGRAM_VERIFICATION_FAILED');
+    expect(loadPositionSnapshot).not.toHaveBeenCalled();
+    expect(buildExitTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it('fails fast on devnet when forced config identity is incomplete, even if decision would be HOLD', async () => {
+    const prev = process.env.RECEIPT_IDENTITY_SOURCE;
+    process.env.RECEIPT_IDENTITY_SOURCE = 'config';
+    try {
+      const authority = new PublicKey(new Uint8Array(32).fill(20));
+      const connection = {
+        getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+        confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+        simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+        getAccountInfo: getAccountInfoForProgramOnly(),
+        getSlot: vi.fn(async () => 1),
+        getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      } as any;
+
+      const res = await executeOnce({
+        connection,
+        authority,
+        position: new PublicKey(new Uint8Array(32).fill(21)),
+        samples: [{ slot: 1, unixTs: 1, currentTickIndex: 11 }],
+        quote: {
+          inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+          outputMint: new PublicKey(DEVNET_USDC_MINT),
+          inAmount: BigInt(1),
+          outAmount: BigInt(1),
+          slippageBps: 10,
+          quotedAtUnixMs: Date.now(),
+          raw: { inAmount: '1', outAmount: '1' },
+        },
+        config: {
+          ...DEFAULT_CONFIG,
+          receiptProgramId: undefined,
+          receiptIdlHashMode: undefined,
+          receiptIdlHash: undefined,
+          receiptIdlPath: undefined,
+          execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'noop' },
+        },
+        policyState: {},
+        expectedMinOut: '0',
+        quoteAgeMs: 0,
+        attestationHash: new Uint8Array(32),
+        attestationPayloadBytes: new Uint8Array(68),
+        signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      });
+
+      expect(res.status).toBe('ERROR');
+      expect(res.errorCode).toBe('RECEIPT_PROGRAM_NOT_CONFIGURED');
+    } finally {
+      if (prev === undefined) delete process.env.RECEIPT_IDENTITY_SOURCE;
+      else process.env.RECEIPT_IDENTITY_SOURCE = prev;
+    }
+  });
+
+  it('uses receiptIdentityEnv override instead of process.env for identity resolution', async () => {
+    const prev = process.env.RECEIPT_IDENTITY_SOURCE;
+    process.env.RECEIPT_IDENTITY_SOURCE = 'config';
+    try {
+      const authority = new PublicKey(new Uint8Array(32).fill(20));
+      const connection = {
+        getAccountInfo: getAccountInfoForProgramOnly(),
+      } as any;
+
+      const res = await executeOnce({
+        connection,
+        authority,
+        receiptIdentityEnv: {},
+        position: new PublicKey(new Uint8Array(32).fill(21)),
+        samples: [{ slot: 1, unixTs: 1, currentTickIndex: 15 }],
+        quote: {
+          inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+          outputMint: new PublicKey(DEVNET_USDC_MINT),
+          inAmount: BigInt(1),
+          outAmount: BigInt(1),
+          slippageBps: 10,
+          quotedAtUnixMs: Date.now(),
+          raw: { inAmount: '1', outAmount: '1' },
+        },
+        config: {
+          ...DEFAULT_CONFIG,
+          receiptProgramId: undefined,
+          receiptIdlHashMode: undefined,
+          receiptIdlHash: undefined,
+          receiptIdlPath: undefined,
+          execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'noop' },
+        },
+        policyState: {},
+        expectedMinOut: '0',
+        quoteAgeMs: 0,
+        attestationHash: new Uint8Array(32),
+        attestationPayloadBytes: new Uint8Array(68),
+        signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      });
+
+      expect(res.status).toBe('HOLD');
+    } finally {
+      if (prev === undefined) delete process.env.RECEIPT_IDENTITY_SOURCE;
+      else process.env.RECEIPT_IDENTITY_SOURCE = prev;
+    }
+  });
+
   it('returns mapped simulation diagnostics debug payload on execution failure', async () => {
     buildExitTransactionMock.mockRejectedValueOnce({
       code: 'DATA_UNAVAILABLE',
@@ -575,7 +794,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),
@@ -623,7 +842,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
     } as any;
@@ -695,14 +914,85 @@ describe('executeOnce', () => {
       nowUnixMs: () => 10_000,
     });
 
-    if (DISABLE_RECEIPT_PROGRAM_FOR_TESTING) {
-      expect(res.errorCode).not.toBe('ALREADY_EXECUTED_THIS_EPOCH');
-      return;
-    }
-
     expect(res.status).toBe('ERROR');
     expect(res.errorCode).toBe('ALREADY_EXECUTED_THIS_EPOCH');
     expect(buildExitTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it('uses provided receiptEpochUnixMs for receipt precheck and tx builder', async () => {
+    buildExitTransactionMock.mockClear();
+    buildExitTransactionMock.mockResolvedValue({} as VersionedTransaction);
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const fixedReceiptEpochUnixMs = 172_800_000;
+    const fixedEpoch = Math.floor(fixedReceiptEpochUnixMs / 1000 / 86400);
+    const expectedProgramId = new PublicKey(DEFAULT_CONFIG.receiptProgramId!);
+    const expectedPositionMint = new PublicKey(new Uint8Array(32).fill(3));
+    const [expectedReceiptPda] = deriveReceiptPda({
+      authority,
+      positionMint: expectedPositionMint,
+      epoch: fixedEpoch,
+      programId: expectedProgramId,
+    });
+    const checkExistingReceipt = vi.fn(async (receiptPda: PublicKey) => {
+      expect(receiptPda.toBase58()).toBe(expectedReceiptPda.toBase58());
+      return false;
+    });
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: getAccountInfoForProgramOnly(),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      receiptEpochUnixMs: fixedReceiptEpochUnixMs,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: {
+        ...DEFAULT_CONFIG,
+        execution: {
+          ...DEFAULT_CONFIG.execution,
+          swapRouter: "noop",
+          receiptPollMaxAttempts: 0,
+        },
+      },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      checkExistingReceipt,
+    });
+
+    expect(res.status).toBe('EXECUTED');
+    expect(checkExistingReceipt).toHaveBeenCalledTimes(1);
+    expect(buildExitTransactionMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        receiptEpochUnixMs: fixedReceiptEpochUnixMs,
+      }),
+    );
   });
 
   it('returns NOT_SOL_USDC and never reaches tx builder for non-SOL/USDC snapshot', async () => {
@@ -718,7 +1008,7 @@ describe('executeOnce', () => {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
       confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getSlot: vi.fn(async () => 1),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
       getBalance: vi.fn(async () => 50_000_000),

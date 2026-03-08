@@ -69,6 +69,8 @@ describe('ui-state', () => {
     expect(mapErrorToUi({ code: 'SIMULATION_FAILED' }).title).toBe('Simulation failed');
     expect(mapErrorToUi({ code: 'BLOCKHASH_EXPIRED' }).code).toBe('BLOCKHASH_EXPIRED');
     expect(mapErrorToUi({ code: 'CONFIG_INVALID' }).title).toBe('Invalid configuration');
+    expect(mapErrorToUi({ code: 'RECEIPT_PROGRAM_NOT_CONFIGURED' }).title).toBe('Receipt program missing');
+    expect(mapErrorToUi({ code: 'RECEIPT_IDL_MISMATCH' }).title).toBe('Receipt IDL mismatch');
   });
 
   it('renders actionable insufficient-fee-buffer details when debug payload is present', () => {

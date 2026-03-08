@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Connection, PublicKey } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, unpackAccount } from '@solana/spl-token';
+import { PDAUtil, ParsablePosition, ParsablePositionBundle, PositionBundleUtil } from '@orca-so/whirlpools-sdk';
 
 const ORCA_WHIRLPOOL_PROGRAM_ID = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
 
@@ -26,14 +27,36 @@ function chunk(arr, size) {
   return out;
 }
 
-function parsePositionAccount(data) {
-  if (data.length < 128) return null;
-  return {
-    whirlpool: new PublicKey(data.subarray(8, 40)).toBase58(),
-    positionMint: new PublicKey(data.subarray(40, 72)).toBase58(),
-    lowerTickIndex: data.readInt32LE(88),
-    upperTickIndex: data.readInt32LE(92),
-  };
+async function collectNftLikeMints(connection, wallet, tokenProgramId) {
+  const tokenAccounts = await connection.getTokenAccountsByOwner(wallet, { programId: tokenProgramId }, 'confirmed');
+  const mintOwners = [];
+
+  tokenAccounts.value.forEach(({ pubkey, account }) => {
+    try {
+      const parsed = unpackAccount(pubkey, account, tokenProgramId);
+      if (parsed.amount === 1n) {
+        mintOwners.push({
+          mint: parsed.mint,
+          tokenProgramId,
+        });
+      }
+    } catch {
+      // Ignore malformed token accounts and continue scanning.
+    }
+  });
+
+  return mintOwners;
+}
+
+function dedupeMintOwners(...lists) {
+  const map = new Map();
+  lists.flat().forEach(({ mint, tokenProgramId }) => {
+    const key = mint.toBase58();
+    if (!map.has(key)) {
+      map.set(key, { mint, tokenProgramId });
+    }
+  });
+  return [...map.values()];
 }
 
 async function main() {
@@ -53,37 +76,93 @@ async function main() {
   const wallet = new PublicKey(walletRaw);
   const connection = new Connection(rpc, 'confirmed');
 
-  const parsed = await connection.getParsedTokenAccountsByOwner(wallet, { programId: TOKEN_PROGRAM_ID });
+  const [tokenProgramMints, token2022Mints] = await Promise.all([
+    collectNftLikeMints(connection, wallet, TOKEN_PROGRAM_ID),
+    collectNftLikeMints(connection, wallet, TOKEN_2022_PROGRAM_ID),
+  ]);
+  const mintOwners = dedupeMintOwners(tokenProgramMints, token2022Mints);
 
-  const nftLikeMints = parsed.value
-    .map((x) => x.account.data.parsed?.info)
-    .filter(Boolean)
-    .filter((info) => {
-      const amount = info.tokenAmount;
-      return amount && amount.amount === '1' && amount.decimals === 0;
-    })
-    .map((info) => info.mint)
-    .map((mint) => new PublicKey(mint));
-
-  const candidatePdas = nftLikeMints.map((mint) => {
-    const [positionPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from('position'), mint.toBuffer()],
-      ORCA_WHIRLPOOL_PROGRAM_ID,
-    );
-    return { mint: mint.toBase58(), positionPda };
-  });
+  const candidatePositions = mintOwners.map(({ mint, tokenProgramId }) => ({
+    mint: mint.toBase58(),
+    tokenProgramId: tokenProgramId.toBase58(),
+    positionPda: PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, mint).publicKey,
+  }));
+  const candidateBundles = mintOwners.map(({ mint, tokenProgramId }) => ({
+    mint: mint.toBase58(),
+    tokenProgramId: tokenProgramId.toBase58(),
+    positionBundlePda: PDAUtil.getPositionBundle(ORCA_WHIRLPOOL_PROGRAM_ID, mint).publicKey,
+  }));
 
   const found = [];
-  for (const group of chunk(candidatePdas, 100)) {
+  for (const group of chunk(candidatePositions, 100)) {
     const infos = await connection.getMultipleAccountsInfo(group.map((x) => x.positionPda), 'confirmed');
     infos.forEach((info, i) => {
       if (!info) return;
       if (!info.owner.equals(ORCA_WHIRLPOOL_PROGRAM_ID)) return;
-      const decoded = parsePositionAccount(info.data);
+      const decoded = ParsablePosition.parse(group[i].positionPda, info);
+      if (!decoded) return;
       found.push({
+        type: 'position',
         positionAddress: group[i].positionPda.toBase58(),
         positionMint: group[i].mint,
-        ...(decoded ?? {}),
+        tokenProgramId: group[i].tokenProgramId,
+        whirlpool: decoded.whirlpool.toBase58(),
+        lowerTickIndex: decoded.tickLowerIndex,
+        upperTickIndex: decoded.tickUpperIndex,
+      });
+    });
+  }
+
+  const bundleCandidatesFound = [];
+  for (const group of chunk(candidateBundles, 100)) {
+    const infos = await connection.getMultipleAccountsInfo(group.map((x) => x.positionBundlePda), 'confirmed');
+    infos.forEach((info, i) => {
+      if (!info) return;
+      if (!info.owner.equals(ORCA_WHIRLPOOL_PROGRAM_ID)) return;
+      const bundle = ParsablePositionBundle.parse(group[i].positionBundlePda, info);
+      if (!bundle) return;
+      bundleCandidatesFound.push({
+        bundleAddress: group[i].positionBundlePda,
+        bundleMint: bundle.positionBundleMint,
+        bundleIndexes: PositionBundleUtil.getOccupiedBundleIndexes(bundle),
+      });
+    });
+  }
+
+  const bundledPositionCandidates = [];
+  bundleCandidatesFound.forEach(({ bundleAddress, bundleMint, bundleIndexes }) => {
+    bundleIndexes.forEach((bundleIndex) => {
+      const bundledPosition = PDAUtil.getBundledPosition(
+        ORCA_WHIRLPOOL_PROGRAM_ID,
+        bundleMint,
+        bundleIndex,
+      ).publicKey;
+      bundledPositionCandidates.push({
+        bundleAddress: bundleAddress.toBase58(),
+        bundleMint: bundleMint.toBase58(),
+        bundleIndex,
+        positionPda: bundledPosition,
+      });
+    });
+  });
+
+  for (const group of chunk(bundledPositionCandidates, 100)) {
+    const infos = await connection.getMultipleAccountsInfo(group.map((x) => x.positionPda), 'confirmed');
+    infos.forEach((info, i) => {
+      if (!info) return;
+      if (!info.owner.equals(ORCA_WHIRLPOOL_PROGRAM_ID)) return;
+      const decoded = ParsablePosition.parse(group[i].positionPda, info);
+      if (!decoded) return;
+      found.push({
+        type: 'bundledPosition',
+        positionAddress: group[i].positionPda.toBase58(),
+        positionMint: decoded.positionMint.toBase58(),
+        bundleAddress: group[i].bundleAddress,
+        bundleMint: group[i].bundleMint,
+        bundleIndex: group[i].bundleIndex,
+        whirlpool: decoded.whirlpool.toBase58(),
+        lowerTickIndex: decoded.tickLowerIndex,
+        upperTickIndex: decoded.tickUpperIndex,
       });
     });
   }
@@ -91,7 +170,14 @@ async function main() {
   const payload = {
     rpc,
     wallet: wallet.toBase58(),
-    candidatesScanned: candidatePdas.length,
+    candidatesScanned: {
+      mintsFromTokenProgram: tokenProgramMints.length,
+      mintsFromToken2022Program: token2022Mints.length,
+      uniqueMints: mintOwners.length,
+      standardPositionPdas: candidatePositions.length,
+      bundlePdas: candidateBundles.length,
+      bundledPositionPdas: bundledPositionCandidates.length,
+    },
     positionsFound: found.length,
     positions: found,
   };

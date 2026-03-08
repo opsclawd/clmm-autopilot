@@ -2,6 +2,22 @@ import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG, encodeAttestationPayload } from '@clmm-autopilot/core';
 import { PublicKey } from '@solana/web3.js';
 
+const RECEIPT_PROGRAM_ID = new PublicKey(DEFAULT_CONFIG.receiptProgramId!);
+const BPF_UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
+
+function getAccountInfoForProgramOnly(programId = RECEIPT_PROGRAM_ID) {
+  return vi.fn(async (pubkey: PublicKey) => {
+    if (!pubkey.equals(programId)) return null;
+    return {
+      executable: true,
+      owner: BPF_UPGRADEABLE_LOADER,
+      lamports: 1,
+      data: Buffer.alloc(0),
+      rentEpoch: 0,
+    };
+  });
+}
+
 vi.mock('@clmm-autopilot/core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@clmm-autopilot/core')>();
   const SOL = 'So11111111111111111111111111111111111111112';
@@ -70,7 +86,7 @@ describe('executeOnce underfunded', () => {
       getSlot: vi.fn(async () => 0),
       getBalance: vi.fn(async () => 1),
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'EETubP5AKH2uP8WqzU7xYfPqBrM6oTnP3v8igJE6wz7A', lastValidBlockHeight: 1 })),
-      getAccountInfo: vi.fn(async () => null),
+      getAccountInfo: getAccountInfoForProgramOnly(),
       getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
       simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
       getAddressLookupTable: vi.fn(async () => ({ value: null })),
