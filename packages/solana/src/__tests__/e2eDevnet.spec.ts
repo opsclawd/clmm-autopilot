@@ -198,6 +198,7 @@ describe('runDevnetE2E refusals', () => {
   it('forwards FORCE_DECISION into executeOnce when live policy would otherwise HOLD', async () => {
     const { env, cleanup } = await makeEnv();
     env.FORCE_DECISION = 'TRIGGER_DOWN';
+    const runtimeEnv = { ...env, SWAP_ROUTER: 'noop' };
     const authority = Keypair.fromSecretKey(
       Uint8Array.from(JSON.parse(await (await import('node:fs/promises')).readFile(env.AUTHORITY_KEYPAIR, 'utf8'))),
     ).publicKey;
@@ -223,12 +224,14 @@ describe('runDevnetE2E refusals', () => {
         attestationHash?: Uint8Array;
         receiptEpochUnixMs?: number;
         decisionOverride?: { decision: string; reasonCode?: string };
+        receiptIdentityEnv?: Record<string, string | undefined>;
       }) => {
         expect(params.decisionOverride).toEqual({
           decision: 'TRIGGER_DOWN',
           reasonCode: 'FORCED_TRIGGER_DOWN',
         });
         expect(params.receiptEpochUnixMs).toBe(nowMs);
+        expect(params.receiptIdentityEnv).toBe(runtimeEnv);
         attestationHash = new Uint8Array(params.attestationHash ?? attestationHash);
         return {
           status: 'EXECUTED',
@@ -239,12 +242,14 @@ describe('runDevnetE2E refusals', () => {
       .mockImplementationOnce(async (params: {
         receiptEpochUnixMs?: number;
         decisionOverride?: { decision: string; reasonCode?: string };
+        receiptIdentityEnv?: Record<string, string | undefined>;
       }) => {
         expect(params.decisionOverride).toEqual({
           decision: 'TRIGGER_DOWN',
           reasonCode: 'FORCED_TRIGGER_DOWN',
         });
         expect(params.receiptEpochUnixMs).toBe(nowMs);
+        expect(params.receiptIdentityEnv).toBe(runtimeEnv);
         return {
           status: 'ERROR',
           errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
@@ -254,7 +259,7 @@ describe('runDevnetE2E refusals', () => {
 
     await expect(
       runDevnetE2E(
-        { ...env, SWAP_ROUTER: 'noop' },
+        runtimeEnv,
         () => {},
         harnessDeps({
           loadPositionSnapshot: vi.fn(async () => snapshot) as any,

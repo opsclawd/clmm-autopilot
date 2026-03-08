@@ -144,4 +144,36 @@ describe('receiptIdentity resolver', () => {
     const res = resolveReceiptRuntimeIdentity({ ...DEFAULT_CONFIG, cluster: 'localnet' });
     expect(res).toBeNull();
   });
+
+  it('still validates forced config fallback on non-devnet clusters', () => {
+    expect(() =>
+      resolveReceiptRuntimeIdentity(
+        {
+          ...DEFAULT_CONFIG,
+          cluster: 'localnet',
+          receiptProgramId: undefined,
+          receiptIdlHashMode: undefined,
+          receiptIdlHash: undefined,
+          receiptIdlPath: undefined,
+        },
+        { RECEIPT_IDENTITY_SOURCE: 'config' },
+      ),
+    ).toThrowError(/Config fallback receipt identity is not fully configured/);
+  });
+
+  it('returns null on non-devnet after successful forced config validation', () => {
+    const actualHash = computeReceiptIdlHashFullV1(defaultReceiptIdl);
+    const res = resolveReceiptRuntimeIdentity(
+      {
+        ...DEFAULT_CONFIG,
+        cluster: 'localnet',
+        receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
+        receiptIdlHashMode: 'full-v1',
+        receiptIdlHash: actualHash,
+        receiptIdlPath: 'deployments/devnet/receipt.idl.json',
+      },
+      { RECEIPT_IDENTITY_SOURCE: 'config' },
+    );
+    expect(res).toBeNull();
+  });
 });

@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { AutopilotConfig, ReceiptIdlHashMode } from '@clmm-autopilot/core';
 import { PublicKey } from '@solana/web3.js';
-import defaultManifestJson from '../../../deployments/devnet/receipt.json';
-import defaultReceiptIdlJson from '../../../deployments/devnet/receipt.idl.json';
 import type { CanonicalErrorCode } from './types';
 
 export type ReceiptDeploymentManifest = {
@@ -49,11 +50,15 @@ type ReceiptIdlFullV1 = {
   idl: unknown;
 };
 
-const DEFAULT_DEVNET_MANIFEST = defaultManifestJson as ReceiptDeploymentManifest;
-const DEFAULT_DEVNET_IDL = defaultReceiptIdlJson as unknown;
-const KNOWN_IDL_ARTIFACTS: Record<string, unknown> = {
-  'deployments/devnet/receipt.idl.json': DEFAULT_DEVNET_IDL,
+const DEVNET_MANIFEST_PATH = 'deployments/devnet/receipt.json';
+const DEVNET_IDL_PATH = 'deployments/devnet/receipt.idl.json';
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(MODULE_DIR, '../../..');
+const KNOWN_IDL_ARTIFACT_PATHS: Record<string, string> = {
+  [DEVNET_IDL_PATH]: resolve(REPO_ROOT, DEVNET_IDL_PATH),
 };
+let defaultDevnetManifestCache: ReceiptDeploymentManifest | undefined;
+const idlArtifactCache = new Map<string, ReceiptIdlArtifact>();
 
 function fail(code: CanonicalErrorCode, message: string, debug?: unknown): never {
   const err = new Error(message) as TypedError;
@@ -80,6 +85,28 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(normalizeJson(value));
 }
 
+function readJsonFromDisk(
+  absolutePath: string,
+  code: CanonicalErrorCode,
+  message: string,
+  debugContext: Record<string, unknown>,
+): unknown {
+  let raw: string;
+  try {
+    raw = readFileSync(absolutePath, 'utf8');
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    fail(code, message, { ...debugContext, absolutePath, detail });
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    fail(code, message, { ...debugContext, absolutePath, detail });
+  }
+}
+
 export function canonicalizeReceiptIdlFullV1(idl: unknown): ReceiptIdlFullV1 {
   return {
     version: 'full-v1',
@@ -94,7 +121,25 @@ export function computeReceiptIdlHashFullV1(idl: unknown): string {
 }
 
 export function getDefaultDevnetReceiptManifest(): ReceiptDeploymentManifest {
-  return DEFAULT_DEVNET_MANIFEST;
+  if (defaultDevnetManifestCache) {
+    return defaultDevnetManifestCache;
+  }
+
+  const manifestRaw = readJsonFromDisk(
+    resolve(REPO_ROOT, DEVNET_MANIFEST_PATH),
+    'RECEIPT_PROGRAM_NOT_CONFIGURED',
+    'manifest identity could not be loaded',
+    { manifestPath: DEVNET_MANIFEST_PATH },
+  );
+  if (!manifestRaw || typeof manifestRaw !== 'object' || Array.isArray(manifestRaw)) {
+    fail('RECEIPT_PROGRAM_NOT_CONFIGURED', 'manifest identity must be a JSON object', {
+      manifestPath: DEVNET_MANIFEST_PATH,
+      receivedType: typeof manifestRaw,
+    });
+  }
+
+  defaultDevnetManifestCache = manifestRaw as ReceiptDeploymentManifest;
+  return defaultDevnetManifestCache;
 }
 
 function parseOptionalPubkey(value: string | undefined, path: string): PublicKey | undefined {
@@ -143,15 +188,40 @@ function normalizeIdlPath(idlPath: string): string {
 
 export function loadReceiptIdlArtifact(idlPath: string, source = 'receipt'): ReceiptIdlArtifact {
   const normalized = normalizeIdlPath(idlPath);
-  const artifact = KNOWN_IDL_ARTIFACTS[normalized];
-  if (artifact === undefined) {
+  const cached = idlArtifactCache.get(normalized);
+  if (cached) return cached;
+
+  const artifactPath = KNOWN_IDL_ARTIFACT_PATHS[normalized];
+  if (!artifactPath) {
     fail('RECEIPT_IDL_MISMATCH', `${source}.idlPath could not be loaded`, {
       idlPath,
       normalizedIdlPath: normalized,
-      available: Object.keys(KNOWN_IDL_ARTIFACTS),
+      available: Object.keys(KNOWN_IDL_ARTIFACT_PATHS),
     });
   }
-  return artifact as ReceiptIdlArtifact;
+
+  const artifactRaw = readJsonFromDisk(
+    artifactPath,
+    'RECEIPT_IDL_MISMATCH',
+    `${source}.idlPath could not be loaded`,
+    {
+      idlPath,
+      normalizedIdlPath: normalized,
+      available: Object.keys(KNOWN_IDL_ARTIFACT_PATHS),
+    },
+  );
+  if (!artifactRaw || typeof artifactRaw !== 'object' || Array.isArray(artifactRaw)) {
+    fail('RECEIPT_IDL_MISMATCH', `${source}.idlPath could not be loaded`, {
+      idlPath,
+      normalizedIdlPath: normalized,
+      receivedType: typeof artifactRaw,
+      available: Object.keys(KNOWN_IDL_ARTIFACT_PATHS),
+    });
+  }
+
+  const artifact = artifactRaw as ReceiptIdlArtifact;
+  idlArtifactCache.set(normalized, artifact);
+  return artifact;
 }
 
 export function assertReceiptProgramMatchesIdlAddress(
@@ -196,57 +266,44 @@ export function resolveReceiptRuntimeIdentity(
   env: Record<string, string | undefined> = typeof process !== 'undefined' ? process.env : {},
 ): ReceiptRuntimeIdentity | null {
   const forceConfig = env.RECEIPT_IDENTITY_SOURCE === 'config';
-  const shouldUseManifest = config.cluster === 'devnet' && !forceConfig;
+  if (forceConfig) {
+    // Forced fallback mode must validate config identity even on non-devnet clusters.
+    assertConfigIdentity(config);
 
-  if (shouldUseManifest) {
-    const manifest = DEFAULT_DEVNET_MANIFEST;
-    const programId = parseRequiredProgramId(manifest.programId, 'manifest');
-    const idlHashMode = assertHashMode(manifest.idlHashMode, 'manifest');
-    const manifestIdl = assertReceiptProgramMatchesIdlAddress(programId, manifest.idlPath, 'manifest');
-    const idlHash = assertHashMatches(manifest.idlHash, manifestIdl, 'manifest');
+    if (config.cluster !== 'devnet') {
+      return null;
+    }
+
+    const idlHashMode = assertHashMode(config.receiptIdlHashMode!, 'config');
+    const programId = parseRequiredProgramId(config.receiptProgramId!, 'config');
+    const configIdl = assertReceiptProgramMatchesIdlAddress(programId, config.receiptIdlPath!, 'config');
+    const idlHash = assertHashMatches(config.receiptIdlHash!, configIdl, 'config');
+
     return {
-      source: 'manifest',
+      source: 'config',
       programId,
-      idlPath: manifest.idlPath,
+      idlPath: config.receiptIdlPath!,
       idlHashMode,
       idlHash,
-      expectedUpgradeAuthority: parseOptionalPubkey(manifest.expectedUpgradeAuthority, 'manifest.expectedUpgradeAuthority'),
+      expectedUpgradeAuthority: parseOptionalPubkey(config.expectedUpgradeAuthority, 'config.expectedUpgradeAuthority'),
     };
   }
-
-  const fallbackProgramId = config.receiptProgramId;
-  const fallbackHashMode = config.receiptIdlHashMode;
-  const fallbackHash = config.receiptIdlHash;
-  const fallbackIdlPath = config.receiptIdlPath;
-
-  const fallbackConfigured = Boolean(
-    fallbackProgramId && fallbackHashMode && fallbackHash && fallbackIdlPath,
-  );
 
   if (config.cluster !== 'devnet') {
     return null;
   }
 
-  if (!fallbackConfigured) {
-    if (config.cluster === 'devnet') {
-      assertConfigIdentity(config);
-    }
-    return null;
-  }
-
-  assertConfigIdentity(config);
-
-  const idlHashMode = assertHashMode(fallbackHashMode!, 'config');
-  const programId = parseRequiredProgramId(fallbackProgramId!, 'config');
-  const configIdl = assertReceiptProgramMatchesIdlAddress(programId, fallbackIdlPath!, 'config');
-  const idlHash = assertHashMatches(fallbackHash!, configIdl, 'config');
-
+  const manifest = getDefaultDevnetReceiptManifest();
+  const programId = parseRequiredProgramId(manifest.programId, 'manifest');
+  const idlHashMode = assertHashMode(manifest.idlHashMode, 'manifest');
+  const manifestIdl = assertReceiptProgramMatchesIdlAddress(programId, manifest.idlPath, 'manifest');
+  const idlHash = assertHashMatches(manifest.idlHash, manifestIdl, 'manifest');
   return {
-    source: 'config',
+    source: 'manifest',
     programId,
-    idlPath: fallbackIdlPath!,
+    idlPath: manifest.idlPath,
     idlHashMode,
     idlHash,
-    expectedUpgradeAuthority: parseOptionalPubkey(config.expectedUpgradeAuthority, 'config.expectedUpgradeAuthority'),
+    expectedUpgradeAuthority: parseOptionalPubkey(manifest.expectedUpgradeAuthority, 'manifest.expectedUpgradeAuthority'),
   };
 }

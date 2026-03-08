@@ -577,6 +577,7 @@ export async function runDevnetE2E(
   const executeParams = {
     connection,
     authority: authority.publicKey,
+    receiptIdentityEnv: env,
     position,
     samples,
     config,

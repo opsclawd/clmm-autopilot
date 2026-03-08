@@ -108,6 +108,7 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
 
 export type ExecuteOnceParams = RefreshParams & {
   authority: PublicKey;
+  receiptIdentityEnv?: Record<string, string | undefined>;
   receiptEpochUnixMs?: number;
   decisionOverride?: {
     decision: Exclude<RefreshResult['decision']['decision'], 'HOLD'>;
@@ -226,7 +227,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
 
   try {
     // Resolve receipt identity before policy branching so devnet misconfiguration fails fast even on HOLD.
-    const receiptIdentity = resolveReceiptRuntimeIdentity(params.config);
+    const receiptIdentity = resolveReceiptRuntimeIdentity(params.config, params.receiptIdentityEnv);
     if (receiptIdentity) {
       await verifyReceiptProgramOnChain(params.connection, receiptIdentity);
     }
