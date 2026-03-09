@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { deriveReceiptPda } from '../receipt';
+import { TOKEN_PROGRAM_ID } from '../token/constants';
 
 const DEVNET_USDC_MINT = 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k';
 const RECEIPT_PROGRAM_ID = new PublicKey(DEFAULT_CONFIG.receiptProgramId!);
@@ -9,12 +10,22 @@ const BPF_UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111
 
 function getAccountInfoForProgramOnly(programId = RECEIPT_PROGRAM_ID) {
   return vi.fn(async (pubkey: PublicKey) => {
-    if (!pubkey.equals(programId)) return null;
+    if (pubkey.equals(programId)) {
+      return {
+        executable: true,
+        owner: BPF_UPGRADEABLE_LOADER,
+        lamports: 1,
+        data: Buffer.alloc(0),
+        rentEpoch: 0,
+      };
+    }
+    // Requirements/token-program resolution path probes arbitrary mints + ATA addresses.
+    // Return a generic token-owned account by default so tests can focus on executeOnce behavior.
     return {
-      executable: true,
-      owner: BPF_UPGRADEABLE_LOADER,
+      executable: false,
+      owner: TOKEN_PROGRAM_ID,
       lamports: 1,
-      data: Buffer.alloc(0),
+      data: Buffer.alloc(82),
       rentEpoch: 0,
     };
   });

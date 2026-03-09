@@ -1,5 +1,6 @@
 export type CanonicalErrorCode =
   | 'DATA_UNAVAILABLE'
+  | 'UNSUPPORTED_MINT_OWNER'
   | 'RPC_TRANSIENT'
   | 'RPC_PERMANENT'
   | 'INVALID_POSITION'

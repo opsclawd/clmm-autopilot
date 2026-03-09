@@ -7,16 +7,14 @@ import {
   PDAUtil,
   PriceMath,
 } from '@orca-so/whirlpools-sdk';
-import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { PublicKey, type AccountInfo, type Connection } from '@solana/web3.js';
 import { normalizeSolanaError } from './errors';
 import { loadSolanaConfig } from './config';
 import { decodePositionAccount, decodeWhirlpoolAccount } from './orca/decode';
+import { tokenProgramInfoFromMintOwner } from './token/program';
 import type { CanonicalErrorCode, NormalizedError } from './types';
 
 const ORCA_WHIRLPOOL_PROGRAM_ID = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
-const TOKEN_PROGRAM_V1 = TOKEN_PROGRAM_ID;
-const TOKEN_PROGRAM_2022 = TOKEN_2022_PROGRAM_ID;
 
 export type RemovePreviewReasonCode = 'QUOTE_UNAVAILABLE' | 'DATA_UNAVAILABLE';
 
@@ -130,9 +128,8 @@ function parseMintMeta(info: AccountInfo<Buffer> | null): MintMeta {
   };
 }
 
-function tokenProgramForOwner(owner: PublicKey): PublicKey {
-  if (owner.equals(TOKEN_PROGRAM_2022)) return TOKEN_PROGRAM_2022;
-  return TOKEN_PROGRAM_V1;
+function tokenProgramForMintOwner(mintPubkey: PublicKey, owner: PublicKey): PublicKey {
+  return tokenProgramInfoFromMintOwner(mintPubkey, owner).tokenProgramId;
 }
 
 function deriveTickArrayFromTickIndex(whirlpool: PublicKey, tickIndex: number, tickSpacing: number): PublicKey {
@@ -250,7 +247,7 @@ export async function loadPositionSnapshot(
       whirlpool: position.whirlpool,
       position: positionPubkey,
       positionMint: position.positionMint,
-      positionTokenProgram: tokenProgramForOwner(positionMintMeta.owner),
+      positionTokenProgram: tokenProgramForMintOwner(position.positionMint, positionMintMeta.owner),
       currentTickIndex: whirlpool.currentTickIndex,
       lowerTickIndex: position.lowerTickIndex,
       upperTickIndex: position.upperTickIndex,
@@ -267,8 +264,8 @@ export async function loadPositionSnapshot(
       tokenVaultB: whirlpool.tokenVaultB,
       tickArrayLower,
       tickArrayUpper,
-      tokenProgramA: tokenProgramForOwner(mintA.owner),
-      tokenProgramB: tokenProgramForOwner(mintB.owner),
+      tokenProgramA: tokenProgramForMintOwner(whirlpool.tokenMintA, mintA.owner),
+      tokenProgramB: tokenProgramForMintOwner(whirlpool.tokenMintB, mintB.owner),
       removePreview: removePreviewResult.preview,
       removePreviewReasonCode: removePreviewResult.reasonCode,
     };

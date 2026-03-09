@@ -24,6 +24,7 @@ Harness env vars:
 - `SWAP_ROUTER` (optional: `noop` | `orca` | `jupiter`, default `noop` for deterministic harness runs)
 - `FORCE_DECISION` (optional: `TRIGGER_DOWN` | `TRIGGER_UP`; overrides live policy decision to force receipt proof path)
 - `REQUIRE_RECEIPT_PROOF` (optional: `1|0|true|false`, default `0`; when enabled, `HOLD` is treated as failure)
+- `TOKEN2022_POSITION_ADDRESS` (optional; non-blocking check: when set, harness logs whether that position resolves to a Token-2022 pool and never fails the main run if unavailable/mismatched)
 - `RECEIPT_IDENTITY_SOURCE` (optional, advanced: set to `config` to force legacy config fallback identity instead of devnet manifest)
 
 Example:

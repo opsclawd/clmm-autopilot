@@ -11,6 +11,7 @@ import {
 } from '@orca-so/whirlpools-sdk';
 import { PublicKey } from '@solana/web3.js';
 import { getAta } from '../../ata';
+import { INCLUDE_MEMO_ON_V2, buildTokenContext, selectWhirlpoolInstructionVariant } from '../../token/whirlpool';
 import type { CanonicalErrorCode } from '../../types';
 import type { SolanaGetQuoteParams, SolanaSwapAdapter, SolanaSwapContext } from '../types';
 import type { SolanaSwapBuildResult } from '../types';
@@ -142,29 +143,58 @@ export class OrcaWhirlpoolSwapAdapter implements SolanaSwapAdapter {
     const q = asOrcaDebug(quote);
     const wallet = new ReadOnlyWallet(payer);
     const ctx = WhirlpoolContext.from(context.connection, wallet);
-
-    const ix = WhirlpoolIx.swapV2Ix(ctx.program, {
-      amount: new BN(q.amount),
-      otherAmountThreshold: new BN(q.otherAmountThreshold),
-      sqrtPriceLimit: new BN(q.sqrtPriceLimit),
-      amountSpecifiedIsInput: q.amountSpecifiedIsInput,
-      aToB: q.aToB,
-      tickArray0: new PublicKey(q.tickArray0),
-      tickArray1: new PublicKey(q.tickArray1),
-      tickArray2: new PublicKey(q.tickArray2),
-      supplementalTickArrays: q.supplementalTickArrays.map((k) => new PublicKey(k)),
-      whirlpool: context.whirlpool,
-      tokenMintA: context.tokenMintA,
-      tokenMintB: context.tokenMintB,
-      tokenOwnerAccountA: getAta(context.tokenMintA, payer, context.tokenProgramA),
-      tokenOwnerAccountB: getAta(context.tokenMintB, payer, context.tokenProgramB),
-      tokenVaultA: context.tokenVaultA,
-      tokenVaultB: context.tokenVaultB,
+    const tokenContext = buildTokenContext({
+      mintA: context.tokenMintA,
+      mintB: context.tokenMintB,
       tokenProgramA: context.tokenProgramA,
       tokenProgramB: context.tokenProgramB,
-      oracle: PDAUtil.getOracle(ORCA_WHIRLPOOL_PROGRAM_ID, context.whirlpool).publicKey,
-      tokenAuthority: payer,
     });
+    const variant = selectWhirlpoolInstructionVariant(tokenContext);
+    if (variant === 'v2' && !INCLUDE_MEMO_ON_V2) {
+      fail('DATA_UNAVAILABLE', 'swap v2 requires memo inclusion policy to be enabled', false);
+    }
+
+    const ix =
+      variant === 'v2'
+        ? WhirlpoolIx.swapV2Ix(ctx.program, {
+            amount: new BN(q.amount),
+            otherAmountThreshold: new BN(q.otherAmountThreshold),
+            sqrtPriceLimit: new BN(q.sqrtPriceLimit),
+            amountSpecifiedIsInput: q.amountSpecifiedIsInput,
+            aToB: q.aToB,
+            tickArray0: new PublicKey(q.tickArray0),
+            tickArray1: new PublicKey(q.tickArray1),
+            tickArray2: new PublicKey(q.tickArray2),
+            supplementalTickArrays: q.supplementalTickArrays.map((k) => new PublicKey(k)),
+            whirlpool: context.whirlpool,
+            tokenMintA: context.tokenMintA,
+            tokenMintB: context.tokenMintB,
+            tokenOwnerAccountA: getAta(context.tokenMintA, payer, context.tokenProgramA),
+            tokenOwnerAccountB: getAta(context.tokenMintB, payer, context.tokenProgramB),
+            tokenVaultA: context.tokenVaultA,
+            tokenVaultB: context.tokenVaultB,
+            tokenProgramA: context.tokenProgramA,
+            tokenProgramB: context.tokenProgramB,
+            oracle: PDAUtil.getOracle(ORCA_WHIRLPOOL_PROGRAM_ID, context.whirlpool).publicKey,
+            tokenAuthority: payer,
+          })
+        : WhirlpoolIx.swapIx(ctx.program, {
+            amount: new BN(q.amount),
+            otherAmountThreshold: new BN(q.otherAmountThreshold),
+            sqrtPriceLimit: new BN(q.sqrtPriceLimit),
+            amountSpecifiedIsInput: q.amountSpecifiedIsInput,
+            aToB: q.aToB,
+            tickArray0: new PublicKey(q.tickArray0),
+            tickArray1: new PublicKey(q.tickArray1),
+            tickArray2: new PublicKey(q.tickArray2),
+            whirlpool: context.whirlpool,
+            tokenOwnerAccountA: getAta(context.tokenMintA, payer, context.tokenProgramA),
+            tokenOwnerAccountB: getAta(context.tokenMintB, payer, context.tokenProgramB),
+            tokenVaultA: context.tokenVaultA,
+            tokenVaultB: context.tokenVaultB,
+            oracle: PDAUtil.getOracle(ORCA_WHIRLPOOL_PROGRAM_ID, context.whirlpool).publicKey,
+            tokenAuthority: payer,
+          });
 
     return {
       instructions: [...ix.instructions, ...ix.cleanupInstructions],

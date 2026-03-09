@@ -1,6 +1,7 @@
 import { PublicKey, SystemProgram, type TransactionInstruction } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID, createCloseAccountInstruction, createSyncNativeInstruction } from '@solana/spl-token';
-import { buildCreateAtaIdempotentIx, getAta, SOL_MINT } from './ata';
+import { createCloseAccountInstruction, createSyncNativeInstruction } from '@solana/spl-token';
+import { getAta, SOL_MINT } from './ata';
+import { TOKEN_PROGRAM_ID } from './token/constants';
 
 export type WsolLifecycle = {
   preSwap: TransactionInstruction[];
@@ -23,9 +24,7 @@ export function buildWsolLifecycleIxs(params: {
     return { preSwap: [], postSwap: [], wsolAta };
   }
 
-  const createAta = buildCreateAtaIdempotentIx({ payer: params.payer, owner: params.authority, mint: SOL_MINT, tokenProgramId: TOKEN_PROGRAM_ID }).ix;
-
-  const preSwap: TransactionInstruction[] = [createAta];
+  const preSwap: TransactionInstruction[] = [];
   const postSwap: TransactionInstruction[] = [];
 
   if (params.inputMint.equals(SOL_MINT)) {

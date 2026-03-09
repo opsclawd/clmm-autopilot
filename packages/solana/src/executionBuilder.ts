@@ -6,9 +6,8 @@ import {
   type AddressLookupTableAccount,
   type TransactionInstruction,
 } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { assertSolUsdcPair, decideSwap, hashAttestationPayload, type SwapPlan } from '@clmm-autopilot/core';
-import { buildCreateAtaIdempotentIx, SOL_MINT } from './ata';
+import { createAtaIxFromPlan, SOL_MINT } from './ata';
 import type { PositionSnapshot } from './orcaInspector';
 import { buildOrcaExitIxs, type OrcaExitIxs } from './orcaExitBuilder';
 import { buildRecordExecutionIx } from './receipt';
@@ -119,12 +118,6 @@ function buildComputeBudgetIxs(cfg: BuildExitConfig): TransactionInstruction[] {
   ];
 }
 
-function tokenProgramForMint(mint: PublicKey, snapshot: PositionSnapshot): PublicKey {
-  if (mint.equals(snapshot.tokenMintA)) return snapshot.tokenProgramA;
-  if (mint.equals(snapshot.tokenMintB)) return snapshot.tokenProgramB;
-  return TOKEN_PROGRAM_ID;
-}
-
 export async function buildExitTransaction(
   snapshot: PositionSnapshot,
   direction: ExitDirection,
@@ -219,27 +212,7 @@ export async function buildExitTransaction(
       ? buildWsol({ quote: { inputMint: quoteIn, outputMint: quoteOut, inAmount: normalizedPlan.quote.swapInAmount }, authority: config.authority, payer: config.payer })
       : { preSwap: [], postSwap: [], wsolAta: undefined };
 
-  const swapAtaIxs: TransactionInstruction[] = [];
-  if (shouldExecuteSwap && !quoteIn.equals(SOL_MINT)) {
-    swapAtaIxs.push(
-      buildCreateAtaIdempotentIx({
-        payer: config.payer,
-        owner: config.authority,
-        mint: quoteIn,
-        tokenProgramId: tokenProgramForMint(quoteIn, snapshot),
-      }).ix,
-    );
-  }
-  if (shouldExecuteSwap && !quoteOut.equals(SOL_MINT)) {
-    swapAtaIxs.push(
-      buildCreateAtaIdempotentIx({
-        payer: config.payer,
-        owner: config.authority,
-        mint: quoteOut,
-        tokenProgramId: tokenProgramForMint(quoteOut, snapshot),
-      }).ix,
-    );
-  }
+  const ataPlanIxs = config.requirements.missingAtas.map((entry) => createAtaIxFromPlan(entry, config.payer));
 
   const receiptIx = config.receiptProgramId
     ? buildRecordExecutionIx({
@@ -255,8 +228,7 @@ export async function buildExitTransaction(
 
   const instructions: TransactionInstruction[] = [
     ...buildComputeBudgetIxs(config),
-    ...orca.conditionalAtaIxs,
-    ...swapAtaIxs,
+    ...ataPlanIxs,
     ...(wsolRequired ? wsolLifecycle.preSwap : []),
     orca.removeLiquidityIx,
     orca.collectFeesIx,
