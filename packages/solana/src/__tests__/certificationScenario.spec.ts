@@ -1,10 +1,12 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { getMintRegistry } from '@clmm-autopilot/core';
 import { runCertificationScenario } from '../e2eDevnet';
+import { deriveReceiptPda } from '../receipt';
+import { getDefaultDevnetReceiptManifest } from '../receiptIdentity';
 
 const SOL = new PublicKey('So11111111111111111111111111111111111111112');
 const USDC = new PublicKey(getMintRegistry('devnet').usdc);
@@ -80,6 +82,46 @@ function deps(overrides: Record<string, unknown> = {}): Parameters<typeof runCer
 }
 
 describe('certification scenarios', () => {
+  it('forces hold-path into HOLD without executing the tx path', async () => {
+    const env = await makeEnv();
+    const executeOnce = vi.fn();
+    const artifact = await runCertificationScenario('hold-path', env, () => {}, deps({
+      loadPositionSnapshot: vi.fn(async () => ({
+        cluster: 'devnet',
+        pairLabel: 'SOL/USDC',
+        pairValid: true,
+        whirlpool: new PublicKey(new Uint8Array(32).fill(1)),
+        position: new PublicKey(new Uint8Array(32).fill(7)),
+        positionMint: new PublicKey(new Uint8Array(32).fill(2)),
+        currentTickIndex: -50,
+        lowerTickIndex: -10,
+        upperTickIndex: 10,
+        tickSpacing: 1,
+        inRange: false,
+        liquidity: 1n,
+        tokenMintA: SOL,
+        tokenMintB: USDC,
+        tokenDecimalsA: 9,
+        tokenDecimalsB: 6,
+        tokenVaultA: new PublicKey(new Uint8Array(32).fill(3)),
+        tokenVaultB: new PublicKey(new Uint8Array(32).fill(4)),
+        tickArrayLower: new PublicKey(new Uint8Array(32).fill(5)),
+        tickArrayUpper: new PublicKey(new Uint8Array(32).fill(6)),
+        tokenProgramA: new PublicKey(new Uint8Array(32).fill(8)),
+        tokenProgramB: new PublicKey(new Uint8Array(32).fill(9)),
+        removePreview: { tokenAOut: 1000n, tokenBOut: 1000n },
+        removePreviewReasonCode: null,
+        feeOwedA: 0n,
+        feeOwedB: 0n,
+      })) as any,
+      executeOnce: executeOnce as any,
+    }));
+
+    expect(artifact.status).toBe('HOLD');
+    expect(artifact.assertions.some((entry) => entry.name === 'scenario.statusMatchesExpected' && entry.pass)).toBe(true);
+    expect(executeOnce).not.toHaveBeenCalled();
+  });
+
   it('classifies unsupported-router-cluster as EXPECTED_FAILURE', async () => {
     const env = await makeEnv();
     const artifact = await runCertificationScenario('unsupported-router-cluster', env, () => {}, deps());
@@ -87,10 +129,123 @@ describe('certification scenarios', () => {
     expect(artifact.scenarioName).toBe('unsupported-router-cluster');
   });
 
+  it('fails rpc-retry-exhaustion when the expected failure is not observed', async () => {
+    const env = await makeEnv();
+    let attestationHash = new Uint8Array(32).fill(1);
+    const positionMint = new PublicKey(new Uint8Array(32).fill(2));
+    const authority = Keypair.fromSecretKey(
+      Uint8Array.from(JSON.parse(await readFile(env.AUTHORITY_KEYPAIR, 'utf8'))),
+    ).publicKey;
+    const epoch = Math.floor((1_700_000_000_000 / 1000) / 86400);
+    const [receiptPda] = deriveReceiptPda({
+      authority,
+      positionMint,
+      epoch,
+      programId: new PublicKey(getDefaultDevnetReceiptManifest().programId),
+    });
+    const artifact = await runCertificationScenario('rpc-retry-exhaustion', env, () => {}, deps({
+      executeOnce: vi.fn()
+        .mockImplementationOnce(async (input: { attestationHash?: Uint8Array }) => {
+          attestationHash = new Uint8Array(input.attestationHash ?? attestationHash);
+          return {
+            status: 'EXECUTED',
+            txSignature: 'sig-1',
+            receiptPda: receiptPda.toBase58(),
+            execution: { unsignedTxBuilt: true, simulated: true },
+            metadata: {
+              swap: { swapInstructionCount: 1 },
+              executionIntent: { collectFeesPlanned: true },
+              reliability: { quoteRebuilt: false, blockhashRefreshed: false, retryAttempts: {} },
+            },
+          };
+        })
+        .mockResolvedValueOnce({
+          status: 'ERROR',
+          errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+          errorMessage: 'already done',
+        }) as any,
+      fetchReceiptByPda: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockImplementationOnce(async () => ({
+          authority,
+          positionMint,
+          epoch,
+          direction: 0,
+          attestationHash,
+          slot: 1n,
+          unixTs: 1n,
+          bump: 255,
+        })) as any,
+      loadPositionSnapshot: vi
+        .fn()
+        .mockResolvedValueOnce({
+          cluster: 'devnet',
+          pairLabel: 'SOL/USDC',
+          pairValid: true,
+          whirlpool: new PublicKey(new Uint8Array(32).fill(1)),
+          position: new PublicKey(new Uint8Array(32).fill(7)),
+          positionMint,
+          currentTickIndex: 0,
+          lowerTickIndex: -10,
+          upperTickIndex: 10,
+          tickSpacing: 1,
+          inRange: true,
+          liquidity: 1n,
+          tokenMintA: SOL,
+          tokenMintB: USDC,
+          tokenDecimalsA: 9,
+          tokenDecimalsB: 6,
+          tokenVaultA: new PublicKey(new Uint8Array(32).fill(3)),
+          tokenVaultB: new PublicKey(new Uint8Array(32).fill(4)),
+          tickArrayLower: new PublicKey(new Uint8Array(32).fill(5)),
+          tickArrayUpper: new PublicKey(new Uint8Array(32).fill(6)),
+          tokenProgramA: new PublicKey(new Uint8Array(32).fill(8)),
+          tokenProgramB: new PublicKey(new Uint8Array(32).fill(9)),
+          removePreview: { tokenAOut: 1000n, tokenBOut: 1000n },
+          removePreviewReasonCode: null,
+          feeOwedA: 0n,
+          feeOwedB: 0n,
+        })
+        .mockResolvedValueOnce({
+          cluster: 'devnet',
+          pairLabel: 'SOL/USDC',
+          pairValid: true,
+          whirlpool: new PublicKey(new Uint8Array(32).fill(1)),
+          position: new PublicKey(new Uint8Array(32).fill(7)),
+          positionMint,
+          currentTickIndex: 0,
+          lowerTickIndex: -10,
+          upperTickIndex: 10,
+          tickSpacing: 1,
+          inRange: true,
+          liquidity: 0n,
+          tokenMintA: SOL,
+          tokenMintB: USDC,
+          tokenDecimalsA: 9,
+          tokenDecimalsB: 6,
+          tokenVaultA: new PublicKey(new Uint8Array(32).fill(3)),
+          tokenVaultB: new PublicKey(new Uint8Array(32).fill(4)),
+          tickArrayLower: new PublicKey(new Uint8Array(32).fill(5)),
+          tickArrayUpper: new PublicKey(new Uint8Array(32).fill(6)),
+          tokenProgramA: new PublicKey(new Uint8Array(32).fill(8)),
+          tokenProgramB: new PublicKey(new Uint8Array(32).fill(9)),
+          removePreview: { tokenAOut: 1000n, tokenBOut: 1000n },
+          removePreviewReasonCode: null,
+          feeOwedA: 0n,
+          feeOwedB: 0n,
+        }) as any,
+    }));
+
+    expect(artifact.status).toBe('FAIL');
+    expect(artifact.errors.some((entry) => entry.code === 'CERT_EXPECTED_FAILURE_NOT_OBSERVED')).toBe(true);
+  });
+
   it('marks token2022-certification as SKIPPED when token2022 position is not configured', async () => {
     const env = await makeEnv();
     const artifact = await runCertificationScenario('token2022-certification', env, () => {}, deps());
     expect(artifact.status).toBe('SKIPPED');
+    expect(artifact.skipReason).toBe('SCENARIO_SKIPPED_NOT_CONFIGURED');
     expect(artifact.scenarioName).toBe('token2022-certification');
     expect(artifact.assertions.some((entry) => entry.reasonCode === 'SCENARIO_SKIPPED_NOT_CONFIGURED')).toBe(true);
   });

@@ -42,6 +42,7 @@ describe('resultArtifact', () => {
         receiptFoundBefore: false,
         receiptFoundAfter: false,
         status: 'HOLD',
+        skipReason: '',
         assertions: [
           { name: 'z.last', pass: true, actual: 1, expected: 1 },
           { name: 'a.first', pass: true, actual: 1, expected: 1 },

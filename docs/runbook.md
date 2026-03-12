@@ -78,6 +78,24 @@ Logs are JSON (structured) and failure exits non-zero.
 - default: `artifacts/e2e/devnet/<scenario>/<runId>.json`
 - override: set `E2E_ARTIFACT_DIR`
 
+Run one named scenario by setting `E2E_CERT_SCENARIO`, for example:
+
+```bash
+E2E_CERT_SCENARIO=hold-path pnpm e2e:certify:devnet
+```
+
+Supported scenario names are:
+
+- `happy-path-trigger`
+- `hold-path`
+- `stale-quote-rebuild`
+- `signing-delay-blockhash-drift`
+- `rpc-retry-exhaustion`
+- `unsupported-router-cluster`
+- `receipt-misconfiguration`
+- `token2022-certification`
+- `duplicate-execution-same-epoch`
+
 Artifact status values:
 
 - `PASS`
@@ -87,6 +105,7 @@ Artifact status values:
 - `FAIL`
 
 Artifacts include `schemaVersion: 1` and should be used as the primary certification record (logs remain supplementary).
+When `status=SKIPPED`, the artifact also includes a stable top-level `skipReason`.
 
 ## Consistency guard
 

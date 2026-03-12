@@ -1,8 +1,21 @@
-import { runCertificationSuite } from './e2eDevnet';
+import { CERTIFICATION_SCENARIOS } from './e2e/scenarios';
+import { runCertificationScenario, runCertificationSuite, type CertificationScenarioName } from './e2eDevnet';
+
+function parseScenarioName(raw: string | undefined): CertificationScenarioName | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  if (CERTIFICATION_SCENARIOS.includes(value as CertificationScenarioName)) {
+    return value as CertificationScenarioName;
+  }
+  throw new Error(`Unknown certification scenario '${value}'`);
+}
 
 async function main(): Promise<void> {
   try {
-    const artifacts = await runCertificationSuite(process.env);
+    const scenario = parseScenarioName(process.env.E2E_CERT_SCENARIO);
+    const artifacts = scenario
+      ? [await runCertificationScenario(scenario, process.env)]
+      : await runCertificationSuite(process.env);
     const hasFail = artifacts.some((artifact) => artifact.status === 'FAIL');
     if (hasFail) {
       process.exit(1);

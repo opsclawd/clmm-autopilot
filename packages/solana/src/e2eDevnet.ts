@@ -20,7 +20,7 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js';
 import { getAta } from './ata';
-import { executeOnce } from './executeOnce';
+import { executeOnce, type ExecuteOnceCertificationHooks } from './executeOnce';
 import { fetchJupiterQuote } from './jupiter';
 import { loadPositionSnapshot, type PositionSnapshot } from './orcaInspector';
 import { deriveReceiptPda, fetchReceiptByPda, type ReceiptAccount } from './receipt';
@@ -37,7 +37,7 @@ import {
   type ResultArtifactV1,
   writeResultArtifact,
 } from './e2e/resultArtifact';
-import { allAssertionsPass, makeAssertion } from './e2e/assertions';
+import { allAssertionsPass, getAssertion, makeAssertion } from './e2e/assertions';
 
 export type HarnessDecision = 'HOLD' | 'TRIGGER_DOWN' | 'TRIGGER_UP';
 
@@ -73,12 +73,17 @@ type ScenarioExpectation = {
   expectedStatus?: CertificationStatus;
   expectedErrorCodes?: string[];
   allowSkip?: boolean;
+  requireQuoteRebuilt?: boolean;
+  requireBlockhashRefreshed?: boolean;
+  requireRetryExhaustionKey?: string;
 };
 
 export type RunDevnetE2EOptions = {
   scenarioName?: CertificationScenarioName;
   artifactBaseDir?: string;
   expectation?: ScenarioExpectation;
+  decisionOverride?: HarnessDecision;
+  executeOnceHooks?: ExecuteOnceCertificationHooks;
 };
 
 type ResolvedHarnessPosition = {
@@ -601,6 +606,7 @@ export async function runDevnetE2EWithArtifact(
   let receiptPdaBase58 = '';
   let receiptFoundBefore = false;
   let receiptFoundAfter = false;
+  let skipReason = '';
 
   try {
     const rpcUrlRaw = parseRequiredEnv(env, 'RPC_URL');
@@ -680,8 +686,12 @@ export async function runDevnetE2EWithArtifact(
       config.policy,
       {},
     );
-    decision = forceDecision ?? policyEvaluated.action;
-    decisionReasonCode = forceDecision ? `FORCED_${forceDecision}` : policyEvaluated.reasonCode;
+    decision = options.decisionOverride ?? forceDecision ?? policyEvaluated.action;
+    decisionReasonCode = options.decisionOverride
+      ? `SCENARIO_${options.decisionOverride}`
+      : forceDecision
+        ? `FORCED_${forceDecision}`
+        : policyEvaluated.reasonCode;
     assertions.push(makeAssertion({
       name: 'decision.isExpected',
       pass: true,
@@ -865,7 +875,11 @@ export async function runDevnetE2EWithArtifact(
         policyState: {},
         expectedMinOut,
         quoteAgeMs,
-        ...(forceDecision ? { decisionOverride: { decision: forceDecision, reasonCode: decisionReasonCode } } : {}),
+        ...((options.decisionOverride && options.decisionOverride !== 'HOLD')
+          ? { decisionOverride: { decision: options.decisionOverride, reasonCode: decisionReasonCode } }
+          : forceDecision
+            ? { decisionOverride: { decision: forceDecision, reasonCode: decisionReasonCode } }
+            : {}),
         ...(suppliedQuote ? { quote: suppliedQuote, quoteContext: { quoteTickIndex: snapshot.currentTickIndex, quotedAtSlot: latestSlot } } : {}),
         attestationHash,
         attestationPayloadBytes: attestationPayload,
@@ -876,9 +890,11 @@ export async function runDevnetE2EWithArtifact(
           return connection.sendRawTransaction(tx.serialize(), { maxRetries: 1 });
         },
         onSimulationComplete: () => log(logger, 'tx.simulate.ok', {}),
+        ...(options.executeOnceHooks ? { certificationHooks: options.executeOnceHooks } : {}),
       } as const;
 
       const result = await deps.executeOnce(executeParams);
+      const reliability = result.metadata?.reliability;
       txBuilt = result.execution?.unsignedTxBuilt ?? result.status === 'EXECUTED';
       txSimulated = result.execution?.simulated ?? result.status === 'EXECUTED';
       txSent = Boolean(result.txSignature);
@@ -901,6 +917,34 @@ export async function runDevnetE2EWithArtifact(
         actual: result.status,
         expected: 'EXECUTED',
       }));
+      if (options.expectation?.requireQuoteRebuilt !== undefined) {
+        const quoteRebuilt = Boolean(reliability?.quoteRebuilt);
+        assertions.push(makeAssertion({
+          name: 'scenario.quoteRebuilt',
+          pass: quoteRebuilt === options.expectation.requireQuoteRebuilt,
+          actual: quoteRebuilt,
+          expected: options.expectation.requireQuoteRebuilt,
+        }));
+      }
+      if (options.expectation?.requireBlockhashRefreshed !== undefined) {
+        const refreshed = Boolean(reliability?.blockhashRefreshed);
+        assertions.push(makeAssertion({
+          name: 'scenario.blockhashRefreshed',
+          pass: refreshed === options.expectation.requireBlockhashRefreshed,
+          actual: refreshed,
+          expected: options.expectation.requireBlockhashRefreshed,
+        }));
+      }
+      if (options.expectation?.requireRetryExhaustionKey) {
+        const attempts = reliability?.retryAttempts?.[options.expectation.requireRetryExhaustionKey] ?? 0;
+        assertions.push(makeAssertion({
+          name: 'scenario.retryExhausted',
+          pass: attempts === config.execution.maxRetries,
+          actual: attempts,
+          expected: config.execution.maxRetries,
+          reasonCode: options.expectation.requireRetryExhaustionKey,
+        }));
+      }
 
       if (result.status !== 'EXECUTED' || !result.txSignature || !result.receiptPda) {
         throw codedError(result.errorCode ?? 'EXECUTION_FAILED', result.errorMessage ?? 'Execution failed');
@@ -986,17 +1030,18 @@ export async function runDevnetE2EWithArtifact(
         name: 'post.balanceDeltaValid',
         pass: balanceDeltaValid,
         actual: directionalDelta.toString(),
-        expected: '>0',
+        expected: swapPlanned ? '>0' : '>=0',
       }));
 
+      const swapInstructionCount = result.metadata?.swap?.swapInstructionCount ?? 0;
       const swapOutcomeValid = swapPlanned
-        ? balanceDeltaValid
+        ? balanceDeltaValid && swapInstructionCount > 0
         : isValidSwapSkipReason(swapSkipReason);
       assertions.push(makeAssertion({
         name: 'post.swapExecutedOrValidlySkipped',
         pass: swapOutcomeValid,
-        actual: swapPlanned ? { balanceDeltaValid } : { swapSkipReason },
-        expected: swapPlanned ? { balanceDeltaValid: true } : { swapSkipReason: 'DUST|ROUTER_DISABLED' },
+        actual: swapPlanned ? { balanceDeltaValid, swapInstructionCount } : { swapSkipReason },
+        expected: swapPlanned ? { balanceDeltaValid: true, swapInstructionCount: '>0' } : { swapSkipReason: 'DUST|ROUTER_DISABLED' },
       }));
 
       const preAccruedKnown = preState.feeOwedA !== null && preState.feeOwedB !== null;
@@ -1056,13 +1101,46 @@ export async function runDevnetE2EWithArtifact(
     const rawToken2022Position = parseOptionalToken2022Position(env);
     if (!rawToken2022Position) {
       status = 'SKIPPED';
+      skipReason = 'SCENARIO_SKIPPED_NOT_CONFIGURED';
       assertions.push(makeAssertion({
         name: 'error.matchesExpected',
         pass: true,
-        actual: 'SCENARIO_SKIPPED_NOT_CONFIGURED',
-        expected: 'SCENARIO_SKIPPED_NOT_CONFIGURED',
-        reasonCode: 'SCENARIO_SKIPPED_NOT_CONFIGURED',
+        actual: skipReason,
+        expected: skipReason,
+        reasonCode: skipReason,
       }));
+    }
+  }
+  if (options.expectation?.expectedErrorCodes?.length && status !== 'EXPECTED_FAILURE' && status !== 'SKIPPED') {
+    const expectedCodes = options.expectation.expectedErrorCodes.join('|');
+    if (!getAssertion(assertions, 'error.matchesExpected')) {
+      assertions.push(makeAssertion({
+        name: 'error.matchesExpected',
+        pass: false,
+        actual: errors[0]?.code ?? 'NO_ERROR',
+        expected: expectedCodes,
+      }));
+    }
+    errors.push({
+      code: 'CERT_EXPECTED_FAILURE_NOT_OBSERVED',
+      message: `Scenario '${scenarioName}' expected one of [${expectedCodes}] but completed with status '${status}'`,
+    });
+    status = 'FAIL';
+  }
+  if (options.expectation?.expectedStatus) {
+    const statusMatchesExpected = status === options.expectation.expectedStatus;
+    assertions.push(makeAssertion({
+      name: 'scenario.statusMatchesExpected',
+      pass: statusMatchesExpected,
+      actual: status,
+      expected: options.expectation.expectedStatus,
+    }));
+    if (!statusMatchesExpected && status !== 'SKIPPED') {
+      errors.push({
+        code: 'CERT_SCENARIO_STATUS_MISMATCH',
+        message: `Scenario '${scenarioName}' completed with status '${status}' (expected '${options.expectation.expectedStatus}')`,
+      });
+      status = 'FAIL';
     }
   }
   if (status === 'FAIL' && errors.length === 0) {
@@ -1095,6 +1173,7 @@ export async function runDevnetE2EWithArtifact(
     receiptFoundBefore,
     receiptFoundAfter,
     status,
+    skipReason,
     assertions,
     errors,
     scenarioName,
@@ -1130,27 +1209,54 @@ export async function runCertificationScenario(
   const scenarioOptions: RunDevnetE2EOptions = { scenarioName: name };
 
   if (name === 'hold-path') {
-    delete scenarioEnv.FORCE_DECISION;
+    scenarioOptions.decisionOverride = 'HOLD';
+    scenarioOptions.expectation = { expectedStatus: 'HOLD' };
   }
   if (name === 'happy-path-trigger' || name === 'duplicate-execution-same-epoch') {
-    scenarioEnv.FORCE_DECISION = scenarioEnv.FORCE_DECISION ?? 'TRIGGER_DOWN';
+    scenarioOptions.decisionOverride = 'TRIGGER_DOWN';
   }
   if (name === 'unsupported-router-cluster') {
     scenarioEnv.SWAP_ROUTER = 'jupiter';
-    scenarioOptions.expectation = { expectedErrorCodes: ['SWAP_ROUTER_UNSUPPORTED_CLUSTER'] };
+    scenarioOptions.expectation = {
+      expectedStatus: 'EXPECTED_FAILURE',
+      expectedErrorCodes: ['SWAP_ROUTER_UNSUPPORTED_CLUSTER'],
+    };
   }
   if (name === 'receipt-misconfiguration') {
     scenarioEnv.RECEIPT_IDENTITY_SOURCE = 'config';
-    scenarioOptions.expectation = { expectedErrorCodes: ['RECEIPT_PROGRAM_NOT_CONFIGURED', 'RECEIPT_PROGRAM_VERIFICATION_FAILED'] };
+    scenarioOptions.expectation = {
+      expectedStatus: 'EXPECTED_FAILURE',
+      expectedErrorCodes: ['RECEIPT_PROGRAM_NOT_CONFIGURED', 'RECEIPT_PROGRAM_VERIFICATION_FAILED'],
+    };
   }
   if (name === 'rpc-retry-exhaustion') {
-    scenarioOptions.expectation = { expectedErrorCodes: ['RPC_TRANSIENT', 'RPC_PERMANENT'] };
+    scenarioOptions.decisionOverride = 'TRIGGER_DOWN';
+    scenarioOptions.executeOnceHooks = {
+      forceRetryError: {
+        key: 'refreshPositionDecision',
+        code: 'RPC_TRANSIENT',
+        message: 'forced certification retry exhaustion',
+        retryable: true,
+      },
+    };
+    scenarioOptions.expectation = {
+      expectedStatus: 'EXPECTED_FAILURE',
+      expectedErrorCodes: ['RPC_TRANSIENT'],
+      requireRetryExhaustionKey: 'refreshPositionDecision',
+    };
   }
   if (name === 'token2022-certification') {
     scenarioOptions.expectation = { allowSkip: true };
   }
-  if (name === 'stale-quote-rebuild' || name === 'signing-delay-blockhash-drift') {
-    scenarioEnv.FORCE_DECISION = scenarioEnv.FORCE_DECISION ?? 'TRIGGER_DOWN';
+  if (name === 'stale-quote-rebuild') {
+    scenarioOptions.decisionOverride = 'TRIGGER_DOWN';
+    scenarioOptions.executeOnceHooks = { forceQuoteRebuildReason: 'QUOTE_STALE' };
+    scenarioOptions.expectation = { expectedStatus: 'PASS', requireQuoteRebuilt: true };
+  }
+  if (name === 'signing-delay-blockhash-drift') {
+    scenarioOptions.decisionOverride = 'TRIGGER_DOWN';
+    scenarioOptions.executeOnceHooks = { forceBlockhashRefresh: true };
+    scenarioOptions.expectation = { expectedStatus: 'PASS', requireBlockhashRefreshed: true };
   }
 
   return runDevnetE2EWithArtifact(scenarioEnv, logger, deps, scenarioOptions);

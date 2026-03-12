@@ -40,6 +40,17 @@ type SuppliedQuote = {
   raw?: unknown;
 };
 
+export type ExecuteOnceCertificationHooks = {
+  forceQuoteRebuildReason?: 'QUOTE_STALE' | 'BOUND_CROSSED' | 'TICK_MOVED';
+  forceBlockhashRefresh?: boolean;
+  forceRetryError?: {
+    key: string;
+    code: CanonicalErrorCode;
+    message: string;
+    retryable: boolean;
+  };
+};
+
 export type RefreshParams = {
   connection: Connection;
   position: PublicKey;
@@ -127,6 +138,7 @@ export type ExecuteOnceParams = RefreshParams & {
   checkExistingReceipt?: (receiptPda: PublicKey) => Promise<boolean>;
   onSimulationComplete?: (summary: string) => Promise<void> | void;
   logger?: Logger;
+  certificationHooks?: ExecuteOnceCertificationHooks;
 };
 
 export type ExecuteOnceResult = {
@@ -249,15 +261,27 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   const sleep = params.sleep ?? (async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
   const retryAttempts: Record<string, number> = {};
+  let quoteRebuilt = false;
+  let quoteRebuildReason: 'QUOTE_STALE' | 'BOUND_CROSSED' | 'TICK_MOVED' | undefined;
+  let blockhashRefreshed = false;
 
   const withRetry = async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
     let attempts = 0;
-    const out = await withBoundedRetry(async () => {
-      attempts += 1;
-      return fn();
-    }, sleep, params.config.execution);
-    retryAttempts[key] = attempts;
-    return out;
+    try {
+      return await withBoundedRetry(async () => {
+        attempts += 1;
+        if (params.certificationHooks?.forceRetryError?.key === key) {
+          throw {
+            code: params.certificationHooks.forceRetryError.code,
+            retryable: params.certificationHooks.forceRetryError.retryable,
+            message: params.certificationHooks.forceRetryError.message,
+          } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string };
+        }
+        return fn();
+      }, sleep, params.config.execution);
+    } finally {
+      retryAttempts[key] = attempts;
+    }
   };
 
   try {
@@ -440,24 +464,24 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     };
 
     let assembled = await withRetry('buildPlan.initial', () => buildPlan(snapshot));
-    let quoteRebuilt = false;
-    let quoteRebuildReason: 'QUOTE_STALE' | 'BOUND_CROSSED' | 'TICK_MOVED' | undefined;
 
-    const rebuildCheck = shouldRebuild(
-      {
-        quotedAtUnixMs: assembled.quotedAtUnixMs,
-        quotedAtSlot: latestSlot,
-        quoteTickIndex: assembled.quoteTickIndex,
-      },
-      snapshot,
-      {
-        nowUnixMs: nowUnixMs(),
-        latestSlot,
-        quoteFreshnessMs: params.config.execution.quoteFreshnessSec * 1000,
-        quoteFreshnessSlots: params.config.execution.quoteFreshnessSlots,
-        rebuildTickDelta: params.config.execution.rebuildTickDelta,
-      },
-    );
+    const rebuildCheck = params.certificationHooks?.forceQuoteRebuildReason
+      ? { rebuild: true, reasonCode: params.certificationHooks.forceQuoteRebuildReason }
+      : shouldRebuild(
+          {
+            quotedAtUnixMs: assembled.quotedAtUnixMs,
+            quotedAtSlot: latestSlot,
+            quoteTickIndex: assembled.quoteTickIndex,
+          },
+          snapshot,
+          {
+            nowUnixMs: nowUnixMs(),
+            latestSlot,
+            quoteFreshnessMs: params.config.execution.quoteFreshnessSec * 1000,
+            quoteFreshnessSlots: params.config.execution.quoteFreshnessSlots,
+            rebuildTickDelta: params.config.execution.rebuildTickDelta,
+          },
+        );
 
     if (rebuildCheck.rebuild) {
       quoteRebuilt = true;
@@ -502,7 +526,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             reliability: {
               quoteRebuilt,
               ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
-              blockhashRefreshed: false,
+              blockhashRefreshed,
               retryAttempts,
             },
             executionIntent: {
@@ -543,7 +567,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
 
     const availableLamports = await withRetry('connection.getBalance', () => params.connection.getBalance(params.authority));
 
-    const fetchedAtUnixMs = nowUnixMs();
+    const fetchedAtUnixMs = params.certificationHooks?.forceBlockhashRefresh
+      ? nowUnixMs() - ((params.config.execution.quoteFreshnessSec * 1000) + 1)
+      : nowUnixMs();
     let latestBlockhash = await withRetry('connection.getLatestBlockhash.initial', () => params.connection.getLatestBlockhash());
 
     const buildTx = async (recentBlockhash: string) => {
@@ -612,7 +638,6 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     await params.onSimulationComplete?.(simSummary);
 
     let sig: string;
-    let blockhashRefreshed = false;
     try {
       const refreshedBlockhash = await refreshBlockhashIfNeeded({
         getLatestBlockhash: () => params.connection.getLatestBlockhash(),
@@ -731,8 +756,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           swapInstructionCount: 0,
         },
         reliability: {
-          quoteRebuilt: false,
-          blockhashRefreshed: false,
+          quoteRebuilt,
+          ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
+          blockhashRefreshed,
           retryAttempts,
         },
         executionIntent: {

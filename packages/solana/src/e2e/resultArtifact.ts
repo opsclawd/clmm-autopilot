@@ -36,6 +36,7 @@ export type ResultArtifactV1 = {
   receiptFoundBefore: boolean;
   receiptFoundAfter: boolean;
   status: CertificationStatus;
+  skipReason: string;
   assertions: AssertionResult[];
   errors: Array<{ code: string; message: string }>;
   scenarioName: string;
@@ -102,6 +103,7 @@ export function normalizeArtifact(artifact: ResultArtifactV1): ResultArtifactV1 
     receiptFoundBefore: artifact.receiptFoundBefore,
     receiptFoundAfter: artifact.receiptFoundAfter,
     status: artifact.status,
+    skipReason: artifact.skipReason,
     assertions: sortAssertions(artifact.assertions),
     errors: [...artifact.errors],
     scenarioName: artifact.scenarioName,

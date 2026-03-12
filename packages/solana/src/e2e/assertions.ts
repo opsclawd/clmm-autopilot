@@ -12,6 +12,10 @@ export type AssertionInput = {
 export const REQUIRED_ASSERTION_NAMES = [
   'precheck.receiptAbsent',
   'decision.isExpected',
+  'scenario.statusMatchesExpected',
+  'scenario.quoteRebuilt',
+  'scenario.blockhashRefreshed',
+  'scenario.retryExhausted',
   'tx.buildSucceeded',
   'tx.simulationSucceeded',
   'tx.confirmed',
