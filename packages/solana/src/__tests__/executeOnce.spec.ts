@@ -586,6 +586,9 @@ describe('executeOnce', () => {
     expect(res.status).toBe('HOLD');
     expect(res.errorCode).toBeUndefined();
     expect(res.refresh?.decision.decision).toBe('HOLD');
+    expect(res.metadata?.decision.decision).toBe('HOLD');
+    expect(res.metadata?.swap.swapPlanned).toBe(false);
+    expect(res.metadata?.executionIntent.receiptWritePlanned).toBe(false);
   });
 
   it('honors decisionOverride when live policy would otherwise HOLD', async () => {

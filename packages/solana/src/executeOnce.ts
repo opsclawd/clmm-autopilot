@@ -132,6 +132,30 @@ export type ExecuteOnceParams = RefreshParams & {
 export type ExecuteOnceResult = {
   status: 'HOLD' | 'EXECUTED' | 'ERROR';
   refresh?: RefreshResult;
+  metadata?: {
+    decision: {
+      decision: RefreshResult['decision']['decision'];
+      reasonCode: string;
+    };
+    swap: {
+      swapPlanned: boolean;
+      swapSkipped: boolean;
+      swapSkipReason: 'NONE' | 'DUST' | 'ROUTER_DISABLED';
+      swapRouter: AutopilotConfig['execution']['swapRouter'];
+      swapInstructionCount: number;
+    };
+    reliability: {
+      quoteRebuilt: boolean;
+      quoteRebuildReason?: 'QUOTE_STALE' | 'BOUND_CROSSED' | 'TICK_MOVED';
+      blockhashRefreshed: boolean;
+      retryAttempts: Record<string, number>;
+    };
+    executionIntent: {
+      removeLiquidityPlanned: boolean;
+      collectFeesPlanned: boolean;
+      receiptWritePlanned: boolean;
+    };
+  };
   execution?: {
     unsignedTxBuilt: boolean;
     simulated: boolean;
@@ -224,6 +248,17 @@ function buildPlanQuoteFromSupplied(router: AutopilotConfig['execution']['swapRo
 export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnceResult> {
   const sleep = params.sleep ?? (async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
+  const retryAttempts: Record<string, number> = {};
+
+  const withRetry = async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
+    let attempts = 0;
+    const out = await withBoundedRetry(async () => {
+      attempts += 1;
+      return fn();
+    }, sleep, params.config.execution);
+    retryAttempts[key] = attempts;
+    return out;
+  };
 
   try {
     // Resolve receipt identity before policy branching so devnet misconfiguration fails fast even on HOLD.
@@ -231,7 +266,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     if (receiptIdentity) {
       await verifyReceiptProgramOnChain(params.connection, receiptIdentity);
     }
-    const refreshed = await withBoundedRetry(() => refreshPositionDecision(params), sleep, params.config.execution);
+    const refreshed = await withRetry('refreshPositionDecision', () => refreshPositionDecision(params));
     const effectiveRefresh = params.decisionOverride
       ? {
           ...refreshed,
@@ -248,18 +283,42 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     const adapter = router === 'noop' ? null : getSwapAdapter(router, params.config.cluster);
 
     if (effectiveRefresh.decision.decision === 'HOLD') {
-      return { status: 'HOLD', refresh: effectiveRefresh };
+      return {
+        status: 'HOLD',
+        refresh: effectiveRefresh,
+        metadata: {
+          decision: {
+            decision: effectiveRefresh.decision.decision,
+            reasonCode: effectiveRefresh.decision.reasonCode,
+          },
+          swap: {
+            swapPlanned: false,
+            swapSkipped: true,
+            swapSkipReason: 'NONE',
+            swapRouter: router,
+            swapInstructionCount: 0,
+          },
+          reliability: {
+            quoteRebuilt: false,
+            blockhashRefreshed: false,
+            retryAttempts,
+          },
+          executionIntent: {
+            removeLiquidityPlanned: false,
+            collectFeesPlanned: false,
+            receiptWritePlanned: false,
+          },
+        },
+      };
     }
 
-    let snapshot = await withBoundedRetry(
-      () => loadPositionSnapshot(params.connection, params.position, params.config.cluster),
-      sleep,
-      params.config.execution,
+    let snapshot = await withRetry('loadPositionSnapshot.initial', () =>
+      loadPositionSnapshot(params.connection, params.position, params.config.cluster),
     );
 
     const direction = effectiveRefresh.decision.decision === 'TRIGGER_UP' ? ('UP' as ExitDirection) : ('DOWN' as ExitDirection);
 
-    const latestSlot = await withBoundedRetry(() => params.connection.getSlot('confirmed'), sleep, params.config.execution);
+    const latestSlot = await withRetry('connection.getSlot', () => params.connection.getSlot('confirmed'));
     const epochSourceMs = params.receiptEpochUnixMs ?? nowUnixMs();
     const epoch = unixDaysFromUnixMs(epochSourceMs);
 
@@ -380,7 +439,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       };
     };
 
-    let assembled = await withBoundedRetry(() => buildPlan(snapshot), sleep, params.config.execution);
+    let assembled = await withRetry('buildPlan.initial', () => buildPlan(snapshot));
+    let quoteRebuilt = false;
+    let quoteRebuildReason: 'QUOTE_STALE' | 'BOUND_CROSSED' | 'TICK_MOVED' | undefined;
 
     const rebuildCheck = shouldRebuild(
       {
@@ -399,12 +460,12 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     );
 
     if (rebuildCheck.rebuild) {
-      snapshot = await withBoundedRetry(
-        () => loadPositionSnapshot(params.connection, params.position, params.config.cluster),
-        sleep,
-        params.config.execution,
+      quoteRebuilt = true;
+      quoteRebuildReason = rebuildCheck.reasonCode;
+      snapshot = await withRetry('loadPositionSnapshot.rebuild', () =>
+        loadPositionSnapshot(params.connection, params.position, params.config.cluster),
       );
-      assembled = await withBoundedRetry(() => buildPlan(snapshot), sleep, params.config.execution);
+      assembled = await withRetry('buildPlan.rebuild', () => buildPlan(snapshot));
       params.logger?.notify?.('quote rebuilt', { reasonCode: rebuildCheck.reasonCode ?? 'QUOTE_STALE' });
     }
 
@@ -419,13 +480,37 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     if (receiptPda) {
       const existingReceipt = params.checkExistingReceipt
         ? await params.checkExistingReceipt(receiptPda)
-        : Boolean(await withBoundedRetry(() => fetchReceiptByPda(params.connection, receiptPda), sleep, params.config.execution));
+        : Boolean(await withRetry('fetchReceiptByPda.precheck', () => fetchReceiptByPda(params.connection, receiptPda)));
       if (existingReceipt) {
         return {
           status: 'ERROR',
           refresh: effectiveRefresh,
           errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
           errorMessage: 'Execution receipt already exists for canonical epoch',
+          metadata: {
+            decision: {
+              decision: effectiveRefresh.decision.decision,
+              reasonCode: effectiveRefresh.decision.reasonCode,
+            },
+            swap: {
+              swapPlanned: assembled.plan.swapPlanned,
+              swapSkipped: !assembled.plan.swapPlanned,
+              swapSkipReason: assembled.plan.swapSkipReason,
+              swapRouter: assembled.plan.swapRouter,
+              swapInstructionCount: assembled.swapIxs.length,
+            },
+            reliability: {
+              quoteRebuilt,
+              ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
+              blockhashRefreshed: false,
+              retryAttempts,
+            },
+            executionIntent: {
+              removeLiquidityPlanned: true,
+              collectFeesPlanned: true,
+              receiptWritePlanned: true,
+            },
+          },
         };
       }
     }
@@ -456,10 +541,10 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     const attestationHash = params.attestationHash ?? computeAttestationHash(attestationInput);
     const attestationPayloadBytes = params.attestationPayloadBytes ?? encodeAttestationPayload(attestationInput);
 
-    const availableLamports = await withBoundedRetry(() => params.connection.getBalance(params.authority), sleep, params.config.execution);
+    const availableLamports = await withRetry('connection.getBalance', () => params.connection.getBalance(params.authority));
 
     const fetchedAtUnixMs = nowUnixMs();
-    let latestBlockhash = await withBoundedRetry(() => params.connection.getLatestBlockhash(), sleep, params.config.execution);
+    let latestBlockhash = await withRetry('connection.getLatestBlockhash.initial', () => params.connection.getLatestBlockhash());
 
     const buildTx = async (recentBlockhash: string) => {
       const lookupTableAccounts: AddressLookupTableAccount[] = await loadLookupTables(params.connection, assembled.lookupTableAddresses);
@@ -527,6 +612,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     await params.onSimulationComplete?.(simSummary);
 
     let sig: string;
+    let blockhashRefreshed = false;
     try {
       const refreshedBlockhash = await refreshBlockhashIfNeeded({
         getLatestBlockhash: () => params.connection.getLatestBlockhash(),
@@ -541,6 +627,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         blockhash: refreshedBlockhash.blockhash,
         lastValidBlockHeight: refreshedBlockhash.lastValidBlockHeight,
       };
+      blockhashRefreshed = blockhashRefreshed || refreshedBlockhash.rebuilt;
       sig = await params.signAndSend(msg);
     } catch (sendError) {
       const normalized = normalizeSolanaError(sendError);
@@ -559,6 +646,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         blockhash: refreshedBlockhash.blockhash,
         lastValidBlockHeight: refreshedBlockhash.lastValidBlockHeight,
       };
+      blockhashRefreshed = blockhashRefreshed || refreshedBlockhash.rebuilt;
       sig = await params.signAndSend(msg);
     }
 
@@ -583,6 +671,30 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     return {
       status: 'EXECUTED',
       refresh: effectiveRefresh,
+      metadata: {
+        decision: {
+          decision: effectiveRefresh.decision.decision,
+          reasonCode: effectiveRefresh.decision.reasonCode,
+        },
+        swap: {
+          swapPlanned: assembled.plan.swapPlanned,
+          swapSkipped: !assembled.plan.swapPlanned,
+          swapSkipReason: assembled.plan.swapSkipReason,
+          swapRouter: assembled.plan.swapRouter,
+          swapInstructionCount: assembled.swapIxs.length,
+        },
+        reliability: {
+          quoteRebuilt,
+          ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
+          blockhashRefreshed,
+          retryAttempts,
+        },
+        executionIntent: {
+          removeLiquidityPlanned: true,
+          collectFeesPlanned: true,
+          receiptWritePlanned: Boolean(receiptPda),
+        },
+      },
       execution: {
         unsignedTxBuilt: true,
         simulated: true,
@@ -601,6 +713,34 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   } catch (error) {
     const normalized = normalizeSolanaError(error);
     params.logger?.notifyError?.(error, { reasonCode: normalized.code });
-    return { status: 'ERROR', errorCode: normalized.code, errorMessage: normalized.message, errorDebug: normalized.debug };
+    return {
+      status: 'ERROR',
+      errorCode: normalized.code,
+      errorMessage: normalized.message,
+      errorDebug: normalized.debug,
+      metadata: {
+        decision: {
+          decision: 'HOLD',
+          reasonCode: 'EXECUTION_FAILED_BEFORE_DECISION',
+        },
+        swap: {
+          swapPlanned: false,
+          swapSkipped: true,
+          swapSkipReason: 'NONE',
+          swapRouter: params.config.execution.swapRouter,
+          swapInstructionCount: 0,
+        },
+        reliability: {
+          quoteRebuilt: false,
+          blockhashRefreshed: false,
+          retryAttempts,
+        },
+        executionIntent: {
+          removeLiquidityPlanned: false,
+          collectFeesPlanned: false,
+          receiptWritePlanned: false,
+        },
+      },
+    };
   }
 }

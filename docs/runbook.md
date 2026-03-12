@@ -7,6 +7,7 @@ pnpm install
 pnpm -r test
 pnpm receipt:check:devnet
 pnpm e2e:devnet
+pnpm e2e:certify:devnet
 ```
 
 Deploy/update devnet receipt program identity (manual acceptance workflow):
@@ -69,6 +70,23 @@ node scripts/find-devnet-whirlpool-positions.mjs --wallet "$WALLET_ADDRESS"
 13. Executes the same flow a second time in the same epoch and requires deterministic rejection with `ALREADY_EXECUTED_THIS_EPOCH`
 
 Logs are JSON (structured) and failure exits non-zero.
+
+## Certification suite
+
+`pnpm e2e:certify:devnet` runs named certification scenarios and writes one canonical artifact per scenario to:
+
+- default: `artifacts/e2e/devnet/<scenario>/<runId>.json`
+- override: set `E2E_ARTIFACT_DIR`
+
+Artifact status values:
+
+- `PASS`
+- `HOLD`
+- `EXPECTED_FAILURE`
+- `SKIPPED`
+- `FAIL`
+
+Artifacts include `schemaVersion: 1` and should be used as the primary certification record (logs remain supplementary).
 
 ## Consistency guard
 
