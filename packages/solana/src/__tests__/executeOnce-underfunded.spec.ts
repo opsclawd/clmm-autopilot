@@ -1,20 +1,36 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG, encodeAttestationPayload } from '@clmm-autopilot/core';
 import { PublicKey } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID } from '../token/constants';
 
 const RECEIPT_PROGRAM_ID = new PublicKey(DEFAULT_CONFIG.receiptProgramId!);
 const BPF_UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
+const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
+const USDC_MINT = new PublicKey('BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k');
+const POSITION_MINT = new PublicKey(new Uint8Array(32).fill(12));
 
 function getAccountInfoForProgramOnly(programId = RECEIPT_PROGRAM_ID) {
   return vi.fn(async (pubkey: PublicKey) => {
-    if (!pubkey.equals(programId)) return null;
-    return {
-      executable: true,
-      owner: BPF_UPGRADEABLE_LOADER,
-      lamports: 1,
-      data: Buffer.alloc(0),
-      rentEpoch: 0,
-    };
+    if (pubkey.equals(programId)) {
+      return {
+        executable: true,
+        owner: BPF_UPGRADEABLE_LOADER,
+        lamports: 1,
+        data: Buffer.alloc(0),
+        rentEpoch: 0,
+      };
+    }
+    if (pubkey.equals(SOL_MINT) || pubkey.equals(USDC_MINT) || pubkey.equals(POSITION_MINT)) {
+      return {
+        executable: false,
+        owner: TOKEN_PROGRAM_ID,
+        lamports: 1,
+        data: Buffer.alloc(82),
+        rentEpoch: 0,
+      };
+    }
+    // ATA existence checks intentionally return null to force rent requirements for underfunded path.
+    return null;
   });
 }
 
@@ -47,6 +63,7 @@ vi.mock('../orcaInspector', async () => {
   const { PublicKey } = await import('@solana/web3.js');
   const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
   const USDC_MINT = new PublicKey('BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k');
+  const { TOKEN_PROGRAM_ID } = await import('../token/constants');
   return {
     loadPositionSnapshot: async () => ({
       cluster: 'devnet',
@@ -54,7 +71,7 @@ vi.mock('../orcaInspector', async () => {
       pairValid: true,
       whirlpool: new PublicKey(new Uint8Array(32).fill(10)),
       position: new PublicKey(new Uint8Array(32).fill(11)),
-      positionMint: new PublicKey(new Uint8Array(32).fill(12)),
+      positionMint: POSITION_MINT,
       currentTickIndex: 100,
       lowerTickIndex: 50,
       upperTickIndex: 150,
@@ -69,8 +86,8 @@ vi.mock('../orcaInspector', async () => {
       tokenVaultB: new PublicKey(new Uint8Array(32).fill(14)),
       tickArrayLower: new PublicKey(new Uint8Array(32).fill(15)),
       tickArrayUpper: new PublicKey(new Uint8Array(32).fill(16)),
-      tokenProgramA: new PublicKey(new Uint8Array(32).fill(17)),
-      tokenProgramB: new PublicKey(new Uint8Array(32).fill(18)),
+      tokenProgramA: TOKEN_PROGRAM_ID,
+      tokenProgramB: TOKEN_PROGRAM_ID,
       removePreview: { tokenAOut: BigInt(1), tokenBOut: BigInt(1) },
       removePreviewReasonCode: null,
     }),

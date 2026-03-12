@@ -1,11 +1,14 @@
 import type { Connection, PublicKey } from '@solana/web3.js';
-import { AccountLayout, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { AccountLayout } from '@solana/spl-token';
 import type { PositionSnapshot } from './orcaInspector';
-import { getAta, SOL_MINT } from './ata';
+import { type AtaPlanEntry, getAta, SOL_MINT } from './ata';
+import { resolveTokenProgramForMint } from './token/program';
+import { TOKEN_PROGRAM_ID } from './token/constants';
 
 export type FeeRequirementsBreakdown = {
   rentLamports: number;
   ataCount: number;
+  missingAtas: AtaPlanEntry[];
   txFeeLamports: number;
   priorityFeeLamports: number;
   totalRequiredLamports: number;
@@ -45,33 +48,53 @@ async function accountExists(connection: Pick<Connection, 'getAccountInfo'>, pub
 export async function computeExecutionRequirements(input: RequirementsInput): Promise<FeeRequirementsBreakdown> {
   const involvesSol = input.quote.inputMint.equals(SOL_MINT) || input.quote.outputMint.equals(SOL_MINT);
 
-  const ataAddresses = new Map<string, PublicKey>();
-  const addAta = (mint: PublicKey, tokenProgramId: PublicKey = TOKEN_PROGRAM_ID) => {
+  const ataPlans = new Map<string, AtaPlanEntry>();
+  const addAta = (mint: PublicKey, tokenProgramId: PublicKey) => {
     const ata = getAta(mint, input.authority, tokenProgramId);
-    ataAddresses.set(ata.toBase58(), ata);
+    const key = ata.toBase58();
+    if (ataPlans.has(key)) return;
+    ataPlans.set(key, {
+      ata,
+      mint,
+      owner: input.authority,
+      tokenProgramId,
+    });
   };
 
   // Orca exit always needs these token accounts (position token + the pool mints A/B).
-  addAta(input.snapshot.positionMint, input.snapshot.positionTokenProgram ?? TOKEN_PROGRAM_ID);
+  const positionTokenProgramId =
+    input.snapshot.positionTokenProgram ?? (await resolveTokenProgramForMint(input.connection, input.snapshot.positionMint)).tokenProgramId;
+  addAta(input.snapshot.positionMint, positionTokenProgramId);
   addAta(input.snapshot.tokenMintA, input.snapshot.tokenProgramA);
   addAta(input.snapshot.tokenMintB, input.snapshot.tokenProgramB);
 
   if (input.swapPlanned) {
+    const resolveQuoteTokenProgramId = async (mint: PublicKey): Promise<PublicKey> => {
+      if (mint.equals(input.snapshot.tokenMintA)) return input.snapshot.tokenProgramA;
+      if (mint.equals(input.snapshot.tokenMintB)) return input.snapshot.tokenProgramB;
+      return (await resolveTokenProgramForMint(input.connection, mint)).tokenProgramId;
+    };
+
     // Swap ATAs for input/output mints when those are SPL tokens.
-    if (!input.quote.inputMint.equals(SOL_MINT)) addAta(input.quote.inputMint);
-    if (!input.quote.outputMint.equals(SOL_MINT)) addAta(input.quote.outputMint);
+    if (!input.quote.inputMint.equals(SOL_MINT)) {
+      addAta(input.quote.inputMint, await resolveQuoteTokenProgramId(input.quote.inputMint));
+    }
+    if (!input.quote.outputMint.equals(SOL_MINT)) {
+      addAta(input.quote.outputMint, await resolveQuoteTokenProgramId(input.quote.outputMint));
+    }
     // WSOL ATA when swap involves SOL (wrap/unwrap lifecycle uses native mint ATA).
     if (involvesSol) addAta(SOL_MINT, TOKEN_PROGRAM_ID);
   }
 
-  const uniqueAtas = Array.from(ataAddresses.values());
+  const plannedAtas = Array.from(ataPlans.values());
 
-  const exists = await Promise.all(uniqueAtas.map((k) => accountExists(input.connection, k)));
-  const missingAtas = exists.reduce((acc, ok) => acc + (ok ? 0 : 1), 0);
+  const exists = await Promise.all(plannedAtas.map((entry) => accountExists(input.connection, entry.ata)));
+  const missingAtas = plannedAtas.filter((_, i) => !exists[i]);
+  const missingAtaCount = missingAtas.length;
 
   // All ATAs are SPL Token accounts, same size.
   const tokenAccountRent = await input.connection.getMinimumBalanceForRentExemption(AccountLayout.span);
-  const rentLamports = tokenAccountRent * missingAtas;
+  const rentLamports = tokenAccountRent * missingAtaCount;
 
   const computeUnitLimit = input.computeUnitLimit ?? 0;
   const computeUnitPriceMicroLamports = input.computeUnitPriceMicroLamports ?? 0;
@@ -81,7 +104,8 @@ export async function computeExecutionRequirements(input: RequirementsInput): Pr
 
   return {
     rentLamports,
-    ataCount: missingAtas,
+    ataCount: missingAtaCount,
+    missingAtas,
     txFeeLamports: input.txFeeLamports,
     priorityFeeLamports,
     totalRequiredLamports,

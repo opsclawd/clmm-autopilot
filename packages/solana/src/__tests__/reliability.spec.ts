@@ -64,4 +64,21 @@ describe('reliability', () => {
     expect(sleep).toHaveBeenNthCalledWith(1, 250);
     expect(sleep).toHaveBeenNthCalledWith(2, 750);
   });
+
+  it('does not retry terminal unsupported mint owner errors', async () => {
+    const fn = vi.fn(async () => {
+      const err = new Error('unsupported') as Error & { code: 'UNSUPPORTED_MINT_OWNER'; retryable: false };
+      err.code = 'UNSUPPORTED_MINT_OWNER';
+      err.retryable = false;
+      throw err;
+    });
+    const sleep = vi.fn(async () => {});
+
+    await expect(withBoundedRetry(fn, sleep, DEFAULT_CONFIG.execution)).rejects.toMatchObject({
+      code: 'UNSUPPORTED_MINT_OWNER',
+      retryable: false,
+    });
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
 });

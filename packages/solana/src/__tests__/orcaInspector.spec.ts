@@ -411,6 +411,42 @@ describe('loadPositionSnapshot', () => {
     });
   });
 
+  it('returns UNSUPPORTED_MINT_OWNER when mint owner is not token/token-2022', async () => {
+    clearTickArrayCache();
+    const position = Keypair.generate().publicKey;
+    const whirlpool = Keypair.generate().publicKey;
+    const positionMint = Keypair.generate().publicKey;
+    const tokenMintA = SOL_MINT;
+    const tokenMintB = USDC_MINT;
+
+    const accounts = new Map<string, { data: Buffer; owner?: PublicKey }>();
+    accounts.set(
+      position.toBase58(),
+      { data: mkPositionData({ whirlpool, positionMint, liquidity: 1n, lowerTickIndex: 120, upperTickIndex: 200 }) },
+    );
+    accounts.set(
+      whirlpool.toBase58(),
+      {
+        data: mkWhirlpoolData({
+          tickSpacing: 1,
+          currentTickIndex: 150,
+          tokenMintA,
+          tokenVaultA: Keypair.generate().publicKey,
+          tokenMintB,
+          tokenVaultB: Keypair.generate().publicKey,
+        }),
+      },
+    );
+    accounts.set(positionMint.toBase58(), { data: mkMintData(0), owner: TOKEN_PROGRAM_V1 });
+    accounts.set(tokenMintA.toBase58(), { data: mkMintData(6), owner: TOKEN_PROGRAM_V1 });
+    accounts.set(tokenMintB.toBase58(), { data: mkMintData(9), owner: Keypair.generate().publicKey });
+
+    await expect(loadPositionSnapshot(mockConn({ accounts }), position)).rejects.toMatchObject({
+      code: 'UNSUPPORTED_MINT_OWNER',
+      retryable: false,
+    });
+  });
+
   it('propagates ORCA_DECODE_FAILED when decoder fails', async () => {
     clearTickArrayCache();
     const position = Keypair.generate().publicKey;

@@ -82,6 +82,7 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     requirements: {
       rentLamports: 2_039_280,
       ataCount: 1,
+      missingAtas: [{ ata: pk(210), mint: pk(211), owner: authority, tokenProgramId: pk(212) }],
       txFeeLamports: 20_000,
       priorityFeeLamports: 5_000,
       bufferLamports: 10_000,
@@ -91,7 +92,7 @@ function buildConfig(overrides?: Partial<BuildExitConfig>): BuildExitConfig {
     attestationPayloadBytes: new Uint8Array(240),
     simulate: async (): Promise<SimResult> => ({ err: null, logs: ['ok'] }),
     buildOrcaExitIxs: () => ({
-      conditionalAtaIxs: [ix(21), ix(22)],
+      variant: 'v2',
       removeLiquidityIx: ix(31),
       collectFeesIx: ix(32),
       tokenOwnerAccountA: pk(1),

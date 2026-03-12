@@ -26,6 +26,7 @@ import { resolveReceiptRuntimeIdentity, type ReceiptRuntimeIdentity } from './re
 import { verifyReceiptProgramOnChain } from './receiptProgramVerification';
 import { getSwapAdapter } from './swap/registry';
 import { deriveSwapTickArrays } from './swap/tickArrays';
+import { TOKEN_2022_PROGRAM_ID } from './token/constants';
 
 export type HarnessDecision = 'HOLD' | 'TRIGGER_DOWN' | 'TRIGGER_UP';
 
@@ -82,6 +83,11 @@ function parseRequiredEnv(env: HarnessEnv, key: 'RPC_URL' | 'AUTHORITY_KEYPAIR')
 
 function parseOptionalEnv(env: HarnessEnv, key: 'POSITION_ADDRESS' | 'POSITION_ADDRESS_CANDIDATES'): string | undefined {
   const value = env[key]?.trim();
+  return value ? value : undefined;
+}
+
+function parseOptionalToken2022Position(env: HarnessEnv): string | undefined {
+  const value = env.TOKEN2022_POSITION_ADDRESS?.trim();
   return value ? value : undefined;
 }
 
@@ -356,6 +362,55 @@ async function resolveHarnessPosition(params: {
   throw codedError('CONFIG_INVALID', `No candidate positions available for receipt proof (${summary})`);
 }
 
+async function runOptionalToken2022Scenario(params: {
+  env: HarnessEnv;
+  connection: Connection;
+  deps: HarnessDeps;
+  logger: HarnessLogger;
+}): Promise<void> {
+  const rawPosition = parseOptionalToken2022Position(params.env);
+  if (!rawPosition) {
+    log(params.logger, 'token2022.optional.skip', { reason: 'NOT_CONFIGURED' });
+    return;
+  }
+
+  let position: PublicKey;
+  try {
+    position = new PublicKey(rawPosition);
+  } catch {
+    log(params.logger, 'token2022.optional.skip', { reason: 'INVALID_POSITION_ADDRESS' });
+    return;
+  }
+
+  try {
+    const snapshot = await params.deps.loadPositionSnapshot(params.connection, position, 'devnet');
+    const hasToken2022 =
+      snapshot.tokenProgramA.equals(TOKEN_2022_PROGRAM_ID) || snapshot.tokenProgramB.equals(TOKEN_2022_PROGRAM_ID);
+    if (!hasToken2022) {
+      log(params.logger, 'token2022.optional.skip', {
+        reason: 'NO_TOKEN2022_MINT',
+        position: position.toBase58(),
+        tokenProgramA: snapshot.tokenProgramA.toBase58(),
+        tokenProgramB: snapshot.tokenProgramB.toBase58(),
+      });
+      return;
+    }
+
+    log(params.logger, 'token2022.optional.ok', {
+      position: position.toBase58(),
+      tokenProgramA: snapshot.tokenProgramA.toBase58(),
+      tokenProgramB: snapshot.tokenProgramB.toBase58(),
+    });
+  } catch (error) {
+    const err = error as HarnessError;
+    log(params.logger, 'token2022.optional.skip', {
+      reason: err.code ?? 'LOAD_FAILED',
+      message: err.message,
+      position: position.toBase58(),
+    });
+  }
+}
+
 export async function runDevnetE2E(
   env: HarnessEnv = process.env,
   logger: HarnessLogger = (entry) => console.log(JSON.stringify(entry)),
@@ -440,6 +495,7 @@ export async function runDevnetE2E(
   log(logger, 'policy.evaluate.ok', { decision, reasonCode });
 
   if (decision === 'HOLD') {
+    await runOptionalToken2022Scenario({ env, connection, deps, logger });
     if (requireReceiptProof) {
       throw codedError(
         'RECEIPT_PROGRAM_VERIFICATION_FAILED',
@@ -640,5 +696,6 @@ export async function runDevnetE2E(
   }
   log(logger, 'receipt.duplicate-block.ok', { code: duplicateResult.errorCode });
 
+  await runOptionalToken2022Scenario({ env, connection, deps, logger });
   log(logger, 'harness.complete', { status: 'EXECUTED', signature: result.txSignature });
 }

@@ -195,6 +195,31 @@ describe('runDevnetE2E refusals', () => {
     await cleanup();
   });
 
+  it('treats optional token2022 scenario as non-blocking on HOLD', async () => {
+    const { env, cleanup } = await makeEnv();
+    env.TOKEN2022_POSITION_ADDRESS = 'not-a-pubkey';
+    const logs: Array<Record<string, unknown>> = [];
+
+    await expect(
+      runDevnetE2E(
+        env,
+        (entry) => logs.push(entry),
+        harnessDeps({
+          loadPositionSnapshot: vi.fn(async () => mockSnapshot(env.POSITION_ADDRESS, {
+            currentTickIndex: 0,
+            lowerTickIndex: -10,
+            upperTickIndex: 10,
+            inRange: true,
+          })) as any,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(logs.some((entry) => entry.step === 'token2022.optional.skip')).toBe(true);
+    expect(logs.some((entry) => entry.step === 'harness.complete' && entry.status === 'HOLD')).toBe(true);
+    await cleanup();
+  });
+
   it('forwards FORCE_DECISION into executeOnce when live policy would otherwise HOLD', async () => {
     const { env, cleanup } = await makeEnv();
     env.FORCE_DECISION = 'TRIGGER_DOWN';

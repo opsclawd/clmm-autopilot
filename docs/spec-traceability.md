@@ -18,3 +18,4 @@
 | M13 orca decode stabilization | met | Runtime decode path uses centralized `orca/decode.ts` with fixtures and explicit `ORCA_DECODE_FAILED` normalization. |
 | M14 swap adapters | met | Core swap adapter contract/types + router-aware attestation fields + explicit adapter implementations/registry in solana; execute path and devnet harness now route through configured adapter with cluster gating (`SWAP_ROUTER_UNSUPPORTED_CLUSTER`). |
 | M15 devnet receipt deploy | met | Deploy-derived manifest + deterministic IDL hash gate + consistency guard + manual devnet workflow updates are in place. |
+| M16 token2022 first-class | met | Token-program resolver + LRU cache + terminal unsupported owner errors are wired; requirements owns ATA existence planning via `missingAtas`; builder consumes plan-only ATA creation; Whirlpool remove/collect/swap share v1/v2 selector with unconditional memo on v2; matrix-focused tests were added. |

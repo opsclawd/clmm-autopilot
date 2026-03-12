@@ -3,6 +3,7 @@ import type { CanonicalErrorCode, NormalizedError } from './types';
 const transientHints = ['timeout', '429', 'rate limit', 'temporarily unavailable', 'econnreset'];
 const CANONICAL_CODES: CanonicalErrorCode[] = [
   'DATA_UNAVAILABLE',
+  'UNSUPPORTED_MINT_OWNER',
   'RPC_TRANSIENT',
   'RPC_PERMANENT',
   'INVALID_POSITION',
