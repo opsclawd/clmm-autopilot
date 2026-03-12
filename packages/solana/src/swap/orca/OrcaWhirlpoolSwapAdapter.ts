@@ -149,7 +149,8 @@ export class OrcaWhirlpoolSwapAdapter implements SolanaSwapAdapter {
       tokenProgramA: context.tokenProgramA,
       tokenProgramB: context.tokenProgramB,
     });
-    const variant = selectWhirlpoolInstructionVariant(tokenContext);
+    const variant =
+      q.supplementalTickArrays.length > 0 ? 'v2' : selectWhirlpoolInstructionVariant(tokenContext);
     if (variant === 'v2' && !INCLUDE_MEMO_ON_V2) {
       fail('DATA_UNAVAILABLE', 'swap v2 requires memo inclusion policy to be enabled', false);
     }
