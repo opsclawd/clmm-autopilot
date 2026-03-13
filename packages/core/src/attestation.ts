@@ -38,18 +38,18 @@ const BASE58_MAP = new Map(BASE58_ALPHABET.split('').map((ch, idx) => [ch, idx])
 
 function base58Decode(value: string): Uint8Array {
   if (value.length === 0) return new Uint8Array();
-  let decoded = 0n;
+  let decoded = BigInt(0);
   for (let i = 0; i < value.length; i += 1) {
     const ch = value[i];
     const digit = BASE58_MAP.get(ch);
     if (digit === undefined) throw new Error(`Invalid base58 character: ${ch}`);
-    decoded = (decoded * 58n) + BigInt(digit);
+    decoded = (decoded * BigInt(58)) + BigInt(digit);
   }
 
   const bodyReversed: number[] = [];
-  while (decoded > 0n) {
-    bodyReversed.push(Number(decoded & 0xffn));
-    decoded >>= 8n;
+  while (decoded > BigInt(0)) {
+    bodyReversed.push(Number(decoded & BigInt(0xff)));
+    decoded >>= BigInt(8);
   }
   bodyReversed.reverse();
 

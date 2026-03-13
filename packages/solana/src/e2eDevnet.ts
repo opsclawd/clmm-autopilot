@@ -479,14 +479,14 @@ function bigintOrNull(value: bigint | undefined): bigint | null {
 }
 
 function parseParsedTokenAmount(parsedValue: unknown): bigint {
-  if (!parsedValue || typeof parsedValue !== 'object') return 0n;
+  if (!parsedValue || typeof parsedValue !== 'object') return BigInt(0);
   const data = parsedValue as { value?: { data?: { parsed?: { info?: { tokenAmount?: { amount?: string } } } } } };
   const amount = data.value?.data?.parsed?.info?.tokenAmount?.amount;
-  if (typeof amount !== 'string') return 0n;
+  if (typeof amount !== 'string') return BigInt(0);
   try {
     return BigInt(amount);
   } catch {
-    return 0n;
+    return BigInt(0);
   }
 }
 
@@ -505,7 +505,7 @@ async function readOwnerMintAmount(params: {
     const parsed = await params.deps.getParsedAccountInfo(params.connection, ata);
     return parseParsedTokenAmount(parsed);
   } catch {
-    return 0n;
+    return BigInt(0);
   }
 }
 
@@ -773,8 +773,8 @@ export async function runDevnetE2EWithArtifact(
         router: config.execution.swapRouter,
         inMint: ZERO_PUBKEY,
         outMint: ZERO_PUBKEY,
-        swapInAmount: 0n,
-        swapMinOutAmount: 0n,
+        swapInAmount: BigInt(0),
+        swapMinOutAmount: BigInt(0),
         slippageBpsCap: config.execution.slippageBpsCap,
         quotedAtUnixSec: 0,
       };
@@ -834,8 +834,8 @@ export async function runDevnetE2EWithArtifact(
         slippageBpsCap: config.execution.slippageBpsCap,
         quoteInputMint: swapPlanned ? planQuote.inMint : ZERO_PUBKEY,
         quoteOutputMint: swapPlanned ? planQuote.outMint : ZERO_PUBKEY,
-        quoteInAmount: swapPlanned ? planQuote.swapInAmount : 0n,
-        quoteMinOutAmount: swapPlanned ? planQuote.swapMinOutAmount : 0n,
+        quoteInAmount: swapPlanned ? planQuote.swapInAmount : BigInt(0),
+        quoteMinOutAmount: swapPlanned ? planQuote.swapMinOutAmount : BigInt(0),
         quoteQuotedAtUnixSec: swapPlanned ? planQuote.quotedAtUnixSec : 0,
         swapPlanned: swapPlanned ? 1 : 0,
         swapSkipReason,
@@ -855,8 +855,8 @@ export async function runDevnetE2EWithArtifact(
         slippageBpsCap: config.execution.slippageBpsCap,
         quoteInputMint: swapPlanned ? planQuote.inMint : ZERO_PUBKEY,
         quoteOutputMint: swapPlanned ? planQuote.outMint : ZERO_PUBKEY,
-        quoteInAmount: swapPlanned ? planQuote.swapInAmount : 0n,
-        quoteMinOutAmount: swapPlanned ? planQuote.swapMinOutAmount : 0n,
+        quoteInAmount: swapPlanned ? planQuote.swapInAmount : BigInt(0),
+        quoteMinOutAmount: swapPlanned ? planQuote.swapMinOutAmount : BigInt(0),
         quoteQuotedAtUnixSec: swapPlanned ? planQuote.quotedAtUnixSec : 0,
         swapPlanned: swapPlanned ? 1 : 0,
         swapSkipReason,
@@ -1011,7 +1011,7 @@ export async function runDevnetE2EWithArtifact(
 
       assertions.push(makeAssertion({
         name: 'post.liquidityZero',
-        pass: postSnapshot.liquidity === 0n,
+        pass: postSnapshot.liquidity === BigInt(0),
         actual: postSnapshot.liquidity.toString(),
         expected: '0',
       }));
@@ -1025,7 +1025,7 @@ export async function runDevnetE2EWithArtifact(
         post: postState,
         txFeeLamports,
       });
-      const balanceDeltaValid = swapPlanned ? directionalDelta > 0n : directionalDelta >= 0n;
+      const balanceDeltaValid = swapPlanned ? directionalDelta > BigInt(0) : directionalDelta >= BigInt(0);
       assertions.push(makeAssertion({
         name: 'post.balanceDeltaValid',
         pass: balanceDeltaValid,
@@ -1046,14 +1046,14 @@ export async function runDevnetE2EWithArtifact(
 
       const preAccruedKnown = preState.feeOwedA !== null && preState.feeOwedB !== null;
       const postAccruedKnown = postState.feeOwedA !== null && postState.feeOwedB !== null;
-      const preAccrued = (preState.feeOwedA ?? 0n) + (preState.feeOwedB ?? 0n);
-      const postAccrued = (postState.feeOwedA ?? 0n) + (postState.feeOwedB ?? 0n);
+      const preAccrued = (preState.feeOwedA ?? BigInt(0)) + (preState.feeOwedB ?? BigInt(0));
+      const postAccrued = (postState.feeOwedA ?? BigInt(0)) + (postState.feeOwedB ?? BigInt(0));
       const ownerIncreaseFallback = postState.tokenA > preState.tokenA || postState.tokenB > preState.tokenB;
       const collectEvidence = Boolean(result.metadata?.executionIntent.collectFeesPlanned) &&
         Boolean(txResp?.meta && txResp.meta.err === null);
       let feesPass = false;
       let feeReasonCode = 'FEE_PROOF_MISSING';
-      if (preAccruedKnown && preAccrued === 0n) {
+      if (preAccruedKnown && preAccrued === BigInt(0)) {
         feesPass = true;
         feeReasonCode = 'NO_FEES_ACCRUED';
       } else if (preAccruedKnown && postAccruedKnown) {
