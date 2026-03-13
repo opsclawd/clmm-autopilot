@@ -21,7 +21,8 @@
     "receipt:check:devnet": "node ./scripts/check-devnet-receipt-consistency.mjs",
     "receipt:deploy:devnet": "node ./scripts/deploy-receipt-devnet.mjs",
     "positions:devnet": "node ./scripts/find-devnet-whirlpool-positions.mjs",
-    "check:anchor-tooling": "node ./scripts/check-anchor-tooling.mjs"
+    "check:anchor-tooling": "node ./scripts/check-anchor-tooling.mjs",
+    "shadow:mainnet": "pnpm -C packages/solana shadow:mainnet"
   },
   "devDependencies": {
     "@coral-xyz/anchor": "0.32.1",

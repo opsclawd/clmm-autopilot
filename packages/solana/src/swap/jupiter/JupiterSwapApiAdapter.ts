@@ -18,12 +18,12 @@ export class JupiterSwapApiAdapter implements SolanaSwapAdapter {
   readonly name = 'jupiter' as const;
 
   supportsCluster(cluster: Cluster): boolean {
-    return cluster === 'mainnet-beta';
+    return cluster === 'mainnet';
   }
 
   async getQuote(params: SolanaGetQuoteParams): Promise<SwapQuote> {
     if (!this.supportsCluster(params.cluster)) {
-      fail('SWAP_ROUTER_UNSUPPORTED_CLUSTER', 'jupiter swap router supports mainnet-beta only', false, {
+      fail('SWAP_ROUTER_UNSUPPORTED_CLUSTER', 'jupiter swap router supports mainnet only', false, {
         cluster: params.cluster,
       });
     }

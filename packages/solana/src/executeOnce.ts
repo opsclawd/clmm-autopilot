@@ -1,10 +1,12 @@
 import {
   computeAttestationHash,
   decideSwap,
+  deriveRuntimeModeFromExecutionMode,
   encodeAttestationPayload,
   evaluateRangeBreak,
   unixDaysFromUnixMs,
   type AutopilotConfig,
+  type ExecutionMode,
   type PolicyState,
   type RuntimeMode,
   type Sample,
@@ -25,6 +27,7 @@ import { deriveSwapTickArrays } from './swap/tickArrays';
 import { getSwapAdapter } from './swap/registry';
 import type { SolanaSwapContext } from './swap/types';
 import { deriveEffectiveOperatorState, enforceExecutionGate, validateRuntimeEnvironment, type RuntimeEnvironment } from './runtime';
+import { createExecutionTransport, type ExecutionTransport } from './transport';
 import {
   createCorrelationId,
   createRuntimeCounterRegistry,
@@ -68,12 +71,15 @@ export type RefreshParams = {
 export type RefreshResult = {
   snapshot: {
     positionAddress: string;
+    whirlpoolAddress: string;
     currentTick: number;
     lowerTick: number;
     upperTick: number;
     inRange: boolean;
     pairLabel: string;
     pairValid: boolean;
+    tokenProgramA: string;
+    tokenProgramB: string;
   };
   decision: {
     decision: 'HOLD' | 'TRIGGER_DOWN' | 'TRIGGER_UP';
@@ -98,12 +104,15 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
   return {
     snapshot: {
       positionAddress: params.position.toBase58(),
+      whirlpoolAddress: snapshot.whirlpool.toBase58(),
       currentTick: snapshot.currentTickIndex,
       lowerTick: snapshot.lowerTickIndex,
       upperTick: snapshot.upperTickIndex,
       inRange: snapshot.inRange,
       pairLabel: snapshot.pairLabel,
       pairValid: snapshot.pairValid,
+      tokenProgramA: snapshot.tokenProgramA.toBase58(),
+      tokenProgramB: snapshot.tokenProgramB.toBase58(),
     },
     decision: {
       decision: decision.action,
@@ -137,7 +146,8 @@ export type ExecuteOnceParams = RefreshParams & {
   attestationPayloadBytes?: Uint8Array;
   buildJupiterSwapIxs?: unknown;
   rebuildSnapshotAndQuote?: unknown;
-  signAndSend: (tx: VersionedTransaction) => Promise<string>;
+  signAndSend?: (tx: VersionedTransaction) => Promise<string>;
+  transport?: ExecutionTransport;
   sleep?: (ms: number) => Promise<void>;
   nowUnixMs?: () => number;
   checkExistingReceipt?: (receiptPda: PublicKey) => Promise<boolean>;
@@ -154,6 +164,7 @@ export type ExecuteOnceResult = {
   metadata?: {
     operator: {
       runtimeMode: RuntimeMode;
+      executionMode: ExecutionMode;
       executionPausedDefault: boolean;
       executionPaused: boolean;
       executionPausedOverride?: boolean;
@@ -179,6 +190,9 @@ export type ExecuteOnceResult = {
       removeLiquidityPlanned: boolean;
       collectFeesPlanned: boolean;
       receiptWritePlanned: boolean;
+      receiptConfigValid: boolean;
+      receiptStepStructurallyBuildable: boolean;
+      receiptIxIncluded: boolean;
     };
     counters: ReturnType<RuntimeCounterRegistry['snapshot']>;
   };
@@ -197,6 +211,29 @@ export type ExecuteOnceResult = {
   errorMessage?: string;
   errorDebug?: unknown;
   simSummary?: string;
+  shadow?: {
+    direction: 'trigger_up' | 'trigger_down';
+    quoteSummary: {
+      inAmount: string;
+      minOut: string;
+      slippageBps: number;
+      quoteAgeMs: number;
+    };
+    candidateInstructionSummary: {
+      removeLiquidityPlanned: boolean;
+      collectFeesPlanned: boolean;
+      swapInstructionCount: number;
+      receiptIxIncluded: boolean;
+    };
+    tokenProgramSummary: {
+      mintAProgram: string;
+      mintBProgram: string;
+    };
+    receiptPdaExpected?: string;
+    receiptConfigValid: boolean;
+    receiptStepStructurallyBuildable: boolean;
+    receiptIxIncluded: boolean;
+  };
 };
 
 async function loadLookupTables(_connection: Connection, _addresses: PublicKey[]): Promise<AddressLookupTableAccount[]> {
@@ -271,8 +308,9 @@ function buildPlanQuoteFromSupplied(router: AutopilotConfig['execution']['swapRo
   };
 }
 
-function runtimeModeToDecisionStatus(mode: RuntimeMode): RuntimeEvent['status'] {
-  return mode === 'simulate-only' ? 'hypothetical' : 'ok';
+function runtimeModeToDecisionStatus(operatorState: ReturnType<typeof deriveEffectiveOperatorState>): RuntimeEvent['status'] {
+  if (operatorState.executionMode === 'mainnet-shadow') return 'ok';
+  return operatorState.runtimeMode === 'simulate-only' ? 'hypothetical' : 'ok';
 }
 
 function isConfigValidationErrorCode(code: CanonicalErrorCode): boolean {
@@ -282,6 +320,7 @@ function isConfigValidationErrorCode(code: CanonicalErrorCode): boolean {
     code === 'RUNTIME_MODE_INVALID' ||
     code === 'WALLET_PROVIDER_MISSING' ||
     code === 'RECEIPT_PROGRAM_NOT_CONFIGURED' ||
+    code === 'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW' ||
     code === 'RECEIPT_IDL_MISMATCH' ||
     code === 'RECEIPT_PROGRAM_VERIFICATION_FAILED' ||
     code === 'SWAP_ROUTER_UNSUPPORTED_CLUSTER'
@@ -298,6 +337,7 @@ function baseEvent(
     event: fields.event,
     timestamp: new Date().toISOString(),
     cluster: params.config.cluster,
+    executionMode: operatorState.executionMode,
     runtimeMode: operatorState.runtimeMode,
     executionPaused: operatorState.executionPaused,
     authority: params.authority.toBase58(),
@@ -323,6 +363,7 @@ function buildMetadata(params: {
 }): NonNullable<ExecuteOnceResult['metadata']> {
   return {
     operator: {
+      executionMode: params.operatorState.executionMode,
       runtimeMode: params.operatorState.runtimeMode,
       executionPausedDefault: params.operatorState.executionPausedDefault,
       executionPaused: params.operatorState.executionPaused,
@@ -348,16 +389,24 @@ function buildMetadata(params: {
 export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnceResult> {
   const sleep = params.sleep ?? (async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
+  const effectiveRuntimeMode = deriveRuntimeModeFromExecutionMode(
+    params.config.executionMode,
+    params.config.operator.runtimeMode,
+  );
   const counters = params.counters ?? createRuntimeCounterRegistry();
   const correlationId = params.correlationId ?? createCorrelationId();
   const runtimeEnvironment: RuntimeEnvironment = {
     rpcUrl: params.runtimeEnvironment?.rpcUrl ?? ((params.connection as unknown as { rpcEndpoint?: string }).rpcEndpoint ?? 'http://runtime.local'),
     commitment: params.runtimeEnvironment?.commitment ?? 'confirmed',
-    walletConnected: params.runtimeEnvironment?.walletConnected ?? true,
-    signingAvailable: params.runtimeEnvironment?.signingAvailable ?? true,
+    walletConnected: params.runtimeEnvironment?.walletConnected ?? Boolean(params.signAndSend),
+    signingAvailable: params.runtimeEnvironment?.signingAvailable ?? Boolean(params.signAndSend),
     executionPausedOverride: params.runtimeEnvironment?.executionPausedOverride,
     receiptIdentityEnv: params.receiptIdentityEnv,
   };
+  const transport = params.transport ?? createExecutionTransport({
+    executionMode: params.config.executionMode,
+    signAndSend: params.signAndSend,
+  });
   const retryAttempts: Record<string, number> = {};
   let quoteRebuilt = false;
   let quoteRebuildReason: 'QUOTE_STALE' | 'BOUND_CROSSED' | 'TICK_MOVED' | undefined;
@@ -366,7 +415,11 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   let buildStarted = false;
   let simulationStarted = false;
   let sendStarted = false;
-  let operatorState = deriveEffectiveOperatorState(params.config, runtimeEnvironment.executionPausedOverride);
+  let shadowDetails: ExecuteOnceResult['shadow'] | undefined;
+  let operatorState = {
+    ...deriveEffectiveOperatorState(params.config, runtimeEnvironment.executionPausedOverride),
+    runtimeMode: effectiveRuntimeMode,
+  };
 
   const withRetry = async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
     let attempts = 0;
@@ -392,10 +445,13 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     const gate = enforceExecutionGate({
       config: params.config,
       runtimeEnvironment,
-      requireSigning: true,
+      requireSigning: params.config.executionMode !== 'mainnet-shadow',
     });
     operatorState = gate.operatorState;
     const receiptIdentity = gate.receiptIdentity;
+    const receiptConfigValid = Boolean(receiptIdentity);
+    const receiptStepStructurallyBuildable = Boolean(receiptIdentity);
+    const receiptIxIncluded = operatorState.executionMode !== 'mainnet-shadow' && Boolean(receiptIdentity);
     if (receiptIdentity) {
       await verifyReceiptProgramOnChain(params.connection, receiptIdentity);
     }
@@ -440,7 +496,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         counters,
         baseEvent(params, correlationId, operatorState, {
           event: 'policy.decision_hold',
-          status: 'hypothetical',
+          status: runtimeModeToDecisionStatus(operatorState),
           details: { reasonCode: effectiveRefresh.decision.reasonCode },
         }),
       );
@@ -471,6 +527,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             removeLiquidityPlanned: false,
             collectFeesPlanned: false,
             receiptWritePlanned: false,
+            receiptConfigValid,
+            receiptStepStructurallyBuildable,
+            receiptIxIncluded: false,
           },
         }),
       };
@@ -484,7 +543,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           effectiveRefresh.decision.decision === 'TRIGGER_UP'
             ? 'policy.decision_trigger_up'
             : 'policy.decision_trigger_down',
-        status: runtimeModeToDecisionStatus(operatorState.runtimeMode),
+        status: runtimeModeToDecisionStatus(operatorState),
         details: { reasonCode: effectiveRefresh.decision.reasonCode },
       }),
     );
@@ -666,6 +725,32 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           programId: receiptIdentity.programId,
         })[0]
       : null;
+    const quoteAgeMs = assembled.plan.quote.quotedAtUnixSec > 0
+      ? Math.max(0, nowUnixMs() - (assembled.plan.quote.quotedAtUnixSec * 1000))
+      : 0;
+    shadowDetails = {
+      direction: direction === 'UP' ? 'trigger_up' : 'trigger_down',
+      quoteSummary: {
+        inAmount: assembled.plan.quote.swapInAmount.toString(),
+        minOut: assembled.plan.quote.swapMinOutAmount.toString(),
+        slippageBps: params.config.execution.slippageBpsCap,
+        quoteAgeMs,
+      },
+      candidateInstructionSummary: {
+        removeLiquidityPlanned: true,
+        collectFeesPlanned: true,
+        swapInstructionCount: assembled.swapIxs.length,
+        receiptIxIncluded,
+      },
+      tokenProgramSummary: {
+        mintAProgram: snapshot.tokenProgramA.toBase58(),
+        mintBProgram: snapshot.tokenProgramB.toBase58(),
+      },
+      receiptPdaExpected: receiptPda?.toBase58(),
+      receiptConfigValid,
+      receiptStepStructurallyBuildable,
+      receiptIxIncluded,
+    };
     if (receiptPda) {
       const existingReceipt = params.checkExistingReceipt
         ? await params.checkExistingReceipt(receiptPda)
@@ -688,6 +773,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           refresh: effectiveRefresh,
           errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
           errorMessage: 'Execution receipt already exists for canonical epoch',
+          shadow: shadowDetails,
           metadata: buildMetadata({
             config: params.config,
             operatorState,
@@ -713,6 +799,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
               removeLiquidityPlanned: true,
               collectFeesPlanned: true,
               receiptWritePlanned: true,
+              receiptConfigValid,
+              receiptStepStructurallyBuildable,
+              receiptIxIncluded,
             },
           }),
         };
@@ -820,8 +909,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         }),
         attestationHash,
         attestationPayloadBytes,
-        receiptProgramId: receiptIdentity?.programId,
-        receiptIdlPath: receiptIdentity?.idlPath,
+        receiptProgramId: receiptIxIncluded ? receiptIdentity?.programId : undefined,
+        receiptIdlPath: receiptIxIncluded ? receiptIdentity?.idlPath : undefined,
         lookupTableAccounts,
         returnVersioned: true,
         swapIxs: assembled.swapIxs,
@@ -868,6 +957,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       return {
         status: 'SIMULATED',
         refresh: effectiveRefresh,
+        shadow: shadowDetails,
         metadata: buildMetadata({
           config: params.config,
           operatorState,
@@ -893,6 +983,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             removeLiquidityPlanned: true,
             collectFeesPlanned: true,
             receiptWritePlanned: false,
+            receiptConfigValid,
+            receiptStepStructurallyBuildable,
+            receiptIxIncluded,
           },
         }),
         execution: {
@@ -905,7 +998,27 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     }
 
     let sig: string;
+    const submitTx = async (): Promise<string> => {
+      counters.increment('submitInvocations');
+      if (transport.kind === 'live') {
+        counters.increment('signerInvocations');
+        counters.increment('walletPromptCount');
+      }
+      const signature = await transport.submit(msg);
+      if (operatorState.executionMode === 'mainnet-shadow' && signature) {
+        counters.increment('shadowTxSignaturesEmitted');
+      }
+      return signature;
+    };
     try {
+      if (operatorState.executionMode === 'mainnet-shadow') {
+        throw {
+          code: 'EXECUTION_MODE_SEND_FORBIDDEN',
+          retryable: false,
+          message: 'Shadow mode cannot submit transactions',
+          debug: { executionMode: operatorState.executionMode },
+        } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
+      }
       sendStarted = true;
       emitRuntimeEvent(
         params.observer,
@@ -931,7 +1044,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         lastValidBlockHeight: refreshedBlockhash.lastValidBlockHeight,
       };
       blockhashRefreshed = blockhashRefreshed || refreshedBlockhash.rebuilt;
-      sig = await params.signAndSend(msg);
+      sig = await submitTx();
     } catch (sendError) {
       const normalized = normalizeSolanaError(sendError);
       if (normalized.code !== 'BLOCKHASH_EXPIRED') throw normalized;
@@ -950,7 +1063,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         lastValidBlockHeight: refreshedBlockhash.lastValidBlockHeight,
       };
       blockhashRefreshed = blockhashRefreshed || refreshedBlockhash.rebuilt;
-      sig = await params.signAndSend(msg);
+      sig = await submitTx();
     }
 
     await params.connection.confirmTransaction(
@@ -999,6 +1112,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     return {
       status: 'EXECUTED',
       refresh: effectiveRefresh,
+      shadow: shadowDetails,
       metadata: buildMetadata({
         config: params.config,
         operatorState,
@@ -1024,6 +1138,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           removeLiquidityPlanned: true,
           collectFeesPlanned: true,
           receiptWritePlanned: Boolean(receiptPda),
+          receiptConfigValid,
+          receiptStepStructurallyBuildable,
+          receiptIxIncluded,
         },
       }),
       execution: {
@@ -1046,7 +1163,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     const event =
       normalized.code === 'EXECUTION_PAUSED'
         ? 'execution.paused_block'
-        : normalized.code === 'EXECUTION_MODE_BLOCKED'
+        : normalized.code === 'EXECUTION_MODE_BLOCKED' || normalized.code === 'EXECUTION_MODE_SEND_FORBIDDEN'
           ? 'execution.mode_blocked'
           : isConfigValidationErrorCode(normalized.code)
             ? 'config.validation_failed'
@@ -1064,7 +1181,12 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       counters,
       baseEvent(params, correlationId, operatorState, {
         event,
-        status: normalized.code === 'EXECUTION_PAUSED' || normalized.code === 'EXECUTION_MODE_BLOCKED' ? 'blocked' : 'failed',
+        status:
+          normalized.code === 'EXECUTION_PAUSED' ||
+          normalized.code === 'EXECUTION_MODE_BLOCKED' ||
+          normalized.code === 'EXECUTION_MODE_SEND_FORBIDDEN'
+            ? 'blocked'
+            : 'failed',
         errorCode: normalized.code,
         details: { message: normalized.message, debug: normalized.debug },
       }),
@@ -1074,6 +1196,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       errorCode: normalized.code,
       errorMessage: normalized.message,
       errorDebug: normalized.debug,
+      ...(shadowDetails ? { shadow: shadowDetails } : {}),
       metadata: buildMetadata({
         config: params.config,
         operatorState,
@@ -1085,9 +1208,12 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           retryAttempts,
         },
         executionIntent: {
-          removeLiquidityPlanned: false,
-          collectFeesPlanned: false,
+          removeLiquidityPlanned: shadowDetails?.candidateInstructionSummary.removeLiquidityPlanned ?? false,
+          collectFeesPlanned: shadowDetails?.candidateInstructionSummary.collectFeesPlanned ?? false,
           receiptWritePlanned: false,
+          receiptConfigValid: shadowDetails?.receiptConfigValid ?? false,
+          receiptStepStructurallyBuildable: shadowDetails?.receiptStepStructurallyBuildable ?? false,
+          receiptIxIncluded: shadowDetails?.receiptIxIncluded ?? false,
         },
       }),
     };

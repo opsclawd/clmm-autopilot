@@ -301,7 +301,7 @@ describe('loadPositionSnapshot', () => {
     accounts.set(SOL_MINT.toBase58(), { data: mkMintData(9), owner: TOKEN_PROGRAM_V1 });
     accounts.set(USDC_MINT.toBase58(), { data: mkMintData(6), owner: TOKEN_PROGRAM_V1 });
 
-    await expect(loadPositionSnapshot(mockConn({ accounts }), position, 'mainnet-beta')).rejects.toMatchObject({
+    await expect(loadPositionSnapshot(mockConn({ accounts }), position, 'mainnet')).rejects.toMatchObject({
       code: 'NOT_SOL_USDC',
     });
   });

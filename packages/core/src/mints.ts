@@ -1,4 +1,4 @@
-export type SolanaCluster = 'devnet' | 'mainnet-beta' | 'localnet';
+export type SolanaCluster = 'devnet' | 'mainnet' | 'localnet';
 
 export type CanonicalPairError = Error & {
   code: 'NOT_SOL_USDC';
@@ -31,7 +31,7 @@ function canonicalizeMint(mint: string, registry: MintRegistry): string {
 }
 
 export function getMintRegistry(cluster: SolanaCluster): MintRegistry {
-  const usdc = cluster === 'mainnet-beta' ? USDC_MAINNET_MINT : USDC_DEVNET_MINT;
+  const usdc = cluster === 'mainnet' ? USDC_MAINNET_MINT : USDC_DEVNET_MINT;
   const symbols: Record<string, 'SOL' | 'USDC'> = {
     [SOL_NATIVE_MARKER]: 'SOL',
     [WSOL_MINT]: 'SOL',

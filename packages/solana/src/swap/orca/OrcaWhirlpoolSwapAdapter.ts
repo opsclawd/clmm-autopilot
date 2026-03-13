@@ -74,12 +74,12 @@ export class OrcaWhirlpoolSwapAdapter implements SolanaSwapAdapter {
   readonly name = 'orca' as const;
 
   supportsCluster(cluster: Cluster): boolean {
-    return cluster === 'devnet' || cluster === 'mainnet-beta';
+    return cluster === 'devnet' || cluster === 'mainnet';
   }
 
   async getQuote(params: SolanaGetQuoteParams): Promise<SwapQuote> {
     if (!this.supportsCluster(params.cluster)) {
-      fail('SWAP_ROUTER_UNSUPPORTED_CLUSTER', 'orca swap router supports devnet/mainnet-beta only', false, {
+      fail('SWAP_ROUTER_UNSUPPORTED_CLUSTER', 'orca swap router supports devnet/mainnet only', false, {
         cluster: params.cluster,
       });
     }

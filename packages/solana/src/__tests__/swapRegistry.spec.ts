@@ -12,10 +12,10 @@ describe('getSwapAdapter', () => {
   });
 
   it('returns supported adapters', () => {
-    expect(getSwapAdapter('jupiter', 'mainnet-beta').name).toBe('jupiter');
+    expect(getSwapAdapter('jupiter', 'mainnet').name).toBe('jupiter');
     expect(getSwapAdapter('orca', 'devnet').name).toBe('orca');
     expect(getSwapAdapter('noop', 'devnet').name).toBe('noop');
-    expect(getSwapAdapter('noop', 'mainnet-beta').name).toBe('noop');
+    expect(getSwapAdapter('noop', 'mainnet').name).toBe('noop');
     expect(getSwapAdapter('noop', 'localnet').name).toBe('noop');
   });
 });

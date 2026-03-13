@@ -31,7 +31,7 @@ describe('mint registry + SOL/USDC pair guardrails', () => {
   it('returns native SOL marker + cluster-scoped USDC in registry', () => {
     expect(getMintRegistry('devnet').sol).toBe(SOL_NATIVE);
     expect(getMintRegistry('devnet').usdc).toBe(USDC_DEVNET);
-    expect(getMintRegistry('mainnet-beta').usdc).not.toBe(USDC_DEVNET);
+    expect(getMintRegistry('mainnet').usdc).not.toBe(USDC_DEVNET);
   });
 
   it('symbolForMint canonicalizes WSOL and SOL_NATIVE as SOL', () => {

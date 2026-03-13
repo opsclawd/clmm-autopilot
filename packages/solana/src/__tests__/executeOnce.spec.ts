@@ -334,6 +334,86 @@ describe('executeOnce', () => {
     expect(triggerEvent?.status).toBe('hypothetical');
   });
 
+  it('mainnet-shadow omits receipt ix while still computing expected receipt PDA', async () => {
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: getAccountInfoForProgramOnly(),
+      getParsedAccountInfo: vi.fn(async () => ({
+        context: { slot: 1 },
+        value: {
+          data: {
+            program: 'bpf-upgradeable-loader',
+            parsed: { info: { programData: new PublicKey(new Uint8Array(32).fill(31)).toBase58() } },
+          },
+        },
+      })),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const result = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      config: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet',
+        executionMode: 'mainnet-shadow',
+        execution: {
+          ...DEFAULT_CONFIG.execution,
+          swapRouter: 'noop',
+          sendEnabled: false,
+          allowMainnetNoopForDiagnostics: true,
+        },
+        operator: {
+          ...DEFAULT_CONFIG.operator,
+          executionMode: 'mainnet-shadow',
+          runtimeMode: 'simulate-only',
+        },
+      },
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      runtimeEnvironment: {
+        rpcUrl: 'https://api.mainnet-beta.solana.com',
+        walletConnected: false,
+        signingAvailable: false,
+      },
+      checkExistingReceipt: async () => false,
+    });
+
+    expect(result.status).toBe('SIMULATED');
+    expect(result.shadow?.receiptIxIncluded).toBe(false);
+    expect(result.shadow?.receiptPdaExpected).toBeDefined();
+    expect(result.metadata?.executionIntent.receiptIxIncluded).toBe(false);
+    expect(buildExitTransactionMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        receiptProgramId: undefined,
+      }),
+    );
+  });
+
   it('marks policy trigger events as ok in execute mode', async () => {
     const authority = new PublicKey(new Uint8Array(32).fill(20));
     const observer = { emit: vi.fn() };

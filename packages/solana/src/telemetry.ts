@@ -1,4 +1,4 @@
-import type { Cluster, RuntimeMode, SwapRouter } from '@clmm-autopilot/core';
+import type { Cluster, ExecutionMode, RuntimeMode, SwapRouter } from '@clmm-autopilot/core';
 import type { CanonicalErrorCode } from './types';
 
 export type RuntimeEventName =
@@ -29,6 +29,7 @@ export type RuntimeEvent = {
   event: RuntimeEventName;
   timestamp: string;
   cluster: Cluster;
+  executionMode: ExecutionMode;
   runtimeMode: RuntimeMode;
   executionPaused: boolean;
   authority?: string;
@@ -63,6 +64,10 @@ export type RuntimeCounterSnapshot = {
   swapSkippedCount: number;
   pausedBlocks: number;
   configValidationFailures: number;
+  signerInvocations: number;
+  submitInvocations: number;
+  walletPromptCount: number;
+  shadowTxSignaturesEmitted: number;
 };
 
 export type RuntimeCounterRegistry = {
@@ -88,6 +93,10 @@ const zeroCounters = (): RuntimeCounterSnapshot => ({
   swapSkippedCount: 0,
   pausedBlocks: 0,
   configValidationFailures: 0,
+  signerInvocations: 0,
+  submitInvocations: 0,
+  walletPromptCount: 0,
+  shadowTxSignaturesEmitted: 0,
 });
 
 export function createRuntimeCounterRegistry(): RuntimeCounterRegistry {

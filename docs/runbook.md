@@ -1,4 +1,4 @@
-# Operator Runbook (M18)
+# Operator Runbook (M18-M19)
 
 ## Commands
 
@@ -8,6 +8,7 @@ pnpm -r test
 pnpm receipt:check:devnet
 pnpm e2e:devnet
 pnpm e2e:certify:devnet
+pnpm shadow:mainnet
 ```
 
 Deploy/update devnet receipt program identity (manual acceptance workflow):
@@ -30,7 +31,8 @@ Harness env vars:
 
 App/runtime operator config:
 
-- `operator.runtimeMode` (`dry-run` | `simulate-only` | `execute`)
+- `executionMode` (`devnet-live` | `mainnet-shadow` | `mainnet-live`)
+- `operator.runtimeMode` (`dry-run` | `simulate-only` | `execute`) (legacy compatibility)
 - `operator.executionPausedDefault` (`true` | `false`)
 
 Pause precedence:
@@ -41,6 +43,20 @@ Pause precedence:
 Effective paused state is always derived as `sessionOverride ?? executionPausedDefault`.
 
 ## Runtime Modes
+
+Execution mode is now the primary operator control:
+
+- `devnet-live`
+  - legacy-compatible behavior on devnet/localnet
+  - uses runtimeMode for dry-run/simulate-only/execute in existing shells
+- `mainnet-shadow`
+  - full decision/build/sim path on mainnet
+  - send path is structurally blocked by `ShadowSubmitter`
+  - receipt ix is omitted from simulated candidate tx
+  - expected receipt PDA is still computed and persisted
+- `mainnet-live`
+  - full live path on mainnet
+  - requires explicit receipt config and send-enabled execution
 
 - `dry-run`
   - evaluates monitoring + policy only
@@ -57,14 +73,49 @@ Effective paused state is always derived as `sessionOverride ?? executionPausedD
 Safe defaults:
 
 - `devnet`: `simulate-only`
-- `mainnet-beta`: `dry-run`
+- `mainnet`: `mainnet-shadow` + `simulate-only`
 - `localnet`: `dry-run`
 
 Mainnet guardrails:
 
 - no silent `noop` router fallback
+- mainnet shadow defaults to `jupiter`; `noop` allowed only with explicit diagnostics override
 - execute requires explicit operator config
 - execute requires full receipt identity config
+- any send attempt in shadow mode fails with `EXECUTION_MODE_SEND_FORBIDDEN`
+
+## Mainnet Shadow Runner (M19)
+
+Start command:
+
+```bash
+pnpm shadow:mainnet
+```
+
+Required env/config:
+
+- `SOLANA_RPC_URL` (or `RPC_URL`)
+- `SHADOW_AUTHORITY` (or `AUTHORITY_PUBKEY`)
+- `SHADOW_POSITION_ADDRESSES` (default source mode: configured list)
+- `SHADOW_DISCOVER_POSITIONS=true` to opt into discovery when no configured list is provided
+- optional `SHADOW_DB_PATH` (default: `artifacts/shadow/mainnet/shadow.db`)
+- optional `SHADOW_ROLLUP_EVERY_EVALS` (default: `50`)
+
+Storage:
+
+- `shadow_evaluations`: sparse state-change/sampled evaluation records
+- `shadow_triggers`: full trigger artifacts (quote/build/sim/receipt planning)
+- `shadow_metrics_rollups`: periodic aggregate metrics and safety counter snapshots
+
+Cold-start semantics:
+
+- restart resets in-memory debounce/policy state
+- run session + first per-position evaluation are marked `stateColdStart=true`
+
+Position source modes:
+
+- `configured` (default)
+- `discovered` (explicit opt-in only)
 
 ## Startup Validation
 
@@ -135,6 +186,7 @@ Runtime event envelope fields:
 - `event`
 - `timestamp`
 - `cluster`
+- `executionMode`
 - `runtimeMode`
 - `executionPaused`
 - `authority`
@@ -170,6 +222,25 @@ Core event names include:
 - `config.validation_failed`
 
 Counters are in-memory and scoped per process/app session. They reset on process restart or app reload.
+
+Shadow safety counters (must remain zero in M19 runs):
+
+- `signerInvocations`
+- `submitInvocations`
+- `walletPromptCount`
+- `shadowTxSignaturesEmitted`
+
+## M19 Promotion Thresholds (Balanced)
+
+Promotion from M19 to M20 readiness review requires:
+
+- runtime duration >= 10 consecutive days
+- simulation success rate >= 85% (`SIM_OK / total_trigger_candidates`)
+- quote staleness failure rate <= 8% (`SIM_QUOTE_STALE / total_trigger_candidates`)
+- zero unexplained drift for all 4 shadow safety counters
+- unresolved `SIM_TOKEN2022_ACCOUNT_MISMATCH` count <= 1
+
+Any threshold breach resets the promotion window after remediation.
 
 ## Certification suite
 
