@@ -271,8 +271,21 @@ function buildPlanQuoteFromSupplied(router: AutopilotConfig['execution']['swapRo
   };
 }
 
-function runtimeModeToBlockedStatus(mode: RuntimeMode): RuntimeEvent['status'] {
-  return mode === 'simulate-only' ? 'ok' : 'blocked';
+function runtimeModeToDecisionStatus(mode: RuntimeMode): RuntimeEvent['status'] {
+  return mode === 'simulate-only' ? 'hypothetical' : 'ok';
+}
+
+function isConfigValidationErrorCode(code: CanonicalErrorCode): boolean {
+  return (
+    code === 'CONFIG_INVALID' ||
+    code === 'RPC_URL_MISSING' ||
+    code === 'RUNTIME_MODE_INVALID' ||
+    code === 'WALLET_PROVIDER_MISSING' ||
+    code === 'RECEIPT_PROGRAM_NOT_CONFIGURED' ||
+    code === 'RECEIPT_IDL_MISMATCH' ||
+    code === 'RECEIPT_PROGRAM_VERIFICATION_FAILED' ||
+    code === 'SWAP_ROUTER_UNSUPPORTED_CLUSTER'
+  );
 }
 
 function baseEvent(
@@ -471,7 +484,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           effectiveRefresh.decision.decision === 'TRIGGER_UP'
             ? 'policy.decision_trigger_up'
             : 'policy.decision_trigger_down',
-        status: runtimeModeToBlockedStatus(operatorState.runtimeMode),
+        status: runtimeModeToDecisionStatus(operatorState.runtimeMode),
         details: { reasonCode: effectiveRefresh.decision.reasonCode },
       }),
     );
@@ -1035,15 +1048,17 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         ? 'execution.paused_block'
         : normalized.code === 'EXECUTION_MODE_BLOCKED'
           ? 'execution.mode_blocked'
+          : isConfigValidationErrorCode(normalized.code)
+            ? 'config.validation_failed'
           : !snapshotFetched
             ? 'monitor.snapshot_failed'
             : sendStarted
               ? 'execution.send_failed'
               : simulationStarted && normalized.code === 'SIMULATION_FAILED'
                 ? 'execution.simulation_failed'
-                : buildStarted
-                  ? 'execution.build_failed'
-                  : 'config.validation_failed';
+              : buildStarted
+                ? 'execution.build_failed'
+                : 'monitor.snapshot_failed';
     emitRuntimeEvent(
       params.observer,
       counters,

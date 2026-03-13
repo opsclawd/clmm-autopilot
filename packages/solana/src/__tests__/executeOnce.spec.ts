@@ -328,6 +328,103 @@ describe('executeOnce', () => {
     expect(counters.snapshot().snapshotsFetched).toBeGreaterThan(0);
     expect(counters.snapshot().buildAttempts).toBeGreaterThan(0);
     expect(createRuntimeCounterRegistry().snapshot().buildAttempts).toBe(0);
+
+    const emittedEvents = observer.emit.mock.calls.map((args) => args[0] as { event: string; status: string });
+    const triggerEvent = emittedEvents.find((event) => event.event.startsWith('policy.decision_trigger'));
+    expect(triggerEvent?.status).toBe('hypothetical');
+  });
+
+  it('marks policy trigger events as ok in execute mode', async () => {
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const observer = { emit: vi.fn() };
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: getAccountInfoForProgramOnly(),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const result = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: {
+        ...EXECUTE_CONFIG,
+        execution: {
+          ...EXECUTE_CONFIG.execution,
+          swapRouter: 'noop',
+          receiptPollMaxAttempts: 0,
+        },
+      },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      signAndSend: vi.fn(async () => 'sig'),
+      observer,
+      checkExistingReceipt: async () => false,
+    });
+
+    expect(result.status).toBe('EXECUTED');
+    const emittedEvents = observer.emit.mock.calls.map((args) => args[0] as { event: string; status: string });
+    const triggerEvent = emittedEvents.find((event) => event.event.startsWith('policy.decision_trigger'));
+    expect(triggerEvent?.status).toBe('ok');
+  });
+
+  it('maps runtime startup failures to config validation events and counters', async () => {
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const counters = createRuntimeCounterRegistry();
+    const observer = { emit: vi.fn() };
+
+    const result = await executeOnce({
+      connection: {} as any,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      config: EXECUTE_CONFIG,
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      signAndSend: vi.fn(async () => 'sig'),
+      runtimeEnvironment: {
+        rpcUrl: '',
+      },
+      observer,
+      counters,
+    });
+
+    expect(result.status).toBe('ERROR');
+    expect(result.errorCode).toBe('RPC_URL_MISSING');
+    expect(observer.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'config.validation_failed',
+        status: 'failed',
+        errorCode: 'RPC_URL_MISSING',
+      }),
+    );
+    expect(counters.snapshot().configValidationFailures).toBe(1);
+    expect(counters.snapshot().snapshotFailures).toBe(0);
   });
 
   it('loads lookup tables returned by swap adapter into tx builder', async () => {
