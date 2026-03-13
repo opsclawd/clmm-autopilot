@@ -2,10 +2,12 @@ import type { CanonicalErrorCode, NormalizedError } from './types';
 
 const transientHints = ['timeout', '429', 'rate limit', 'temporarily unavailable', 'econnreset'];
 const CANONICAL_CODES: CanonicalErrorCode[] = [
+  'CONFIG_INVALID',
   'DATA_UNAVAILABLE',
   'UNSUPPORTED_MINT_OWNER',
   'RPC_TRANSIENT',
   'RPC_PERMANENT',
+  'RPC_URL_MISSING',
   'INVALID_POSITION',
   'NOT_SOL_USDC',
   'ALREADY_EXECUTED_THIS_EPOCH',
@@ -20,6 +22,10 @@ const CANONICAL_CODES: CanonicalErrorCode[] = [
   'MISSING_ATTESTATION_HASH',
   'SWAP_ROUTER_UNSUPPORTED_CLUSTER',
   'ORCA_DECODE_FAILED',
+  'EXECUTION_PAUSED',
+  'EXECUTION_MODE_BLOCKED',
+  'WALLET_PROVIDER_MISSING',
+  'RUNTIME_MODE_INVALID',
 ];
 
 function isCanonicalCode(value: unknown): value is CanonicalErrorCode {

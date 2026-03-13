@@ -88,6 +88,15 @@ vi.mock('../receipt', async (importOriginal) => {
 
 import { executeOnce } from '../executeOnce';
 import { loadPositionSnapshot } from '../orcaInspector';
+import { createRuntimeCounterRegistry } from '../telemetry';
+
+const EXECUTE_CONFIG = {
+  ...DEFAULT_CONFIG,
+  operator: {
+    ...DEFAULT_CONFIG.operator,
+    runtimeMode: 'execute' as const,
+  },
+};
 
 describe('executeOnce', () => {
   beforeEach(() => {
@@ -128,6 +137,294 @@ describe('executeOnce', () => {
       getQuote: getQuoteMock,
       buildSwapIxs: buildSwapIxsMock,
     });
+  });
+
+  it('blocks dry-run mode before build even when called directly', async () => {
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const buildCountsBefore = buildExitTransactionMock.mock.calls.length;
+    const signAndSend = vi.fn(async () => 'sig');
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: getAccountInfoForProgramOnly(),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      config: { ...DEFAULT_CONFIG, operator: { ...DEFAULT_CONFIG.operator, runtimeMode: 'dry-run' } },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      signAndSend,
+    });
+
+    expect(res.status).toBe('ERROR');
+    expect(res.errorCode).toBe('EXECUTION_MODE_BLOCKED');
+    expect(signAndSend).not.toHaveBeenCalled();
+    expect(buildExitTransactionMock.mock.calls.length).toBe(buildCountsBefore);
+  });
+
+  it('blocks paused execute mode at the runtime boundary', async () => {
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const signAndSend = vi.fn(async () => 'sig');
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: getAccountInfoForProgramOnly(),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      config: EXECUTE_CONFIG,
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      signAndSend,
+      runtimeEnvironment: {
+        executionPausedOverride: true,
+      },
+    });
+
+    expect(res.status).toBe('ERROR');
+    expect(res.errorCode).toBe('EXECUTION_PAUSED');
+    expect(signAndSend).not.toHaveBeenCalled();
+  });
+
+  it('simulate-only mode builds and simulates without sending', async () => {
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const signAndSend = vi.fn(async () => 'sig');
+    const confirmTransaction = vi.fn(async () => ({ value: { err: null } }));
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction,
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: getAccountInfoForProgramOnly(),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const result = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'jupiter' } },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend,
+      runtimeEnvironment: {
+        walletConnected: false,
+        signingAvailable: false,
+      },
+    });
+
+    expect(result.status).toBe('SIMULATED');
+    expect(result.execution?.unsignedTxBuilt).toBe(true);
+    expect(result.execution?.simulated).toBe(true);
+    expect(signAndSend).not.toHaveBeenCalled();
+    expect(confirmTransaction).not.toHaveBeenCalled();
+  });
+
+  it('emits canonical event fields and deterministic counters', async () => {
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const counters = createRuntimeCounterRegistry();
+    const observer = { emit: vi.fn() };
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: getAccountInfoForProgramOnly(),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'jupiter' } },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend: vi.fn(async () => 'sig'),
+      observer,
+      counters,
+    });
+
+    expect(observer.emit).toHaveBeenCalled();
+    expect(observer.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: expect.any(String),
+        timestamp: expect.any(String),
+        cluster: 'devnet',
+        runtimeMode: 'simulate-only',
+        executionPaused: false,
+        authority: authority.toBase58(),
+        position: expect.any(String),
+        correlationId: expect.any(String),
+        status: expect.any(String),
+      }),
+    );
+    expect(counters.snapshot().snapshotsFetched).toBeGreaterThan(0);
+    expect(counters.snapshot().buildAttempts).toBeGreaterThan(0);
+    expect(createRuntimeCounterRegistry().snapshot().buildAttempts).toBe(0);
+
+    const emittedEvents = observer.emit.mock.calls.map((args) => args[0] as { event: string; status: string });
+    const triggerEvent = emittedEvents.find((event) => event.event.startsWith('policy.decision_trigger'));
+    expect(triggerEvent?.status).toBe('hypothetical');
+  });
+
+  it('marks policy trigger events as ok in execute mode', async () => {
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const observer = { emit: vi.fn() };
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: getAccountInfoForProgramOnly(),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const result = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: {
+        ...EXECUTE_CONFIG,
+        execution: {
+          ...EXECUTE_CONFIG.execution,
+          swapRouter: 'noop',
+          receiptPollMaxAttempts: 0,
+        },
+      },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      signAndSend: vi.fn(async () => 'sig'),
+      observer,
+      checkExistingReceipt: async () => false,
+    });
+
+    expect(result.status).toBe('EXECUTED');
+    const emittedEvents = observer.emit.mock.calls.map((args) => args[0] as { event: string; status: string });
+    const triggerEvent = emittedEvents.find((event) => event.event.startsWith('policy.decision_trigger'));
+    expect(triggerEvent?.status).toBe('ok');
+  });
+
+  it('maps runtime startup failures to config validation events and counters', async () => {
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const counters = createRuntimeCounterRegistry();
+    const observer = { emit: vi.fn() };
+
+    const result = await executeOnce({
+      connection: {} as any,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      config: EXECUTE_CONFIG,
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      signAndSend: vi.fn(async () => 'sig'),
+      runtimeEnvironment: {
+        rpcUrl: '',
+      },
+      observer,
+      counters,
+    });
+
+    expect(result.status).toBe('ERROR');
+    expect(result.errorCode).toBe('RPC_URL_MISSING');
+    expect(observer.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'config.validation_failed',
+        status: 'failed',
+        errorCode: 'RPC_URL_MISSING',
+      }),
+    );
+    expect(counters.snapshot().configValidationFailures).toBe(1);
+    expect(counters.snapshot().snapshotFailures).toBe(0);
   });
 
   it('loads lookup tables returned by swap adapter into tx builder', async () => {
@@ -176,7 +473,7 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'jupiter' } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'jupiter' } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -248,7 +545,7 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'jupiter' } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'jupiter' } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -302,7 +599,7 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: rawQuote,
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'jupiter' } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'jupiter' } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -353,7 +650,7 @@ describe('executeOnce', () => {
         slippageBps: 10,
         quotedAtUnixMs: Date.now(),
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'jupiter' } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'jupiter' } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -412,7 +709,7 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: rawOrcaQuote,
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'orca' } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'orca' } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -463,7 +760,7 @@ describe('executeOnce', () => {
         slippageBps: 10,
         quotedAtUnixMs: Date.now(),
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'orca' } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'orca' } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -513,7 +810,7 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'jupiter' } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'jupiter' } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -561,7 +858,7 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'jupiter' } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'jupiter' } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -601,7 +898,7 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: "noop" } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: "noop" } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -651,9 +948,9 @@ describe('executeOnce', () => {
         raw: { inAmount: '1', outAmount: '1' },
       },
       config: {
-        ...DEFAULT_CONFIG,
+        ...EXECUTE_CONFIG,
         execution: {
-          ...DEFAULT_CONFIG.execution,
+          ...EXECUTE_CONFIG.execution,
           swapRouter: 'noop',
           receiptPollMaxAttempts: 0,
         },
@@ -708,7 +1005,7 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'noop' } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'noop' } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -752,12 +1049,12 @@ describe('executeOnce', () => {
           raw: { inAmount: '1', outAmount: '1' },
         },
         config: {
-          ...DEFAULT_CONFIG,
+          ...EXECUTE_CONFIG,
           receiptProgramId: undefined,
           receiptIdlHashMode: undefined,
           receiptIdlHash: undefined,
           receiptIdlPath: undefined,
-          execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'noop' },
+          execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'noop' },
         },
         policyState: {},
         expectedMinOut: '0',
@@ -800,12 +1097,12 @@ describe('executeOnce', () => {
           raw: { inAmount: '1', outAmount: '1' },
         },
         config: {
-          ...DEFAULT_CONFIG,
+          ...EXECUTE_CONFIG,
           receiptProgramId: undefined,
           receiptIdlHashMode: undefined,
           receiptIdlHash: undefined,
           receiptIdlPath: undefined,
-          execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'noop' },
+          execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'noop' },
         },
         policyState: {},
         expectedMinOut: '0',
@@ -860,7 +1157,7 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: "noop" } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: "noop" } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -906,7 +1203,7 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: "noop" } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: "noop" } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -1009,9 +1306,9 @@ describe('executeOnce', () => {
         raw: { inAmount: '1', outAmount: '1' },
       },
       config: {
-        ...DEFAULT_CONFIG,
+        ...EXECUTE_CONFIG,
         execution: {
-          ...DEFAULT_CONFIG.execution,
+          ...EXECUTE_CONFIG.execution,
           swapRouter: "noop",
           receiptPollMaxAttempts: 0,
         },
@@ -1123,9 +1420,9 @@ describe('executeOnce', () => {
         raw: { inAmount: '1', outAmount: '1' },
       },
       config: {
-        ...DEFAULT_CONFIG,
+        ...EXECUTE_CONFIG,
         execution: {
-          ...DEFAULT_CONFIG.execution,
+          ...EXECUTE_CONFIG.execution,
           swapRouter: 'noop',
           receiptPollMaxAttempts: 0,
         },
@@ -1178,9 +1475,9 @@ describe('executeOnce', () => {
         raw: { inAmount: '1', outAmount: '1' },
       },
       config: {
-        ...DEFAULT_CONFIG,
+        ...EXECUTE_CONFIG,
         execution: {
-          ...DEFAULT_CONFIG.execution,
+          ...EXECUTE_CONFIG.execution,
           swapRouter: 'noop',
           receiptPollMaxAttempts: 0,
         },
@@ -1221,7 +1518,7 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: 'noop' } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'noop' } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
@@ -1283,7 +1580,7 @@ describe('executeOnce', () => {
         quotedAtUnixMs: Date.now(),
         raw: { inAmount: '1', outAmount: '1' },
       },
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: "noop" } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: "noop" } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,

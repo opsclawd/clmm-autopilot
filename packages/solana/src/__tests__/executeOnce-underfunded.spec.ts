@@ -8,6 +8,13 @@ const BPF_UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111
 const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 const USDC_MINT = new PublicKey('BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k');
 const POSITION_MINT = new PublicKey(new Uint8Array(32).fill(12));
+const EXECUTE_CONFIG = {
+  ...DEFAULT_CONFIG,
+  operator: {
+    ...DEFAULT_CONFIG.operator,
+    runtimeMode: 'execute' as const,
+  },
+};
 
 function getAccountInfoForProgramOnly(programId = RECEIPT_PROGRAM_ID) {
   return vi.fn(async (pubkey: PublicKey) => {
@@ -127,7 +134,7 @@ describe('executeOnce underfunded', () => {
       position,
       samples: [{ unixMs: 0, currentTickIndex: 0, lowerTickIndex: 0, upperTickIndex: 0 } as any],
       quote: quote as any,
-      config: { ...DEFAULT_CONFIG, execution: { ...DEFAULT_CONFIG.execution, swapRouter: "noop" } },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: "noop" } },
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,

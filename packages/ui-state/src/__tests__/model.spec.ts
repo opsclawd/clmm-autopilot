@@ -2,8 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { buildUiModel, mapErrorToUi } from '../index';
 
 describe('ui-state', () => {
+  const executeOperator = {
+    runtimeMode: 'execute' as const,
+    executionPausedDefault: false,
+    executionPaused: false,
+  };
+
   it('blocks execute on HOLD without forcing an error banner', () => {
     const model = buildUiModel({
+      operator: executeOperator,
       decision: {
         decision: 'HOLD',
         reasonCode: 'DEBOUNCE_NOT_MET',
@@ -18,6 +25,7 @@ describe('ui-state', () => {
 
   it('enables execute on TRIGGER only when pair validation is true', () => {
     const blocked = buildUiModel({
+      operator: executeOperator,
       decision: {
         decision: 'TRIGGER_DOWN',
         reasonCode: 'BREAK_CONFIRMED',
@@ -29,6 +37,7 @@ describe('ui-state', () => {
     expect(blocked.canExecute).toBe(false);
 
     const model = buildUiModel({
+      operator: executeOperator,
       snapshot: {
         positionAddress: 'pos',
         currentTick: 1,
@@ -56,6 +65,12 @@ describe('ui-state', () => {
       config: {
         policy: { cadenceMs: 2000, requiredConsecutive: 3, cooldownMs: 90000 },
         execution: { slippageBpsCap: 50, quoteFreshnessMs: 20000 },
+        operator: { runtimeMode: 'simulate-only', executionPausedDefault: true },
+      },
+      operator: {
+        runtimeMode: 'simulate-only',
+        executionPausedDefault: true,
+        executionPaused: false,
       },
     });
     expect(model.config?.policy.cadenceMs).toBe(2000);
@@ -63,12 +78,54 @@ describe('ui-state', () => {
     expect(model.config?.policy.cooldownMs).toBe(90000);
     expect(model.config?.execution.slippageBpsCap).toBe(50);
     expect(model.config?.execution.quoteFreshnessMs).toBe(20000);
+    expect(model.config?.operator.runtimeMode).toBe('simulate-only');
+  });
+
+  it('blocks execute when paused or not in execute mode', () => {
+    const paused = buildUiModel({
+      operator: {
+        runtimeMode: 'execute',
+        executionPausedDefault: false,
+        executionPaused: true,
+        operatorBlockReason: 'EXECUTION_PAUSED',
+      },
+      snapshot: {
+        positionAddress: 'pos',
+        currentTick: 1,
+        lowerTick: 0,
+        upperTick: 2,
+        inRange: false,
+        pairLabel: 'SOL/USDC',
+        pairValid: true,
+      },
+      decision: {
+        decision: 'TRIGGER_DOWN',
+        reasonCode: 'BREAK_CONFIRMED',
+        samplesUsed: 3,
+        threshold: 3,
+        cooldownRemainingMs: 0,
+      },
+    });
+    expect(paused.canExecute).toBe(false);
+    expect(paused.operator?.operatorBlockReason).toBe('EXECUTION_PAUSED');
+
+    const simulateOnly = buildUiModel({
+      operator: {
+        runtimeMode: 'simulate-only',
+        executionPausedDefault: false,
+        executionPaused: false,
+      },
+      snapshot: paused.snapshot,
+      decision: paused.decision,
+    });
+    expect(simulateOnly.canExecute).toBe(false);
   });
 
   it('maps representative canonical errors', () => {
     expect(mapErrorToUi({ code: 'SIMULATION_FAILED' }).title).toBe('Simulation failed');
     expect(mapErrorToUi({ code: 'BLOCKHASH_EXPIRED' }).code).toBe('BLOCKHASH_EXPIRED');
     expect(mapErrorToUi({ code: 'CONFIG_INVALID' }).title).toBe('Invalid configuration');
+    expect(mapErrorToUi({ code: 'EXECUTION_PAUSED' }).title).toBe('Execution paused');
     expect(mapErrorToUi({ code: 'RECEIPT_PROGRAM_NOT_CONFIGURED' }).title).toBe('Receipt program missing');
     expect(mapErrorToUi({ code: 'RECEIPT_IDL_MISMATCH' }).title).toBe('Receipt IDL mismatch');
   });

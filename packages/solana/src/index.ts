@@ -11,6 +11,8 @@ export * from './jupiter';
 export * from './reliability';
 export * from './simErrors';
 export * from './executeOnce';
+export * from './runtime';
+export * from './telemetry';
 export * from './requirements';
 export * from './orca/decode';
 export * from './token/constants';

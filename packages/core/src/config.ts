@@ -1,6 +1,7 @@
 export type Cluster = 'devnet' | 'mainnet-beta' | 'localnet';
 export type SwapRouter = 'jupiter' | 'orca' | 'noop';
 export type ReceiptIdlHashMode = 'full-v1';
+export type RuntimeMode = 'dry-run' | 'simulate-only' | 'execute';
 
 const DEVNET_RECEIPT_PROGRAM_ID = 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm';
 const DEVNET_RECEIPT_IDL_HASH_MODE: ReceiptIdlHashMode = 'full-v1';
@@ -37,44 +38,103 @@ export type AutopilotConfig = {
     minSolLamportsToSwap: number;
     minUsdcMinorToSwap: number;
   };
+  operator: {
+    runtimeMode: RuntimeMode;
+    executionPausedDefault: boolean;
+  };
   ui: {
     sampleBufferSize: number;
   };
 };
 
-export const DEFAULT_CONFIG: AutopilotConfig = {
-  cluster: 'devnet',
-  receiptProgramId: DEVNET_RECEIPT_PROGRAM_ID,
-  receiptIdlHashMode: DEVNET_RECEIPT_IDL_HASH_MODE,
-  receiptIdlHash: DEVNET_RECEIPT_IDL_HASH,
-  receiptIdlPath: DEVNET_RECEIPT_IDL_PATH,
-  expectedUpgradeAuthority: undefined,
-  policy: {
-    cadenceMs: 2_000,
-    requiredConsecutive: 3,
-    cooldownMs: 90_000,
-  },
-  execution: {
-    slippageBpsCap: 50,
-    txFeeLamports: 20_000,
-    feeBufferLamports: 10_000_000,
-    computeUnitLimit: 600_000,
-    computeUnitPriceMicroLamports: 10_000,
-    quoteFreshnessSec: 20,
-    quoteFreshnessSlots: 8,
-    swapRouter: 'orca',
-    rebuildTickDelta: undefined,
-    maxRetries: 3,
-    retryBackoffMs: [250, 750, 2_000],
-    receiptPollMaxAttempts: 6,
-    receiptPollIntervalMs: 500,
-    minSolLamportsToSwap: 0,
-    minUsdcMinorToSwap: 0,
-  },
-  ui: {
-    sampleBufferSize: 90,
-  },
-};
+function defaultSwapRouterForCluster(cluster: Cluster): SwapRouter {
+  if (cluster === 'mainnet-beta') return 'jupiter';
+  if (cluster === 'localnet') return 'noop';
+  return 'orca';
+}
+
+function defaultRuntimeModeForCluster(cluster: Cluster): RuntimeMode {
+  if (cluster === 'devnet') return 'simulate-only';
+  return 'dry-run';
+}
+
+function defaultReceiptIdentityForCluster(cluster: Cluster): Pick<
+  AutopilotConfig,
+  'receiptProgramId' | 'receiptIdlHashMode' | 'receiptIdlHash' | 'receiptIdlPath'
+> {
+  if (cluster === 'devnet') {
+    return {
+      receiptProgramId: DEVNET_RECEIPT_PROGRAM_ID,
+      receiptIdlHashMode: DEVNET_RECEIPT_IDL_HASH_MODE,
+      receiptIdlHash: DEVNET_RECEIPT_IDL_HASH,
+      receiptIdlPath: DEVNET_RECEIPT_IDL_PATH,
+    };
+  }
+
+  return {
+    receiptProgramId: undefined,
+    receiptIdlHashMode: undefined,
+    receiptIdlHash: undefined,
+    receiptIdlPath: undefined,
+  };
+}
+
+export function getDefaultConfig(cluster: Cluster = 'devnet'): AutopilotConfig {
+  const receiptDefaults = defaultReceiptIdentityForCluster(cluster);
+  return {
+    cluster,
+    ...receiptDefaults,
+    expectedUpgradeAuthority: undefined,
+    policy: {
+      cadenceMs: 2_000,
+      requiredConsecutive: 3,
+      cooldownMs: 90_000,
+    },
+    execution: {
+      slippageBpsCap: 50,
+      txFeeLamports: 20_000,
+      feeBufferLamports: cluster === 'mainnet-beta' ? 15_000_000 : 10_000_000,
+      computeUnitLimit: 600_000,
+      computeUnitPriceMicroLamports: 10_000,
+      quoteFreshnessSec: cluster === 'mainnet-beta' ? 15 : 20,
+      quoteFreshnessSlots: cluster === 'mainnet-beta' ? 6 : 8,
+      swapRouter: defaultSwapRouterForCluster(cluster),
+      rebuildTickDelta: undefined,
+      maxRetries: cluster === 'mainnet-beta' ? 2 : 3,
+      retryBackoffMs: [250, 750, 2_000],
+      receiptPollMaxAttempts: 6,
+      receiptPollIntervalMs: 500,
+      minSolLamportsToSwap: 0,
+      minUsdcMinorToSwap: 0,
+    },
+    operator: {
+      runtimeMode: defaultRuntimeModeForCluster(cluster),
+      executionPausedDefault: false,
+    },
+    ui: {
+      sampleBufferSize: 90,
+    },
+  };
+}
+
+export const DEFAULT_CONFIG: AutopilotConfig = getDefaultConfig();
+
+export function deriveOperatorState(
+  config: AutopilotConfig,
+  executionPausedOverride?: boolean,
+): {
+  runtimeMode: RuntimeMode;
+  executionPausedDefault: boolean;
+  executionPausedOverride?: boolean;
+  executionPaused: boolean;
+} {
+  return {
+    runtimeMode: config.operator.runtimeMode,
+    executionPausedDefault: config.operator.executionPausedDefault,
+    executionPausedOverride,
+    executionPaused: executionPausedOverride ?? config.operator.executionPausedDefault,
+  };
+}
 
 export type ConfigErrorCode = 'TYPE' | 'RANGE' | 'INVALID_BACKOFF_SCHEDULE';
 
@@ -189,12 +249,6 @@ function validateBackoffSchedule(schedule: number[]): string | null {
   return null;
 }
 
-function defaultSwapRouterForCluster(cluster: Cluster): SwapRouter {
-  if (cluster === 'mainnet-beta') return 'jupiter';
-  if (cluster === 'localnet') return 'noop';
-  return 'orca';
-}
-
 function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
   if (input === undefined) return { ok: true, value: DEFAULT_CONFIG };
   if (!isRecord(input)) {
@@ -221,8 +275,10 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
         ? (clusterRaw as Cluster)
         : (pushType(errors, 'cluster', "'devnet' | 'mainnet-beta' | 'localnet'", clusterRaw), DEFAULT_CONFIG.cluster);
 
+  const defaults = getDefaultConfig(cluster);
   const policyInRaw = input.policy;
   const executionInRaw = input.execution;
+  const operatorInRaw = input.operator;
   const uiInRaw = input.ui;
 
   const policyIn =
@@ -243,9 +299,15 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
       : isRecord(uiInRaw)
         ? uiInRaw
         : (pushType(errors, 'ui', 'object', uiInRaw), {});
+  const operatorIn =
+    operatorInRaw === undefined
+      ? {}
+      : isRecord(operatorInRaw)
+        ? operatorInRaw
+        : (pushType(errors, 'operator', 'object', operatorInRaw), {});
 
   const retryRaw = executionIn.retryBackoffMs;
-  let retryBackoffMs = DEFAULT_CONFIG.execution.retryBackoffMs;
+  let retryBackoffMs = defaults.execution.retryBackoffMs;
   if (retryRaw !== undefined) {
     if (!Array.isArray(retryRaw)) {
       pushType(errors, 'execution.retryBackoffMs', 'number[]', retryRaw);
@@ -273,90 +335,104 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
       input,
       'receiptProgramId',
       'receiptProgramId',
-      DEFAULT_CONFIG.receiptProgramId,
+      defaults.receiptProgramId,
     ),
     receiptIdlHashMode:
       !('receiptIdlHashMode' in input)
-        ? DEFAULT_CONFIG.receiptIdlHashMode
+        ? defaults.receiptIdlHashMode
         : input.receiptIdlHashMode === undefined || input.receiptIdlHashMode === null
           ? undefined
           : typeof input.receiptIdlHashMode === 'string'
             ? (input.receiptIdlHashMode as ReceiptIdlHashMode)
-            : (pushType(errors, 'receiptIdlHashMode', "'full-v1' | undefined", input.receiptIdlHashMode), DEFAULT_CONFIG.receiptIdlHashMode),
-    receiptIdlHash: readOptionalStringField(errors, input, 'receiptIdlHash', 'receiptIdlHash', DEFAULT_CONFIG.receiptIdlHash),
-    receiptIdlPath: readOptionalStringField(errors, input, 'receiptIdlPath', 'receiptIdlPath', DEFAULT_CONFIG.receiptIdlPath),
+            : (pushType(errors, 'receiptIdlHashMode', "'full-v1' | undefined", input.receiptIdlHashMode), defaults.receiptIdlHashMode),
+    receiptIdlHash: readOptionalStringField(errors, input, 'receiptIdlHash', 'receiptIdlHash', defaults.receiptIdlHash),
+    receiptIdlPath: readOptionalStringField(errors, input, 'receiptIdlPath', 'receiptIdlPath', defaults.receiptIdlPath),
     expectedUpgradeAuthority: readOptionalStringField(
       errors,
       input,
       'expectedUpgradeAuthority',
       'expectedUpgradeAuthority',
-      DEFAULT_CONFIG.expectedUpgradeAuthority,
+      defaults.expectedUpgradeAuthority,
     ),
     policy: {
-      cadenceMs: readIntField(errors, policyIn, 'cadenceMs', 'policy.cadenceMs', DEFAULT_CONFIG.policy.cadenceMs),
+      cadenceMs: readIntField(errors, policyIn, 'cadenceMs', 'policy.cadenceMs', defaults.policy.cadenceMs),
       requiredConsecutive: readIntField(
         errors,
         policyIn,
         'requiredConsecutive',
         'policy.requiredConsecutive',
-        DEFAULT_CONFIG.policy.requiredConsecutive,
+        defaults.policy.requiredConsecutive,
       ),
-      cooldownMs: readIntField(errors, policyIn, 'cooldownMs', 'policy.cooldownMs', DEFAULT_CONFIG.policy.cooldownMs),
+      cooldownMs: readIntField(errors, policyIn, 'cooldownMs', 'policy.cooldownMs', defaults.policy.cooldownMs),
     },
     execution: {
-      slippageBpsCap: readIntField(errors, executionIn, 'slippageBpsCap', 'execution.slippageBpsCap', DEFAULT_CONFIG.execution.slippageBpsCap),
-      feeBufferLamports: readIntField(errors, executionIn, 'feeBufferLamports', 'execution.feeBufferLamports', DEFAULT_CONFIG.execution.feeBufferLamports),
-      txFeeLamports: readIntField(errors, executionIn, 'txFeeLamports', 'execution.txFeeLamports', DEFAULT_CONFIG.execution.txFeeLamports),
-      computeUnitLimit: readOptionalIntField(errors, executionIn, 'computeUnitLimit', 'execution.computeUnitLimit', DEFAULT_CONFIG.execution.computeUnitLimit),
+      slippageBpsCap: readIntField(errors, executionIn, 'slippageBpsCap', 'execution.slippageBpsCap', defaults.execution.slippageBpsCap),
+      feeBufferLamports: readIntField(errors, executionIn, 'feeBufferLamports', 'execution.feeBufferLamports', defaults.execution.feeBufferLamports),
+      txFeeLamports: readIntField(errors, executionIn, 'txFeeLamports', 'execution.txFeeLamports', defaults.execution.txFeeLamports),
+      computeUnitLimit: readOptionalIntField(errors, executionIn, 'computeUnitLimit', 'execution.computeUnitLimit', defaults.execution.computeUnitLimit),
       computeUnitPriceMicroLamports: readOptionalIntField(
         errors,
         executionIn,
         'computeUnitPriceMicroLamports',
         'execution.computeUnitPriceMicroLamports',
-        DEFAULT_CONFIG.execution.computeUnitPriceMicroLamports,
+        defaults.execution.computeUnitPriceMicroLamports,
       ),
-      quoteFreshnessSec: readIntField(errors, executionIn, 'quoteFreshnessSec', 'execution.quoteFreshnessSec', DEFAULT_CONFIG.execution.quoteFreshnessSec),
-      quoteFreshnessSlots: readIntField(errors, executionIn, 'quoteFreshnessSlots', 'execution.quoteFreshnessSlots', DEFAULT_CONFIG.execution.quoteFreshnessSlots),
+      quoteFreshnessSec: readIntField(errors, executionIn, 'quoteFreshnessSec', 'execution.quoteFreshnessSec', defaults.execution.quoteFreshnessSec),
+      quoteFreshnessSlots: readIntField(errors, executionIn, 'quoteFreshnessSlots', 'execution.quoteFreshnessSlots', defaults.execution.quoteFreshnessSlots),
       swapRouter:
         typeof executionIn.swapRouter === 'string'
           ? (executionIn.swapRouter as SwapRouter)
           : executionIn.swapRouter === undefined
             ? defaultSwapRouter
             : (pushType(errors, 'execution.swapRouter', "'jupiter' | 'orca' | 'noop'", executionIn.swapRouter), defaultSwapRouter),
-      rebuildTickDelta: readOptionalIntField(errors, executionIn, 'rebuildTickDelta', 'execution.rebuildTickDelta', DEFAULT_CONFIG.execution.rebuildTickDelta),
-      maxRetries: readIntField(errors, executionIn, 'maxRetries', 'execution.maxRetries', DEFAULT_CONFIG.execution.maxRetries),
+      rebuildTickDelta: readOptionalIntField(errors, executionIn, 'rebuildTickDelta', 'execution.rebuildTickDelta', defaults.execution.rebuildTickDelta),
+      maxRetries: readIntField(errors, executionIn, 'maxRetries', 'execution.maxRetries', defaults.execution.maxRetries),
       retryBackoffMs,
       receiptPollMaxAttempts: readIntField(
         errors,
         executionIn,
         'receiptPollMaxAttempts',
         'execution.receiptPollMaxAttempts',
-        DEFAULT_CONFIG.execution.receiptPollMaxAttempts,
+        defaults.execution.receiptPollMaxAttempts,
       ),
       receiptPollIntervalMs: readIntField(
         errors,
         executionIn,
         'receiptPollIntervalMs',
         'execution.receiptPollIntervalMs',
-        DEFAULT_CONFIG.execution.receiptPollIntervalMs,
+        defaults.execution.receiptPollIntervalMs,
       ),
       minSolLamportsToSwap: readIntField(
         errors,
         executionIn,
         'minSolLamportsToSwap',
         'execution.minSolLamportsToSwap',
-        DEFAULT_CONFIG.execution.minSolLamportsToSwap,
+        defaults.execution.minSolLamportsToSwap,
       ),
       minUsdcMinorToSwap: readIntField(
         errors,
         executionIn,
         'minUsdcMinorToSwap',
         'execution.minUsdcMinorToSwap',
-        DEFAULT_CONFIG.execution.minUsdcMinorToSwap,
+        defaults.execution.minUsdcMinorToSwap,
       ),
     },
+    operator: {
+      runtimeMode:
+        typeof operatorIn.runtimeMode === 'string'
+          ? (operatorIn.runtimeMode as RuntimeMode)
+          : operatorIn.runtimeMode === undefined
+            ? defaults.operator.runtimeMode
+            : (pushType(errors, 'operator.runtimeMode', "'dry-run' | 'simulate-only' | 'execute'", operatorIn.runtimeMode), defaults.operator.runtimeMode),
+      executionPausedDefault:
+        typeof operatorIn.executionPausedDefault === 'boolean'
+          ? operatorIn.executionPausedDefault
+          : operatorIn.executionPausedDefault === undefined
+            ? defaults.operator.executionPausedDefault
+            : (pushType(errors, 'operator.executionPausedDefault', 'boolean', operatorIn.executionPausedDefault), defaults.operator.executionPausedDefault),
+    },
     ui: {
-      sampleBufferSize: readIntField(errors, uiIn, 'sampleBufferSize', 'ui.sampleBufferSize', DEFAULT_CONFIG.ui.sampleBufferSize),
+      sampleBufferSize: readIntField(errors, uiIn, 'sampleBufferSize', 'ui.sampleBufferSize', defaults.ui.sampleBufferSize),
     },
   };
 
@@ -369,6 +445,7 @@ export function validateConfig(input: unknown): ValidateConfigResult {
   if (!normalized.ok) return normalized;
 
   const errors: ConfigError[] = [];
+  const defaulted = getDefaultConfig(normalized.value.cluster);
   const allowedClusters = new Set<Cluster>(['devnet', 'mainnet-beta', 'localnet']);
   if (!allowedClusters.has(normalized.value.cluster)) {
     pushRange(errors, 'cluster', "'devnet' | 'mainnet-beta' | 'localnet'", normalized.value.cluster);
@@ -484,6 +561,56 @@ export function validateConfig(input: unknown): ValidateConfigResult {
 
   if (!Number.isInteger(e.minUsdcMinorToSwap)) pushType(errors, 'execution.minUsdcMinorToSwap', 'integer', e.minUsdcMinorToSwap);
   else if (e.minUsdcMinorToSwap < 0) pushRange(errors, 'execution.minUsdcMinorToSwap', '>= 0', e.minUsdcMinorToSwap);
+
+  const operator = normalized.value.operator;
+  const allowedRuntimeModes = new Set<RuntimeMode>(['dry-run', 'simulate-only', 'execute']);
+  if (!allowedRuntimeModes.has(operator.runtimeMode)) {
+    pushRange(errors, 'operator.runtimeMode', "'dry-run' | 'simulate-only' | 'execute'", operator.runtimeMode);
+  }
+  if (typeof operator.executionPausedDefault !== 'boolean') {
+    pushType(errors, 'operator.executionPausedDefault', 'boolean', operator.executionPausedDefault);
+  }
+
+  if (normalized.value.cluster === 'mainnet-beta' && e.swapRouter === 'noop') {
+    pushRange(errors, 'execution.swapRouter', "mainnet-beta requires 'jupiter' or 'orca'", e.swapRouter);
+  }
+
+  if (
+    normalized.value.cluster === 'mainnet-beta' &&
+    operator.runtimeMode === 'execute' &&
+    input !== undefined &&
+    isRecord(input) &&
+    !('operator' in input)
+  ) {
+    pushRange(errors, 'operator.runtimeMode', 'mainnet-beta execute must be explicitly configured', operator.runtimeMode);
+  }
+
+  if (normalized.value.cluster === 'mainnet-beta' && operator.runtimeMode === 'execute') {
+    const hasExplicitMainnetRouter = input !== undefined && isRecord(input) && isRecord(input.execution) && 'swapRouter' in input.execution;
+    if (!hasExplicitMainnetRouter && e.swapRouter === defaulted.execution.swapRouter) {
+      pushRange(errors, 'execution.swapRouter', 'mainnet-beta execute requires an explicit router selection', e.swapRouter);
+    }
+  }
+
+  const receiptIdentityComplete =
+    normalized.value.receiptProgramId !== undefined &&
+    normalized.value.receiptIdlHashMode !== undefined &&
+    normalized.value.receiptIdlHash !== undefined &&
+    normalized.value.receiptIdlPath !== undefined;
+
+  if (operator.runtimeMode === 'execute' && normalized.value.cluster !== 'devnet' && !receiptIdentityComplete) {
+    pushRange(
+      errors,
+      'receiptProgramId',
+      'receipt identity must be fully configured when execute mode is enabled outside devnet',
+      {
+        receiptProgramId: normalized.value.receiptProgramId,
+        receiptIdlHashMode: normalized.value.receiptIdlHashMode,
+        receiptIdlHash: normalized.value.receiptIdlHash,
+        receiptIdlPath: normalized.value.receiptIdlPath,
+      },
+    );
+  }
 
   const ui = normalized.value.ui;
   if (!Number.isInteger(ui.sampleBufferSize)) pushType(errors, 'ui.sampleBufferSize', 'integer', ui.sampleBufferSize);

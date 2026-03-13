@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG, validateConfig } from '../config';
+import { DEFAULT_CONFIG, getDefaultConfig, validateConfig } from '../config';
 
 describe('validateConfig', () => {
   it('defaults when input is undefined', () => {
@@ -110,11 +110,18 @@ describe('validateConfig', () => {
   it('defaults swapRouter by cluster', () => {
     const mainnet = validateConfig({ cluster: 'mainnet-beta' });
     expect(mainnet.ok).toBe(true);
-    if (mainnet.ok) expect(mainnet.value.execution.swapRouter).toBe('jupiter');
+    if (mainnet.ok) {
+      expect(mainnet.value.execution.swapRouter).toBe('jupiter');
+      expect(mainnet.value.operator.runtimeMode).toBe('dry-run');
+      expect(mainnet.value.receiptProgramId).toBeUndefined();
+    }
 
     const local = validateConfig({ cluster: 'localnet' });
     expect(local.ok).toBe(true);
-    if (local.ok) expect(local.value.execution.swapRouter).toBe('noop');
+    if (local.ok) {
+      expect(local.value.execution.swapRouter).toBe('noop');
+      expect(local.value.operator.runtimeMode).toBe('dry-run');
+    }
   });
 
   it('exposes default ui.sampleBufferSize', () => {
@@ -122,7 +129,18 @@ describe('validateConfig', () => {
     expect(res.ok).toBe(true);
     if (res.ok) {
       expect(res.value.ui.sampleBufferSize).toBe(DEFAULT_CONFIG.ui.sampleBufferSize);
+      expect(res.value.operator.runtimeMode).toBe('simulate-only');
     }
+  });
+
+  it('derives cluster-specific defaults without leaking devnet receipt identity', () => {
+    const mainnet = getDefaultConfig('mainnet-beta');
+    expect(mainnet.operator.runtimeMode).toBe('dry-run');
+    expect(mainnet.receiptProgramId).toBeUndefined();
+
+    const devnet = getDefaultConfig('devnet');
+    expect(devnet.operator.runtimeMode).toBe('simulate-only');
+    expect(devnet.receiptProgramId).toBeDefined();
   });
 
   it('rejects invalid ui.sampleBufferSize', () => {
@@ -179,6 +197,56 @@ describe('validateConfig', () => {
     expect(badProgramId.ok).toBe(false);
     if (!badProgramId.ok) {
       expect(badProgramId.errors.some((e) => e.path === 'receiptProgramId')).toBe(true);
+    }
+  });
+
+  it('rejects invalid operator fields', () => {
+    const badMode = validateConfig({
+      operator: {
+        runtimeMode: 'unsafe-mode',
+      },
+    });
+    expect(badMode.ok).toBe(false);
+    if (!badMode.ok) {
+      expect(badMode.errors.some((e) => e.path === 'operator.runtimeMode')).toBe(true);
+    }
+
+    const badPauseFlag = validateConfig({
+      operator: {
+        executionPausedDefault: 'yes',
+      },
+    });
+    expect(badPauseFlag.ok).toBe(false);
+    if (!badPauseFlag.ok) {
+      expect(badPauseFlag.errors.some((e) => e.path === 'operator.executionPausedDefault')).toBe(true);
+    }
+  });
+
+  it('rejects noop router on mainnet', () => {
+    const res = validateConfig({
+      cluster: 'mainnet-beta',
+      execution: { swapRouter: 'noop' },
+      operator: { runtimeMode: 'execute', executionPausedDefault: false },
+      receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
+      receiptIdlHashMode: 'full-v1',
+      receiptIdlHash: 'a'.repeat(64),
+      receiptIdlPath: 'deployments/mainnet/receipt.idl.json',
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.errors.some((e) => e.path === 'execution.swapRouter')).toBe(true);
+    }
+  });
+
+  it('requires receipt identity for execute mode outside devnet', () => {
+    const res = validateConfig({
+      cluster: 'mainnet-beta',
+      operator: { runtimeMode: 'execute', executionPausedDefault: false },
+      execution: { swapRouter: 'jupiter' },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.errors.some((e) => e.path === 'receiptProgramId')).toBe(true);
     }
   });
 });
