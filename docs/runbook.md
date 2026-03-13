@@ -1,4 +1,4 @@
-# Operator Runbook (M15)
+# Operator Runbook (M18)
 
 ## Commands
 
@@ -27,6 +27,63 @@ Harness env vars:
 - `REQUIRE_RECEIPT_PROOF` (optional: `1|0|true|false`, default `0`; when enabled, `HOLD` is treated as failure)
 - `TOKEN2022_POSITION_ADDRESS` (optional; non-blocking check: when set, harness logs whether that position resolves to a Token-2022 pool and never fails the main run if unavailable/mismatched)
 - `RECEIPT_IDENTITY_SOURCE` (optional, advanced: set to `config` to force legacy config fallback identity instead of devnet manifest)
+
+App/runtime operator config:
+
+- `operator.runtimeMode` (`dry-run` | `simulate-only` | `execute`)
+- `operator.executionPausedDefault` (`true` | `false`)
+
+Pause precedence:
+
+1. session override
+2. config default
+
+Effective paused state is always derived as `sessionOverride ?? executionPausedDefault`.
+
+## Runtime Modes
+
+- `dry-run`
+  - evaluates monitoring + policy only
+  - no tx build, no simulation, no send
+  - `executeOnce()` returns an operator-blocked error if called directly
+- `simulate-only`
+  - evaluates, builds, and simulates
+  - never requests signature or sends a tx
+  - safe default for devnet shells
+- `execute`
+  - full send path
+  - requires wallet/provider, valid receipt identity, supported router/cluster, and unpaused operator state
+
+Safe defaults:
+
+- `devnet`: `simulate-only`
+- `mainnet-beta`: `dry-run`
+- `localnet`: `dry-run`
+
+Mainnet guardrails:
+
+- no silent `noop` router fallback
+- execute requires explicit operator config
+- execute requires full receipt identity config
+
+## Startup Validation
+
+Validation is layered:
+
+1. config normalization in `@clmm-autopilot/core`
+2. static config validation for operator/runtime safety
+3. runtime environment validation for RPC URL and execute prerequisites
+4. authoritative execution gate in the Solana runtime
+
+The Solana runtime gate is the safety boundary. UI disablement is advisory only.
+
+Gate order:
+
+1. runtime mode
+2. effective paused state
+3. wallet/provider presence
+4. receipt identity presence
+5. router/cluster compatibility
 
 Example:
 
@@ -70,6 +127,49 @@ node scripts/find-devnet-whirlpool-positions.mjs --wallet "$WALLET_ADDRESS"
 13. Executes the same flow a second time in the same epoch and requires deterministic rejection with `ALREADY_EXECUTED_THIS_EPOCH`
 
 Logs are JSON (structured) and failure exits non-zero.
+
+## Structured Events and Counters
+
+Runtime event envelope fields:
+
+- `event`
+- `timestamp`
+- `cluster`
+- `runtimeMode`
+- `executionPaused`
+- `authority`
+- `position`
+- `whirlpool`
+- `router`
+- `direction`
+- `correlationId`
+- `status`
+- `errorCode`
+- `details`
+
+Core event names include:
+
+- `monitor.snapshot_fetched`
+- `monitor.snapshot_failed`
+- `policy.decision_hold`
+- `policy.decision_trigger_up`
+- `policy.decision_trigger_down`
+- `policy.cooldown_active`
+- `execution.build_started`
+- `execution.build_failed`
+- `execution.simulation_started`
+- `execution.simulation_failed`
+- `execution.send_started`
+- `execution.send_confirmed`
+- `execution.send_failed`
+- `execution.receipt_precheck_zero`
+- `execution.receipt_precheck_exists`
+- `execution.receipt_verified`
+- `execution.swap_skipped_dust`
+- `execution.paused_block`
+- `config.validation_failed`
+
+Counters are in-memory and scoped per process/app session. They reset on process restart or app reload.
 
 ## Certification suite
 

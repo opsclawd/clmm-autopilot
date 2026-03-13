@@ -1,4 +1,9 @@
 export type CanonicalCode =
+  | 'EXECUTION_MODE_BLOCKED'
+  | 'EXECUTION_PAUSED'
+  | 'WALLET_PROVIDER_MISSING'
+  | 'RPC_URL_MISSING'
+  | 'RUNTIME_MODE_INVALID'
   | 'DATA_UNAVAILABLE'
   | 'RPC_TRANSIENT'
   | 'RPC_PERMANENT'
@@ -25,6 +30,11 @@ export type UiError = {
 };
 
 const messages: Record<CanonicalCode, Omit<UiError, 'code'>> = {
+  EXECUTION_MODE_BLOCKED: { title: 'Mode blocked', message: 'Runtime mode does not allow execution.' },
+  EXECUTION_PAUSED: { title: 'Execution paused', message: 'Execution is paused by operator control.' },
+  WALLET_PROVIDER_MISSING: { title: 'Wallet missing', message: 'A connected wallet/provider is required for execute mode.' },
+  RPC_URL_MISSING: { title: 'RPC misconfigured', message: 'RPC URL is missing or invalid for this runtime.' },
+  RUNTIME_MODE_INVALID: { title: 'Runtime mode invalid', message: 'Runtime mode is invalid for this operation.' },
   DATA_UNAVAILABLE: { title: 'Data unavailable', message: 'Required data could not be loaded.' },
   RPC_TRANSIENT: { title: 'RPC transient', message: 'Temporary RPC issue. Retry shortly.' },
   RPC_PERMANENT: { title: 'RPC permanent', message: 'RPC error is not retryable.' },

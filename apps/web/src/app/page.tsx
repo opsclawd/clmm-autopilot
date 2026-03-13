@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createConsoleNotificationsAdapter } from '@clmm-autopilot/notifications';
 import { executeOnce, loadPositionSnapshot, loadSolanaConfig, refreshPositionDecision } from '@clmm-autopilot/solana';
-import { type PolicyState } from '@clmm-autopilot/core';
+import { deriveOperatorState, type PolicyState } from '@clmm-autopilot/core';
 import { loadAutopilotConfig } from '../config';
 import { buildUiModel, mapErrorToUi, type UiModel } from '@clmm-autopilot/ui-state';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
@@ -27,12 +27,39 @@ export default function Home() {
   const [ui, setUi] = useState<UiModel>(buildUiModel({}));
   const [simSummary, setSimSummary] = useState<string>('N/A');
   const [samples, setSamples] = useState<Sample[]>([]);
+  const [executionPausedOverride, setExecutionPausedOverride] = useState<boolean | undefined>(undefined);
   const previewPolicyStateRef = useRef<PolicyState>({});
   const executionPolicyStateRef = useRef<PolicyState>({});
   const [lastSimDebug, setLastSimDebug] = useState<unknown>(null);
   const pollingRef = useRef<number | null>(null);
+  const operatorState = useMemo(
+    () => deriveOperatorState(autopilotConfig, executionPausedOverride),
+    [autopilotConfig, executionPausedOverride],
+  );
 
   const canExecute = Boolean(configValid && wallet && positionAddress && ui.canExecute);
+
+  const uiConfig = useMemo(
+    () => ({
+      policy: autopilotConfig.policy,
+      execution: {
+        slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
+        quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessSec * 1000,
+      },
+      operator: {
+        runtimeMode: autopilotConfig.operator.runtimeMode,
+        executionPausedDefault: autopilotConfig.operator.executionPausedDefault,
+      },
+    }),
+    [autopilotConfig],
+  );
+
+  const buildOperatorUiState = (operatorBlockReason?: string) => ({
+    runtimeMode: operatorState.runtimeMode,
+    executionPausedDefault: operatorState.executionPausedDefault,
+    executionPaused: operatorState.executionPaused,
+    ...(operatorBlockReason ? { operatorBlockReason } : {}),
+  });
 
   useEffect(() => {
     if (pollingRef.current) {
@@ -106,6 +133,10 @@ export default function Home() {
         <div>cooldownMs: {autopilotConfig.policy.cooldownMs}</div>
         <div>slippageBpsCap: {autopilotConfig.execution.slippageBpsCap}</div>
         <div>quoteFreshnessSec: {autopilotConfig.execution.quoteFreshnessSec}</div>
+        <div>runtimeMode: {operatorState.runtimeMode}</div>
+        <div>pause default: {operatorState.executionPausedDefault ? 'paused' : 'active'}</div>
+        <div>pause effective: {operatorState.executionPaused ? 'paused' : 'active'}</div>
+        <div>pause override: {executionPausedOverride === undefined ? 'none' : executionPausedOverride ? 'paused' : 'active'}</div>
       </div>
       <div className="flex gap-2">
         <button
@@ -121,6 +152,23 @@ export default function Home() {
         </button>
         <button className="rounded border px-3 py-2" onClick={() => setWallet('')} disabled={!wallet}>
           Disconnect
+        </button>
+        <button
+          className="rounded border px-3 py-2"
+          onClick={() =>
+            setExecutionPausedOverride((prev) =>
+              prev === undefined ? !autopilotConfig.operator.executionPausedDefault : !prev,
+            )
+          }
+        >
+          {operatorState.executionPaused ? 'Resume Session' : 'Pause Session'}
+        </button>
+        <button
+          className="rounded border px-3 py-2"
+          onClick={() => setExecutionPausedOverride(undefined)}
+          disabled={executionPausedOverride === undefined}
+        >
+          Reset Pause
         </button>
       </div>
 
@@ -149,13 +197,8 @@ export default function Home() {
               });
               previewPolicyStateRef.current = refreshed.decision.nextState;
               setUi(buildUiModel({
-                config: {
-                  policy: autopilotConfig.policy,
-                  execution: {
-                    slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
-                    quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessSec * 1000,
-                  },
-                },
+                config: uiConfig,
+                operator: buildOperatorUiState(),
                 snapshot: refreshed.snapshot,
                 decision: refreshed.decision,
                 quote: refreshed.quote,
@@ -180,6 +223,7 @@ export default function Home() {
                           pairValid: false,
                         }
                       : undefined,
+                  operator: buildOperatorUiState(mapped.code === 'EXECUTION_PAUSED' || mapped.code === 'EXECUTION_MODE_BLOCKED' ? mapped.code : undefined),
                   lastError: `${mapped.code}: ${mapped.message}`,
                 }),
               );
@@ -209,9 +253,16 @@ export default function Home() {
                 policyState: executionPolicyStateRef.current,
                 expectedMinOut: 'N/A',
                 quoteAgeMs: 0,
-                onSimulationComplete: (s) => setSimSummary(`${s} — ready for wallet prompt`),
+                onSimulationComplete: (s) => setSimSummary(`${s} - ready for wallet prompt`),
                 signAndSend: async (tx: VersionedTransaction) => (await provider.signAndSendTransaction(tx)).signature,
-                logger: notifications,
+                observer: notifications,
+                runtimeEnvironment: {
+                  rpcUrl: solanaConfig.rpcUrl,
+                  commitment: solanaConfig.commitment,
+                  walletConnected: Boolean(wallet),
+                  signingAvailable: Boolean(provider?.signAndSendTransaction),
+                  executionPausedOverride,
+                },
               });
               if (res.refresh?.decision?.nextState) {
                 executionPolicyStateRef.current = res.refresh.decision.nextState;
@@ -219,18 +270,19 @@ export default function Home() {
               }
               if (res.status === 'HOLD') {
                 setSimSummary(`Skipped before simulation: ${res.refresh?.decision?.reasonCode ?? 'HOLD'}`);
+              } else if (res.status === 'SIMULATED') {
+                setSimSummary(res.simSummary ?? 'Simulation passed');
               }
 
               setLastSimDebug(res.errorDebug ?? null);
               setUi(
                 buildUiModel({
-                  config: {
-                    policy: autopilotConfig.policy,
-                    execution: {
-                      slippageBpsCap: autopilotConfig.execution.slippageBpsCap,
-                      quoteFreshnessMs: autopilotConfig.execution.quoteFreshnessSec * 1000,
-                    },
-                  },
+                  config: uiConfig,
+                  operator: buildOperatorUiState(
+                    res.status === 'ERROR' && (res.errorCode === 'EXECUTION_PAUSED' || res.errorCode === 'EXECUTION_MODE_BLOCKED')
+                      ? res.errorCode
+                      : undefined,
+                  ),
                   snapshot: res.refresh?.snapshot,
                   decision: res.refresh?.decision,
                   quote: res.refresh?.quote,
@@ -246,7 +298,11 @@ export default function Home() {
               );
             } catch (e) {
               const mapped = mapErrorToUi(e);
-              setUi(buildUiModel({ lastError: `${mapped.code}: ${mapped.message}` }));
+              setUi(buildUiModel({
+                config: uiConfig,
+                operator: buildOperatorUiState(mapped.code === 'EXECUTION_PAUSED' || mapped.code === 'EXECUTION_MODE_BLOCKED' ? mapped.code : undefined),
+                lastError: `${mapped.code}: ${mapped.message}`,
+              }));
             }
           }}
         >
@@ -263,6 +319,9 @@ export default function Home() {
         <div>debounce progress: {ui.decision ? `${ui.decision.samplesUsed}/${ui.decision.threshold}` : 'N/A'}</div>
         <div>pending confirm: {ui.decision && ui.decision.samplesUsed < ui.decision.threshold ? 'yes' : 'no'}</div>
         <div>cooldown remaining (ms): {ui.decision?.cooldownRemainingMs ?? 'N/A'}</div>
+        <div>runtime mode: {ui.operator?.runtimeMode ?? operatorState.runtimeMode}</div>
+        <div>paused: {(ui.operator?.executionPaused ?? operatorState.executionPaused) ? 'yes' : 'no'}</div>
+        <div>operator block: {ui.operator?.operatorBlockReason ?? 'none'}</div>
         <div>slippage cap: {ui.quote?.slippageBpsCap ?? 'N/A'}</div>
         <div>expected minOut: {ui.quote?.expectedMinOut ?? 'N/A'}</div>
         <div>quote age (ms): {ui.quote?.quoteAgeMs ?? 'N/A'}</div>

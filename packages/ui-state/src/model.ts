@@ -1,3 +1,5 @@
+export type UiRuntimeMode = 'dry-run' | 'simulate-only' | 'execute';
+
 export type UiConfig = {
   policy: {
     cadenceMs: number;
@@ -8,6 +10,17 @@ export type UiConfig = {
     slippageBpsCap: number;
     quoteFreshnessMs: number;
   };
+  operator: {
+    runtimeMode: UiRuntimeMode;
+    executionPausedDefault: boolean;
+  };
+};
+
+export type UiOperatorState = {
+  runtimeMode: UiRuntimeMode;
+  executionPausedDefault: boolean;
+  executionPaused: boolean;
+  operatorBlockReason?: string;
 };
 
 export type UiSnapshot = {
@@ -49,6 +62,7 @@ export type UiExecution = {
 
 export type UiModel = {
   config?: UiConfig;
+  operator?: UiOperatorState;
   loading: {
     snapshot: boolean;
     decision: boolean;
@@ -65,6 +79,7 @@ export type UiModel = {
 
 export function buildUiModel(input: {
   config?: UiConfig;
+  operator?: UiOperatorState;
   snapshot?: UiSnapshot;
   decision?: UiDecision;
   quote?: UiQuote;
@@ -84,9 +99,14 @@ export function buildUiModel(input: {
     decision: input.decision,
     quote: input.quote,
     execution: input.execution,
+    operator: input.operator,
     canExecute:
       input.decision
-        ? input.decision.decision !== 'HOLD' && input.snapshot?.pairValid === true && input.decision.reasonCode !== 'NOT_SOL_USDC'
+        ? input.decision.decision !== 'HOLD' &&
+          input.snapshot?.pairValid === true &&
+          input.decision.reasonCode !== 'NOT_SOL_USDC' &&
+          input.operator?.runtimeMode === 'execute' &&
+          input.operator.executionPaused === false
         : false,
     lastError: input.lastError,
   };

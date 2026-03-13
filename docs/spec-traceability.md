@@ -1,4 +1,4 @@
-# Spec Traceability (M0-M17)
+# Spec Traceability (M0-M18)
 
 | Milestone | Status | Evidence |
 | --- | --- | --- |
@@ -20,3 +20,4 @@
 | M15 devnet receipt deploy | met | Deploy-derived manifest + deterministic IDL hash gate + consistency guard + manual devnet workflow updates are in place. |
 | M16 token2022 first-class | met | Token-program resolver + LRU cache + terminal unsupported owner errors are wired; requirements owns ATA existence planning via `missingAtas`; builder consumes plan-only ATA creation; Whirlpool remove/collect/swap share v1/v2 selector with unconditional memo on v2; matrix-focused tests were added. |
 | M17 e2e harness completion | met | Devnet harness now emits canonical `schemaVersion:1` artifacts for all outcomes, includes post-state economic assertions (liquidity/balances/fees/swap-or-valid-skip), and exposes first-class scenario/suite certification runners. |
+| M18 production readiness guardrails | met | Core config now carries explicit operator runtime mode + paused default with cluster-safe defaults; Solana runtime adds RPC/runtime validation, a single execution gate, structured event envelopes, and in-memory counters; web/mobile shells surface effective operator state and session pause override; runbook/checklist updates document mode, pause precedence, and observability expectations. |

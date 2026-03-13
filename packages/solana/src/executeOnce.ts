@@ -6,6 +6,7 @@ import {
   unixDaysFromUnixMs,
   type AutopilotConfig,
   type PolicyState,
+  type RuntimeMode,
   type Sample,
   type SwapPlan,
   type SwapQuote,
@@ -16,7 +17,6 @@ import { computeExecutionRequirements } from './requirements';
 import { normalizeSolanaError } from './errors';
 import { loadPositionSnapshot } from './orcaInspector';
 import { deriveReceiptPda, fetchReceiptByPda } from './receipt';
-import { resolveReceiptRuntimeIdentity } from './receiptIdentity';
 import { verifyReceiptProgramOnChain } from './receiptProgramVerification';
 import { refreshBlockhashIfNeeded, shouldRebuild, withBoundedRetry } from './reliability';
 import type { CanonicalErrorCode } from './types';
@@ -24,11 +24,15 @@ import { SOL_MINT } from './ata';
 import { deriveSwapTickArrays } from './swap/tickArrays';
 import { getSwapAdapter } from './swap/registry';
 import type { SolanaSwapContext } from './swap/types';
-
-type Logger = {
-  notify?: (info: string, context?: Record<string, string | number | boolean>) => void;
-  notifyError?: (err: unknown, context?: Record<string, string | number | boolean>) => void;
-};
+import { deriveEffectiveOperatorState, enforceExecutionGate, validateRuntimeEnvironment, type RuntimeEnvironment } from './runtime';
+import {
+  createCorrelationId,
+  createRuntimeCounterRegistry,
+  emitRuntimeEvent,
+  type RuntimeCounterRegistry,
+  type RuntimeEvent,
+  type RuntimeObserver,
+} from './telemetry';
 
 const ZERO_PUBKEY = '11111111111111111111111111111111';
 type SuppliedQuote = {
@@ -120,6 +124,7 @@ export async function refreshPositionDecision(params: RefreshParams): Promise<Re
 export type ExecuteOnceParams = RefreshParams & {
   authority: PublicKey;
   receiptIdentityEnv?: Record<string, string | undefined>;
+  runtimeEnvironment?: Omit<RuntimeEnvironment, 'receiptIdentityEnv'>;
   receiptEpochUnixMs?: number;
   decisionOverride?: {
     decision: Exclude<RefreshResult['decision']['decision'], 'HOLD'>;
@@ -137,14 +142,22 @@ export type ExecuteOnceParams = RefreshParams & {
   nowUnixMs?: () => number;
   checkExistingReceipt?: (receiptPda: PublicKey) => Promise<boolean>;
   onSimulationComplete?: (summary: string) => Promise<void> | void;
-  logger?: Logger;
+  observer?: RuntimeObserver;
+  counters?: RuntimeCounterRegistry;
+  correlationId?: string;
   certificationHooks?: ExecuteOnceCertificationHooks;
 };
 
 export type ExecuteOnceResult = {
-  status: 'HOLD' | 'EXECUTED' | 'ERROR';
+  status: 'HOLD' | 'SIMULATED' | 'EXECUTED' | 'ERROR';
   refresh?: RefreshResult;
   metadata?: {
+    operator: {
+      runtimeMode: RuntimeMode;
+      executionPausedDefault: boolean;
+      executionPaused: boolean;
+      executionPausedOverride?: boolean;
+    };
     decision: {
       decision: RefreshResult['decision']['decision'];
       reasonCode: string;
@@ -167,6 +180,7 @@ export type ExecuteOnceResult = {
       collectFeesPlanned: boolean;
       receiptWritePlanned: boolean;
     };
+    counters: ReturnType<RuntimeCounterRegistry['snapshot']>;
   };
   execution?: {
     unsignedTxBuilt: boolean;
@@ -257,13 +271,89 @@ function buildPlanQuoteFromSupplied(router: AutopilotConfig['execution']['swapRo
   };
 }
 
+function runtimeModeToBlockedStatus(mode: RuntimeMode): RuntimeEvent['status'] {
+  return mode === 'simulate-only' ? 'ok' : 'blocked';
+}
+
+function baseEvent(
+  params: ExecuteOnceParams,
+  correlationId: string,
+  operatorState: ReturnType<typeof deriveEffectiveOperatorState>,
+  fields: Pick<RuntimeEvent, 'event' | 'status'> & Partial<Omit<RuntimeEvent, 'event' | 'status' | 'timestamp' | 'cluster' | 'runtimeMode' | 'executionPaused' | 'correlationId'>>,
+): RuntimeEvent {
+  return {
+    event: fields.event,
+    timestamp: new Date().toISOString(),
+    cluster: params.config.cluster,
+    runtimeMode: operatorState.runtimeMode,
+    executionPaused: operatorState.executionPaused,
+    authority: params.authority.toBase58(),
+    position: params.position.toBase58(),
+    correlationId,
+    status: fields.status,
+    whirlpool: fields.whirlpool,
+    router: fields.router ?? params.config.execution.swapRouter,
+    direction: fields.direction,
+    errorCode: fields.errorCode,
+    details: fields.details,
+  };
+}
+
+function buildMetadata(params: {
+  config: AutopilotConfig;
+  operatorState: ReturnType<typeof deriveEffectiveOperatorState>;
+  counters: RuntimeCounterRegistry;
+  decision?: NonNullable<ExecuteOnceResult['metadata']>['decision'];
+  swap?: NonNullable<ExecuteOnceResult['metadata']>['swap'];
+  reliability: NonNullable<ExecuteOnceResult['metadata']>['reliability'];
+  executionIntent: NonNullable<ExecuteOnceResult['metadata']>['executionIntent'];
+}): NonNullable<ExecuteOnceResult['metadata']> {
+  return {
+    operator: {
+      runtimeMode: params.operatorState.runtimeMode,
+      executionPausedDefault: params.operatorState.executionPausedDefault,
+      executionPaused: params.operatorState.executionPaused,
+      executionPausedOverride: params.operatorState.executionPausedOverride,
+    },
+    decision: params.decision ?? {
+      decision: 'HOLD',
+      reasonCode: 'EXECUTION_FAILED_BEFORE_DECISION',
+    },
+    swap: params.swap ?? {
+      swapPlanned: false,
+      swapSkipped: true,
+      swapSkipReason: 'NONE',
+      swapRouter: params.config.execution.swapRouter,
+      swapInstructionCount: 0,
+    },
+    reliability: params.reliability,
+    executionIntent: params.executionIntent,
+    counters: params.counters.snapshot(),
+  };
+}
+
 export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnceResult> {
   const sleep = params.sleep ?? (async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
+  const counters = params.counters ?? createRuntimeCounterRegistry();
+  const correlationId = params.correlationId ?? createCorrelationId();
+  const runtimeEnvironment: RuntimeEnvironment = {
+    rpcUrl: params.runtimeEnvironment?.rpcUrl ?? ((params.connection as unknown as { rpcEndpoint?: string }).rpcEndpoint ?? 'http://runtime.local'),
+    commitment: params.runtimeEnvironment?.commitment ?? 'confirmed',
+    walletConnected: params.runtimeEnvironment?.walletConnected ?? true,
+    signingAvailable: params.runtimeEnvironment?.signingAvailable ?? true,
+    executionPausedOverride: params.runtimeEnvironment?.executionPausedOverride,
+    receiptIdentityEnv: params.receiptIdentityEnv,
+  };
   const retryAttempts: Record<string, number> = {};
   let quoteRebuilt = false;
   let quoteRebuildReason: 'QUOTE_STALE' | 'BOUND_CROSSED' | 'TICK_MOVED' | undefined;
   let blockhashRefreshed = false;
+  let snapshotFetched = false;
+  let buildStarted = false;
+  let simulationStarted = false;
+  let sendStarted = false;
+  let operatorState = deriveEffectiveOperatorState(params.config, runtimeEnvironment.executionPausedOverride);
 
   const withRetry = async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
     let attempts = 0;
@@ -285,12 +375,19 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   };
 
   try {
-    // Resolve receipt identity before policy branching so devnet misconfiguration fails fast even on HOLD.
-    const receiptIdentity = resolveReceiptRuntimeIdentity(params.config, params.receiptIdentityEnv);
+    validateRuntimeEnvironment(runtimeEnvironment);
+    const gate = enforceExecutionGate({
+      config: params.config,
+      runtimeEnvironment,
+      requireSigning: true,
+    });
+    operatorState = gate.operatorState;
+    const receiptIdentity = gate.receiptIdentity;
     if (receiptIdentity) {
       await verifyReceiptProgramOnChain(params.connection, receiptIdentity);
     }
     const refreshed = await withRetry('refreshPositionDecision', () => refreshPositionDecision(params));
+    snapshotFetched = true;
     const effectiveRefresh = params.decisionOverride
       ? {
           ...refreshed,
@@ -301,16 +398,46 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           },
         }
       : refreshed;
-    params.logger?.notify?.('snapshot fetched', { position: params.position.toBase58() });
+    emitRuntimeEvent(
+      params.observer,
+      counters,
+      baseEvent(params, correlationId, operatorState, {
+        event: 'monitor.snapshot_fetched',
+        status: 'ok',
+        details: { decision: effectiveRefresh.decision.decision, reasonCode: effectiveRefresh.decision.reasonCode },
+      }),
+    );
 
     const router = params.config.execution.swapRouter;
-    const adapter = router === 'noop' ? null : getSwapAdapter(router, params.config.cluster);
 
     if (effectiveRefresh.decision.decision === 'HOLD') {
+      if (effectiveRefresh.decision.cooldownRemainingMs > 0) {
+        emitRuntimeEvent(
+          params.observer,
+          counters,
+          baseEvent(params, correlationId, operatorState, {
+            event: 'policy.cooldown_active',
+            status: 'ok',
+            details: { cooldownRemainingMs: effectiveRefresh.decision.cooldownRemainingMs },
+          }),
+        );
+      }
+      emitRuntimeEvent(
+        params.observer,
+        counters,
+        baseEvent(params, correlationId, operatorState, {
+          event: 'policy.decision_hold',
+          status: 'hypothetical',
+          details: { reasonCode: effectiveRefresh.decision.reasonCode },
+        }),
+      );
       return {
         status: 'HOLD',
         refresh: effectiveRefresh,
-        metadata: {
+        metadata: buildMetadata({
+          config: params.config,
+          operatorState,
+          counters,
           decision: {
             decision: effectiveRefresh.decision.decision,
             reasonCode: effectiveRefresh.decision.reasonCode,
@@ -332,9 +459,24 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             collectFeesPlanned: false,
             receiptWritePlanned: false,
           },
-        },
+        }),
       };
     }
+
+    emitRuntimeEvent(
+      params.observer,
+      counters,
+      baseEvent(params, correlationId, operatorState, {
+        event:
+          effectiveRefresh.decision.decision === 'TRIGGER_UP'
+            ? 'policy.decision_trigger_up'
+            : 'policy.decision_trigger_down',
+        status: runtimeModeToBlockedStatus(operatorState.runtimeMode),
+        details: { reasonCode: effectiveRefresh.decision.reasonCode },
+      }),
+    );
+
+    const adapter = router === 'noop' ? null : getSwapAdapter(router, params.config.cluster);
 
     let snapshot = await withRetry('loadPositionSnapshot.initial', () =>
       loadPositionSnapshot(params.connection, params.position, params.config.cluster),
@@ -490,7 +632,17 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         loadPositionSnapshot(params.connection, params.position, params.config.cluster),
       );
       assembled = await withRetry('buildPlan.rebuild', () => buildPlan(snapshot));
-      params.logger?.notify?.('quote rebuilt', { reasonCode: rebuildCheck.reasonCode ?? 'QUOTE_STALE' });
+      emitRuntimeEvent(
+        params.observer,
+        counters,
+        baseEvent(params, correlationId, operatorState, {
+          event: 'execution.build_started',
+          status: 'started',
+          direction,
+          whirlpool: snapshot.whirlpool.toBase58(),
+          details: { reasonCode: rebuildCheck.reasonCode ?? 'QUOTE_STALE', rebuild: true },
+        }),
+      );
     }
 
     const receiptPda = receiptIdentity
@@ -506,12 +658,27 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         ? await params.checkExistingReceipt(receiptPda)
         : Boolean(await withRetry('fetchReceiptByPda.precheck', () => fetchReceiptByPda(params.connection, receiptPda)));
       if (existingReceipt) {
+        emitRuntimeEvent(
+          params.observer,
+          counters,
+          baseEvent(params, correlationId, operatorState, {
+            event: 'execution.receipt_precheck_exists',
+            status: 'failed',
+            direction,
+            whirlpool: snapshot.whirlpool.toBase58(),
+            errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+            details: { receiptPda: receiptPda.toBase58(), epoch },
+          }),
+        );
         return {
           status: 'ERROR',
           refresh: effectiveRefresh,
           errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
           errorMessage: 'Execution receipt already exists for canonical epoch',
-          metadata: {
+          metadata: buildMetadata({
+            config: params.config,
+            operatorState,
+            counters,
             decision: {
               decision: effectiveRefresh.decision.decision,
               reasonCode: effectiveRefresh.decision.reasonCode,
@@ -534,9 +701,34 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
               collectFeesPlanned: true,
               receiptWritePlanned: true,
             },
-          },
+          }),
         };
       }
+      emitRuntimeEvent(
+        params.observer,
+        counters,
+        baseEvent(params, correlationId, operatorState, {
+          event: 'execution.receipt_precheck_zero',
+          status: 'ok',
+          direction,
+          whirlpool: snapshot.whirlpool.toBase58(),
+          details: { receiptPda: receiptPda.toBase58(), epoch },
+        }),
+      );
+    }
+
+    if (assembled.plan.swapSkipReason === 'DUST') {
+      emitRuntimeEvent(
+        params.observer,
+        counters,
+        baseEvent(params, correlationId, operatorState, {
+          event: 'execution.swap_skipped_dust',
+          status: 'ok',
+          direction,
+          whirlpool: snapshot.whirlpool.toBase58(),
+          details: { swapRouter: assembled.plan.swapRouter },
+        }),
+      );
     }
 
     const attestationInput = {
@@ -633,12 +825,85 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       });
     };
 
+    buildStarted = true;
+    emitRuntimeEvent(
+      params.observer,
+      counters,
+      baseEvent(params, correlationId, operatorState, {
+        event: 'execution.build_started',
+        status: 'started',
+        direction,
+        whirlpool: snapshot.whirlpool.toBase58(),
+      }),
+    );
+    simulationStarted = true;
+    emitRuntimeEvent(
+      params.observer,
+      counters,
+      baseEvent(params, correlationId, operatorState, {
+        event: 'execution.simulation_started',
+        status: 'started',
+        direction,
+        whirlpool: snapshot.whirlpool.toBase58(),
+      }),
+    );
     let msg = (await buildTx(latestBlockhash.blockhash)) as VersionedTransaction;
     const simSummary = 'Simulation passed';
     await params.onSimulationComplete?.(simSummary);
 
+    if (operatorState.runtimeMode === 'simulate-only') {
+      return {
+        status: 'SIMULATED',
+        refresh: effectiveRefresh,
+        metadata: buildMetadata({
+          config: params.config,
+          operatorState,
+          counters,
+          decision: {
+            decision: effectiveRefresh.decision.decision,
+            reasonCode: effectiveRefresh.decision.reasonCode,
+          },
+          swap: {
+            swapPlanned: assembled.plan.swapPlanned,
+            swapSkipped: !assembled.plan.swapPlanned,
+            swapSkipReason: assembled.plan.swapSkipReason,
+            swapRouter: assembled.plan.swapRouter,
+            swapInstructionCount: assembled.swapIxs.length,
+          },
+          reliability: {
+            quoteRebuilt,
+            ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
+            blockhashRefreshed,
+            retryAttempts,
+          },
+          executionIntent: {
+            removeLiquidityPlanned: true,
+            collectFeesPlanned: true,
+            receiptWritePlanned: false,
+          },
+        }),
+        execution: {
+          unsignedTxBuilt: true,
+          simulated: true,
+          simLogs: [simSummary],
+        },
+        simSummary,
+      };
+    }
+
     let sig: string;
     try {
+      sendStarted = true;
+      emitRuntimeEvent(
+        params.observer,
+        counters,
+        baseEvent(params, correlationId, operatorState, {
+          event: 'execution.send_started',
+          status: 'started',
+          direction,
+          whirlpool: snapshot.whirlpool.toBase58(),
+        }),
+      );
       const refreshedBlockhash = await refreshBlockhashIfNeeded({
         getLatestBlockhash: () => params.connection.getLatestBlockhash(),
         current: { ...latestBlockhash, fetchedAtUnixMs },
@@ -693,10 +958,38 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       }
     }
 
+    emitRuntimeEvent(
+      params.observer,
+      counters,
+      baseEvent(params, correlationId, operatorState, {
+        event: 'execution.send_confirmed',
+        status: 'ok',
+        direction,
+        whirlpool: snapshot.whirlpool.toBase58(),
+        details: { signature: sig },
+      }),
+    );
+    if (receipt) {
+      emitRuntimeEvent(
+        params.observer,
+        counters,
+        baseEvent(params, correlationId, operatorState, {
+          event: 'execution.receipt_verified',
+          status: 'ok',
+          direction,
+          whirlpool: snapshot.whirlpool.toBase58(),
+          details: { receiptPda: receiptPda?.toBase58() },
+        }),
+      );
+    }
+
     return {
       status: 'EXECUTED',
       refresh: effectiveRefresh,
-      metadata: {
+      metadata: buildMetadata({
+        config: params.config,
+        operatorState,
+        counters,
         decision: {
           decision: effectiveRefresh.decision.decision,
           reasonCode: effectiveRefresh.decision.reasonCode,
@@ -719,7 +1012,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           collectFeesPlanned: true,
           receiptWritePlanned: Boolean(receiptPda),
         },
-      },
+      }),
       execution: {
         unsignedTxBuilt: true,
         simulated: true,
@@ -737,24 +1030,39 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     };
   } catch (error) {
     const normalized = normalizeSolanaError(error);
-    params.logger?.notifyError?.(error, { reasonCode: normalized.code });
+    const event =
+      normalized.code === 'EXECUTION_PAUSED'
+        ? 'execution.paused_block'
+        : normalized.code === 'EXECUTION_MODE_BLOCKED'
+          ? 'execution.mode_blocked'
+          : !snapshotFetched
+            ? 'monitor.snapshot_failed'
+            : sendStarted
+              ? 'execution.send_failed'
+              : simulationStarted && normalized.code === 'SIMULATION_FAILED'
+                ? 'execution.simulation_failed'
+                : buildStarted
+                  ? 'execution.build_failed'
+                  : 'config.validation_failed';
+    emitRuntimeEvent(
+      params.observer,
+      counters,
+      baseEvent(params, correlationId, operatorState, {
+        event,
+        status: normalized.code === 'EXECUTION_PAUSED' || normalized.code === 'EXECUTION_MODE_BLOCKED' ? 'blocked' : 'failed',
+        errorCode: normalized.code,
+        details: { message: normalized.message, debug: normalized.debug },
+      }),
+    );
     return {
       status: 'ERROR',
       errorCode: normalized.code,
       errorMessage: normalized.message,
       errorDebug: normalized.debug,
-      metadata: {
-        decision: {
-          decision: 'HOLD',
-          reasonCode: 'EXECUTION_FAILED_BEFORE_DECISION',
-        },
-        swap: {
-          swapPlanned: false,
-          swapSkipped: true,
-          swapSkipReason: 'NONE',
-          swapRouter: params.config.execution.swapRouter,
-          swapInstructionCount: 0,
-        },
+      metadata: buildMetadata({
+        config: params.config,
+        operatorState,
+        counters,
         reliability: {
           quoteRebuilt,
           ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
@@ -766,7 +1074,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           collectFeesPlanned: false,
           receiptWritePlanned: false,
         },
-      },
+      }),
     };
   }
 }

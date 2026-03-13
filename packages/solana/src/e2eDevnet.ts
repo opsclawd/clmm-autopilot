@@ -627,6 +627,10 @@ export async function runDevnetE2EWithArtifact(
         ...DEFAULT_CONFIG.execution,
         swapRouter: parseSwapRouter(env),
       },
+      operator: {
+        ...DEFAULT_CONFIG.operator,
+        runtimeMode: 'execute',
+      },
     };
     swapRouter = config.execution.swapRouter;
     const receiptIdentity = resolveReceiptRuntimeIdentity(config, env);
@@ -885,6 +889,12 @@ export async function runDevnetE2EWithArtifact(
         attestationPayloadBytes: attestationPayload,
         receiptEpochUnixMs: runStartedMs,
         nowUnixMs: () => deps.nowMs(),
+        runtimeEnvironment: {
+          rpcUrl: rpcUrlRaw,
+          commitment: 'confirmed',
+          walletConnected: true,
+          signingAvailable: true,
+        },
         signAndSend: async (tx: VersionedTransaction) => {
           tx.sign([authorityKp]);
           return connection.sendRawTransaction(tx.serialize(), { maxRetries: 1 });
