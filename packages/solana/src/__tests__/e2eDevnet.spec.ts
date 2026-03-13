@@ -28,6 +28,7 @@ async function makeEnv(secret?: string): Promise<{ env: Record<string, string>; 
       RPC_URL: 'http://127.0.0.1:8899',
       AUTHORITY_KEYPAIR: keyPath,
       POSITION_ADDRESS: new PublicKey(new Uint8Array(32).fill(7)).toBase58(),
+      E2E_ARTIFACT_DIR: join(dir, 'artifacts'),
     },
     cleanup: () => rm(dir, { recursive: true, force: true }),
   };
@@ -59,6 +60,8 @@ function mockSnapshot(positionAddress: string, overrides: Partial<any> = {}) {
     tokenProgramB: new PublicKey(new Uint8Array(32).fill(9)),
     removePreview: { tokenAOut: BigInt(1000), tokenBOut: BigInt(1000) },
     removePreviewReasonCode: null,
+    feeOwedA: 0n,
+    feeOwedB: 0n,
     ...overrides,
   };
 }
@@ -70,6 +73,7 @@ function harnessDeps(overrides: Partial<Parameters<typeof runDevnetE2E>[2]> = {}
     executeOnce: vi.fn() as any,
     fetchReceiptByPda: vi.fn(async () => null) as any,
     getSlot: vi.fn(async () => 123),
+    getBalance: vi.fn(async () => 1_000_000_000),
     getAccountInfo: vi.fn(async () => ({
       executable: true,
       owner: BPF_UPGRADEABLE_LOADER,
@@ -78,6 +82,7 @@ function harnessDeps(overrides: Partial<Parameters<typeof runDevnetE2E>[2]> = {}
       rentEpoch: 0,
     })) as any,
     getParsedAccountInfo: vi.fn(async () => ({ context: { slot: 1 }, value: null })) as any,
+    getTransaction: vi.fn(async () => ({ meta: { fee: 5_000, err: null } })) as any,
     nowMs: () => 1_700_000_000_000,
     ...overrides,
   };
@@ -287,7 +292,10 @@ describe('runDevnetE2E refusals', () => {
         runtimeEnv,
         () => {},
         harnessDeps({
-          loadPositionSnapshot: vi.fn(async () => snapshot) as any,
+          loadPositionSnapshot: vi
+            .fn()
+            .mockResolvedValueOnce(snapshot)
+            .mockResolvedValueOnce({ ...snapshot, liquidity: 0n }) as any,
           executeOnce: executeOnce as any,
           fetchReceiptByPda: vi
             .fn()
@@ -475,7 +483,8 @@ describe('runDevnetE2E refusals', () => {
     let attestationHash = new Uint8Array(32).fill(1);
     const loadPositionSnapshot = vi.fn()
       .mockResolvedValueOnce(usedSnapshot)
-      .mockResolvedValueOnce(freshSnapshot);
+      .mockResolvedValueOnce(freshSnapshot)
+      .mockResolvedValueOnce({ ...freshSnapshot, liquidity: 0n });
     const fetchReceiptByPda = vi.fn()
       .mockResolvedValueOnce({
         authority,
@@ -529,9 +538,10 @@ describe('runDevnetE2E refusals', () => {
       ),
     ).resolves.toBeUndefined();
 
-    expect(loadPositionSnapshot).toHaveBeenCalledTimes(2);
+    expect(loadPositionSnapshot).toHaveBeenCalledTimes(3);
     expect(loadPositionSnapshot).toHaveBeenNthCalledWith(1, expect.anything(), new PublicKey(usedPosition), 'devnet');
     expect(loadPositionSnapshot).toHaveBeenNthCalledWith(2, expect.anything(), new PublicKey(freshPosition), 'devnet');
+    expect(loadPositionSnapshot).toHaveBeenNthCalledWith(3, expect.anything(), new PublicKey(freshPosition), 'devnet');
     expect(fetchReceiptByPda).toHaveBeenNthCalledWith(1, expect.anything(), usedReceiptPda);
     expect(fetchReceiptByPda).toHaveBeenNthCalledWith(2, expect.anything(), freshReceiptPda);
     expect(fetchReceiptByPda).toHaveBeenNthCalledWith(3, expect.anything(), freshReceiptPda);
@@ -627,7 +637,10 @@ describe('runDevnetE2E refusals', () => {
         { ...env, SWAP_ROUTER: 'noop' },
         () => {},
         harnessDeps({
-          loadPositionSnapshot: vi.fn(async () => snapshot) as any,
+          loadPositionSnapshot: vi
+            .fn()
+            .mockResolvedValueOnce(snapshot)
+            .mockResolvedValueOnce({ ...snapshot, liquidity: 0n }) as any,
           executeOnce: executeOnce as any,
           fetchReceiptByPda: vi
             .fn()

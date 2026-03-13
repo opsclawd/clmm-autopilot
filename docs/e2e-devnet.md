@@ -7,6 +7,8 @@ Run:
 ```bash
 pnpm receipt:check:devnet
 pnpm e2e:devnet
+pnpm e2e:certify:devnet
+E2E_CERT_SCENARIO=hold-path pnpm e2e:certify:devnet
 ```
 
 For repeatable same-day receipt proofs, prefer `POSITION_ADDRESS_CANDIDATES` with multiple wallet-owned positions. The harness will skip candidates that already have a receipt for the current UTC-day epoch and use the first fresh SOL/USDC position.
@@ -39,3 +41,5 @@ Manual/CI receipt-proof mode:
 - Set `REQUIRE_RECEIPT_PROOF=1` to fail on `HOLD`
 - Optionally set `FORCE_DECISION=TRIGGER_DOWN|TRIGGER_UP` to guarantee trigger-path execution for idempotency proof
 - Set either `POSITION_ADDRESS` or `POSITION_ADDRESS_CANDIDATES`
+
+Certification artifacts are emitted as JSON (`schemaVersion: 1`) under `artifacts/e2e/devnet/<scenario>/<runId>.json` unless `E2E_ARTIFACT_DIR` is set. `SKIPPED` artifacts include a stable top-level `skipReason`.

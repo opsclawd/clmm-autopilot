@@ -22,3 +22,7 @@ export * from './swap/tickArrays';
 export * from './swap/jupiter/JupiterSwapApiAdapter';
 export * from './swap/orca/OrcaWhirlpoolSwapAdapter';
 export * from './swap/noop/NoopSwapAdapter';
+export * from './e2e/resultArtifact';
+export * from './e2e/assertions';
+export * from './e2e/scenarios';
+export * from './e2eDevnet';

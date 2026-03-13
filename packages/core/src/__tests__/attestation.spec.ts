@@ -26,6 +26,14 @@ const INPUT = {
 };
 
 describe('attestation encoding/hash', () => {
+  it('accepts valid base58 pubkeys with leading zero bytes', () => {
+    expect(() => encodeAttestationPayload({
+      ...INPUT,
+      // This key is valid and decodes to 32 bytes, but starts with "1" because of a leading zero byte.
+      authority: '12n8j7as92YJMaztrW7Mgke9q36d4MSgdkZBJxZMEZT4',
+    })).not.toThrow();
+  });
+
   it('is deterministic for same input and stable by construction', () => {
     const aBytes = encodeAttestationPayload(INPUT);
     const bBytes = encodeAttestationPayload({ ...INPUT });

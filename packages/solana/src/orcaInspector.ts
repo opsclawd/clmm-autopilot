@@ -49,6 +49,8 @@ export type PositionSnapshot = {
   tokenProgramB: PublicKey;
   removePreview: RemovePreview | null;
   removePreviewReasonCode: RemovePreviewReasonCode | null;
+  feeOwedA?: bigint;
+  feeOwedB?: bigint;
 };
 
 type ParsedPosition = {
@@ -57,6 +59,8 @@ type ParsedPosition = {
   liquidity: bigint;
   lowerTickIndex: number;
   upperTickIndex: number;
+  feeOwedA?: bigint;
+  feeOwedB?: bigint;
 };
 
 type ParsedWhirlpool = {
@@ -99,12 +103,15 @@ function makeError(code: CanonicalErrorCode, message: string, retryable = false)
 
 function parsePositionAccount(data: Buffer): ParsedPosition {
   const decoded = decodePositionAccount(data);
+  const decodedWithFees = decoded as typeof decoded & { feeOwedA?: { toString(): string }; feeOwedB?: { toString(): string } };
   return {
     whirlpool: decoded.whirlpool,
     positionMint: decoded.positionMint,
     liquidity: BigInt(decoded.liquidity.toString()),
     lowerTickIndex: decoded.tickLowerIndex,
     upperTickIndex: decoded.tickUpperIndex,
+    ...(decodedWithFees.feeOwedA ? { feeOwedA: BigInt(decodedWithFees.feeOwedA.toString()) } : {}),
+    ...(decodedWithFees.feeOwedB ? { feeOwedB: BigInt(decodedWithFees.feeOwedB.toString()) } : {}),
   };
 }
 
@@ -268,6 +275,8 @@ export async function loadPositionSnapshot(
       tokenProgramB: tokenProgramForMintOwner(whirlpool.tokenMintB, mintB.owner),
       removePreview: removePreviewResult.preview,
       removePreviewReasonCode: removePreviewResult.reasonCode,
+      ...(position.feeOwedA !== undefined ? { feeOwedA: position.feeOwedA } : {}),
+      ...(position.feeOwedB !== undefined ? { feeOwedB: position.feeOwedB } : {}),
     };
   } catch (error) {
     if (
