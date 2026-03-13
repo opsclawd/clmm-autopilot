@@ -82,6 +82,13 @@ function fail(code: CanonicalErrorCode, message: string, retryable: boolean, deb
   throw err;
 }
 
+function withBuiltTxDebug(debug: unknown): unknown {
+  if (debug && typeof debug === 'object' && !Array.isArray(debug)) {
+    return { ...(debug as Record<string, unknown>), txBuilt: true };
+  }
+  return { debug, txBuilt: true };
+}
+
 function bytesEqualConstantTime(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -249,7 +256,7 @@ export async function buildExitTransaction(
   const simulation = await config.simulate(tx);
   if (simulation.err !== null) {
     const mapped = classifySimulationFailure(simulation);
-    fail(mapped.code, mapped.message, false, mapped.debug);
+    fail(mapped.code, mapped.message, false, withBuiltTxDebug(mapped.debug));
   }
 
   if (config.returnVersioned) return tx;

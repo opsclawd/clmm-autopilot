@@ -212,6 +212,7 @@ export type ExecuteOnceResult = {
   errorDebug?: unknown;
   simSummary?: string;
   shadow?: {
+    txBuildStatus: 'BUILD_OK' | 'BUILD_FAILED';
     direction: 'trigger_up' | 'trigger_down';
     quoteSummary: {
       inAmount: string;
@@ -415,6 +416,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   let buildStarted = false;
   let simulationStarted = false;
   let sendStarted = false;
+  let txBuilt = false;
   let shadowDetails: ExecuteOnceResult['shadow'] | undefined;
   let operatorState = {
     ...deriveEffectiveOperatorState(params.config, runtimeEnvironment.executionPausedOverride),
@@ -729,6 +731,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       ? Math.max(0, nowUnixMs() - (assembled.plan.quote.quotedAtUnixSec * 1000))
       : 0;
     shadowDetails = {
+      txBuildStatus: 'BUILD_FAILED',
       direction: direction === 'UP' ? 'trigger_up' : 'trigger_down',
       quoteSummary: {
         inAmount: assembled.plan.quote.swapInAmount.toString(),
@@ -950,6 +953,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       }),
     );
     let msg = (await buildTx(latestBlockhash.blockhash)) as VersionedTransaction;
+    txBuilt = true;
+    if (shadowDetails) shadowDetails.txBuildStatus = 'BUILD_OK';
     const simSummary = 'Simulation passed';
     await params.onSimulationComplete?.(simSummary);
 
@@ -1160,6 +1165,14 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     };
   } catch (error) {
     const normalized = normalizeSolanaError(error);
+    const txBuiltFromError =
+      normalized.debug !== null &&
+      typeof normalized.debug === 'object' &&
+      'txBuilt' in (normalized.debug as Record<string, unknown>) &&
+      (normalized.debug as Record<string, unknown>).txBuilt === true;
+    if (shadowDetails) {
+      shadowDetails.txBuildStatus = txBuilt || txBuiltFromError ? 'BUILD_OK' : 'BUILD_FAILED';
+    }
     const event =
       normalized.code === 'EXECUTION_PAUSED'
         ? 'execution.paused_block'

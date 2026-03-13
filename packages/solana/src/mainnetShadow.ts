@@ -17,7 +17,11 @@ import {
 } from '@clmm-autopilot/core';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { normalizeSolanaError } from './errors';
-import { ShadowArtifactStore, type PositionSourceMode } from './shadow/artifactStore';
+import {
+  ShadowArtifactStore,
+  type PositionSourceMode,
+  type ShadowTriggerRecord,
+} from './shadow/artifactStore';
 import type { CanonicalErrorCode, ShadowSimulationClass } from './types';
 import { PDAUtil, ParsablePosition } from '@orca-so/whirlpools-sdk';
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, unpackAccount } from '@solana/spl-token';
@@ -207,6 +211,53 @@ function aggregateSimulationClass(metrics: ShadowMetrics, klass: ShadowSimulatio
     return;
   }
   metrics.failedSimulationsByClass[klass] += 1;
+}
+
+export function buildShadowTriggerRecord(params: {
+  sessionId: string;
+  timestamp: string;
+  config: AutopilotConfig;
+  authority: PublicKey;
+  positionAddress: string;
+  positionSourceMode: PositionSourceMode;
+  refresh: NonNullable<Awaited<ReturnType<typeof executeOnce>>['refresh']>;
+  result: Awaited<ReturnType<typeof executeOnce>>;
+  simClass: ShadowSimulationClass;
+  normalizedError: { code?: CanonicalErrorCode } | null;
+}): ShadowTriggerRecord {
+  const wouldExecute = params.simClass === 'SIM_OK';
+  return {
+    sessionId: params.sessionId,
+    timestamp: params.timestamp,
+    cluster: params.config.cluster,
+    executionMode: params.config.executionMode,
+    positionAddress: params.positionAddress,
+    authority: params.authority.toBase58(),
+    whirlpoolAddress: params.refresh.snapshot.whirlpoolAddress,
+    direction: params.refresh.decision.decision === 'TRIGGER_UP' ? 'trigger_up' : 'trigger_down',
+    currentTick: params.refresh.snapshot.currentTick,
+    lowerTick: params.refresh.snapshot.lowerTick,
+    upperTick: params.refresh.snapshot.upperTick,
+    debounceCount: params.refresh.decision.samplesUsed,
+    swapRouter: params.config.execution.swapRouter,
+    quoteInAmount: params.result.shadow?.quoteSummary.inAmount ?? '0',
+    quoteMinOut: params.result.shadow?.quoteSummary.minOut ?? '0',
+    slippageBps: params.result.shadow?.quoteSummary.slippageBps ?? params.config.execution.slippageBpsCap,
+    quoteAgeMs: params.result.shadow?.quoteSummary.quoteAgeMs ?? 0,
+    txBuildStatus: params.result.shadow?.txBuildStatus ?? 'BUILD_FAILED',
+    simulationStatus: params.simClass,
+    simulationErrorCode: params.normalizedError?.code,
+    candidateInstructionSummaryJson: JSON.stringify(params.result.shadow?.candidateInstructionSummary ?? {}),
+    wouldExecute,
+    wouldFailReason: wouldExecute ? undefined : params.result.errorCode ?? 'SIMULATION_OR_BUILD_FAILED',
+    receiptPdaExpected: params.result.shadow?.receiptPdaExpected,
+    receiptConfigValid: params.result.shadow?.receiptConfigValid ?? false,
+    receiptStepStructurallyBuildable: params.result.shadow?.receiptStepStructurallyBuildable ?? false,
+    receiptIxIncluded: params.result.shadow?.receiptIxIncluded ?? false,
+    mintAProgram: params.refresh.snapshot.tokenProgramA,
+    mintBProgram: params.refresh.snapshot.tokenProgramB,
+    positionSourceMode: params.positionSourceMode,
+  };
 }
 
 async function captureSample(connection: Connection, position: PublicKey, config: AutopilotConfig, state: PositionRuntimeState): Promise<void> {
@@ -401,41 +452,20 @@ export async function runMainnetShadow(env: Record<string, string | undefined> =
               state.firstOutOfRangeAtUnixMs = undefined;
             }
 
-            const txBuildStatus = result.shadow ? 'BUILD_OK' : 'BUILD_FAILED';
-            const wouldExecute = simClass === 'SIM_OK';
-            const whirlpoolAddress = result.shadow?.receiptPdaExpected ?? refresh.snapshot.positionAddress;
-            store.insertTrigger({
-              sessionId,
-              timestamp: new Date().toISOString(),
-              cluster: config.cluster,
-              executionMode: config.executionMode,
-              positionAddress,
-              authority: authority.toBase58(),
-              whirlpoolAddress,
-              direction: refresh.decision.decision === 'TRIGGER_UP' ? 'trigger_up' : 'trigger_down',
-              currentTick: refresh.snapshot.currentTick,
-              lowerTick: refresh.snapshot.lowerTick,
-              upperTick: refresh.snapshot.upperTick,
-              debounceCount: refresh.decision.samplesUsed,
-              swapRouter: config.execution.swapRouter,
-              quoteInAmount: result.shadow?.quoteSummary.inAmount ?? '0',
-              quoteMinOut: result.shadow?.quoteSummary.minOut ?? '0',
-              slippageBps: result.shadow?.quoteSummary.slippageBps ?? config.execution.slippageBpsCap,
-              quoteAgeMs: result.shadow?.quoteSummary.quoteAgeMs ?? 0,
-              txBuildStatus,
-              simulationStatus: simClass,
-              simulationErrorCode: normalized?.code as CanonicalErrorCode | undefined,
-              candidateInstructionSummaryJson: JSON.stringify(result.shadow?.candidateInstructionSummary ?? {}),
-              wouldExecute,
-              wouldFailReason: wouldExecute ? undefined : result.errorCode ?? 'SIMULATION_OR_BUILD_FAILED',
-              receiptPdaExpected: result.shadow?.receiptPdaExpected,
-              receiptConfigValid: result.shadow?.receiptConfigValid ?? false,
-              receiptStepStructurallyBuildable: result.shadow?.receiptStepStructurallyBuildable ?? false,
-              receiptIxIncluded: result.shadow?.receiptIxIncluded ?? false,
-              mintAProgram: refresh.snapshot.tokenProgramA,
-              mintBProgram: refresh.snapshot.tokenProgramB,
-              positionSourceMode,
-            });
+            store.insertTrigger(
+              buildShadowTriggerRecord({
+                sessionId,
+                timestamp: new Date().toISOString(),
+                config,
+                authority,
+                positionAddress,
+                positionSourceMode,
+                refresh,
+                result,
+                simClass,
+                normalizedError: normalized?.code ? { code: normalized.code as CanonicalErrorCode } : null,
+              }),
+            );
           }
 
           if (metrics.monitoredEvaluations % rollupEveryEvaluations === 0) {
