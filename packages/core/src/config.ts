@@ -1,7 +1,9 @@
-export type Cluster = 'devnet' | 'mainnet-beta' | 'localnet';
+export type Cluster = 'devnet' | 'mainnet' | 'localnet';
+export type ClusterInput = Cluster | 'mainnet-beta';
 export type SwapRouter = 'jupiter' | 'orca' | 'noop';
 export type ReceiptIdlHashMode = 'full-v1';
 export type RuntimeMode = 'dry-run' | 'simulate-only' | 'execute';
+export type ExecutionMode = 'devnet-live' | 'mainnet-shadow' | 'mainnet-live';
 
 const DEVNET_RECEIPT_PROGRAM_ID = 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm';
 const DEVNET_RECEIPT_IDL_HASH_MODE: ReceiptIdlHashMode = 'full-v1';
@@ -10,6 +12,7 @@ const DEVNET_RECEIPT_IDL_PATH = 'deployments/devnet/receipt.idl.json';
 
 export type AutopilotConfig = {
   cluster: Cluster;
+  executionMode: ExecutionMode;
   // Fallback-only receipt identity fields; solana runtime resolver prefers manifest values on devnet.
   receiptProgramId?: string;
   receiptIdlHashMode?: ReceiptIdlHashMode;
@@ -30,6 +33,8 @@ export type AutopilotConfig = {
     quoteFreshnessSec: number;
     quoteFreshnessSlots: number;
     swapRouter: SwapRouter;
+    sendEnabled: boolean;
+    allowMainnetNoopForDiagnostics: boolean;
     rebuildTickDelta?: number;
     maxRetries: number;
     retryBackoffMs: number[];
@@ -39,6 +44,7 @@ export type AutopilotConfig = {
     minUsdcMinorToSwap: number;
   };
   operator: {
+    executionMode: ExecutionMode;
     runtimeMode: RuntimeMode;
     executionPausedDefault: boolean;
   };
@@ -47,8 +53,19 @@ export type AutopilotConfig = {
   };
 };
 
+export function normalizeCluster(cluster: ClusterInput): Cluster {
+  return cluster === 'mainnet-beta' ? 'mainnet' : cluster;
+}
+
+function normalizeClusterUnknown(cluster: unknown): Cluster | undefined {
+  if (typeof cluster !== 'string') return undefined;
+  if (cluster === 'devnet' || cluster === 'mainnet' || cluster === 'localnet') return cluster;
+  if (cluster === 'mainnet-beta') return 'mainnet';
+  return undefined;
+}
+
 function defaultSwapRouterForCluster(cluster: Cluster): SwapRouter {
-  if (cluster === 'mainnet-beta') return 'jupiter';
+  if (cluster === 'mainnet') return 'jupiter';
   if (cluster === 'localnet') return 'noop';
   return 'orca';
 }
@@ -56,6 +73,23 @@ function defaultSwapRouterForCluster(cluster: Cluster): SwapRouter {
 function defaultRuntimeModeForCluster(cluster: Cluster): RuntimeMode {
   if (cluster === 'devnet') return 'simulate-only';
   return 'dry-run';
+}
+
+function defaultExecutionModeForCluster(cluster: Cluster): ExecutionMode {
+  return cluster === 'mainnet' ? 'mainnet-shadow' : 'devnet-live';
+}
+
+export function deriveExecutionModeFromLegacy(cluster: Cluster, runtimeMode: RuntimeMode): ExecutionMode {
+  if (cluster === 'mainnet') {
+    return runtimeMode === 'execute' ? 'mainnet-live' : 'mainnet-shadow';
+  }
+  return 'devnet-live';
+}
+
+export function deriveRuntimeModeFromExecutionMode(executionMode: ExecutionMode, legacyRuntimeMode?: RuntimeMode): RuntimeMode {
+  if (executionMode === 'mainnet-live') return 'execute';
+  if (executionMode === 'mainnet-shadow') return 'simulate-only';
+  return legacyRuntimeMode ?? 'simulate-only';
 }
 
 function defaultReceiptIdentityForCluster(cluster: Cluster): Pick<
@@ -79,10 +113,15 @@ function defaultReceiptIdentityForCluster(cluster: Cluster): Pick<
   };
 }
 
-export function getDefaultConfig(cluster: Cluster = 'devnet'): AutopilotConfig {
+export function getDefaultConfig(clusterInput: ClusterInput = 'devnet'): AutopilotConfig {
+  const cluster = normalizeCluster(clusterInput);
+  const executionMode = defaultExecutionModeForCluster(cluster);
+  const runtimeMode = deriveRuntimeModeFromExecutionMode(executionMode, defaultRuntimeModeForCluster(cluster));
   const receiptDefaults = defaultReceiptIdentityForCluster(cluster);
+  const sendEnabled = executionMode === 'mainnet-live' ? true : runtimeMode === 'execute';
   return {
     cluster,
+    executionMode,
     ...receiptDefaults,
     expectedUpgradeAuthority: undefined,
     policy: {
@@ -93,14 +132,16 @@ export function getDefaultConfig(cluster: Cluster = 'devnet'): AutopilotConfig {
     execution: {
       slippageBpsCap: 50,
       txFeeLamports: 20_000,
-      feeBufferLamports: cluster === 'mainnet-beta' ? 15_000_000 : 10_000_000,
+      feeBufferLamports: cluster === 'mainnet' ? 15_000_000 : 10_000_000,
       computeUnitLimit: 600_000,
       computeUnitPriceMicroLamports: 10_000,
-      quoteFreshnessSec: cluster === 'mainnet-beta' ? 15 : 20,
-      quoteFreshnessSlots: cluster === 'mainnet-beta' ? 6 : 8,
+      quoteFreshnessSec: cluster === 'mainnet' ? 15 : 20,
+      quoteFreshnessSlots: cluster === 'mainnet' ? 6 : 8,
       swapRouter: defaultSwapRouterForCluster(cluster),
+      sendEnabled,
+      allowMainnetNoopForDiagnostics: false,
       rebuildTickDelta: undefined,
-      maxRetries: cluster === 'mainnet-beta' ? 2 : 3,
+      maxRetries: cluster === 'mainnet' ? 2 : 3,
       retryBackoffMs: [250, 750, 2_000],
       receiptPollMaxAttempts: 6,
       receiptPollIntervalMs: 500,
@@ -108,7 +149,8 @@ export function getDefaultConfig(cluster: Cluster = 'devnet'): AutopilotConfig {
       minUsdcMinorToSwap: 0,
     },
     operator: {
-      runtimeMode: defaultRuntimeModeForCluster(cluster),
+      executionMode,
+      runtimeMode,
       executionPausedDefault: false,
     },
     ui: {
@@ -123,12 +165,14 @@ export function deriveOperatorState(
   config: AutopilotConfig,
   executionPausedOverride?: boolean,
 ): {
+  executionMode: ExecutionMode;
   runtimeMode: RuntimeMode;
   executionPausedDefault: boolean;
   executionPausedOverride?: boolean;
   executionPaused: boolean;
 } {
   return {
+    executionMode: config.executionMode,
     runtimeMode: config.operator.runtimeMode,
     executionPausedDefault: config.operator.executionPausedDefault,
     executionPausedOverride,
@@ -202,6 +246,22 @@ function readIntField(
   return Math.trunc(n);
 }
 
+function readBooleanField(
+  errors: ConfigError[],
+  source: Record<string, unknown>,
+  key: string,
+  path: string,
+  fallback: boolean,
+): boolean {
+  if (!(key in source)) return fallback;
+  const raw = source[key];
+  if (typeof raw !== 'boolean') {
+    pushType(errors, path, 'boolean', raw);
+    return fallback;
+  }
+  return raw;
+}
+
 function readOptionalIntField(
   errors: ConfigError[],
   source: Record<string, unknown>,
@@ -268,12 +328,17 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
 
   const errors: ConfigError[] = [];
   const clusterRaw = input.cluster;
+  const clusterNormalized = normalizeClusterUnknown(clusterRaw);
   const cluster =
     clusterRaw === undefined
       ? DEFAULT_CONFIG.cluster
-      : typeof clusterRaw === 'string'
-        ? (clusterRaw as Cluster)
-        : (pushType(errors, 'cluster', "'devnet' | 'mainnet-beta' | 'localnet'", clusterRaw), DEFAULT_CONFIG.cluster);
+      : clusterNormalized ??
+        (typeof clusterRaw === 'string'
+          ? (pushRange(errors, 'cluster', "'devnet' | 'mainnet' | 'localnet' | 'mainnet-beta'", clusterRaw), DEFAULT_CONFIG.cluster)
+          : (pushType(errors, 'cluster', "'devnet' | 'mainnet' | 'localnet' | 'mainnet-beta'", clusterRaw), DEFAULT_CONFIG.cluster));
+  if (clusterRaw === 'mainnet-beta') {
+    console.warn('[config] SOLANA cluster alias \"mainnet-beta\" is deprecated; use \"mainnet\".');
+  }
 
   const defaults = getDefaultConfig(cluster);
   const policyInRaw = input.policy;
@@ -306,6 +371,30 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
         ? operatorInRaw
         : (pushType(errors, 'operator', 'object', operatorInRaw), {});
 
+  const providedRuntimeMode =
+    typeof operatorIn.runtimeMode === 'string'
+      ? (operatorIn.runtimeMode as RuntimeMode)
+      : operatorIn.runtimeMode === undefined
+        ? undefined
+        : (pushType(errors, 'operator.runtimeMode', "'dry-run' | 'simulate-only' | 'execute'", operatorIn.runtimeMode), undefined);
+
+  const legacyRuntimeMode = providedRuntimeMode ?? defaults.operator.runtimeMode;
+
+  const providedExecutionMode =
+    typeof input.executionMode === 'string'
+      ? (input.executionMode as ExecutionMode)
+      : input.executionMode === undefined
+        ? undefined
+        : (pushType(errors, 'executionMode', "'devnet-live' | 'mainnet-shadow' | 'mainnet-live'", input.executionMode), undefined);
+
+  const executionMode =
+    providedExecutionMode ?? deriveExecutionModeFromLegacy(cluster, legacyRuntimeMode);
+
+  const runtimeMode =
+    executionMode === 'devnet-live'
+      ? legacyRuntimeMode
+      : deriveRuntimeModeFromExecutionMode(executionMode, legacyRuntimeMode);
+
   const retryRaw = executionIn.retryBackoffMs;
   let retryBackoffMs = defaults.execution.retryBackoffMs;
   if (retryRaw !== undefined) {
@@ -330,6 +419,7 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
 
   const normalized: AutopilotConfig = {
     cluster,
+    executionMode,
     receiptProgramId: readOptionalStringField(
       errors,
       input,
@@ -385,6 +475,20 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
           : executionIn.swapRouter === undefined
             ? defaultSwapRouter
             : (pushType(errors, 'execution.swapRouter', "'jupiter' | 'orca' | 'noop'", executionIn.swapRouter), defaultSwapRouter),
+      sendEnabled: readBooleanField(
+        errors,
+        executionIn,
+        'sendEnabled',
+        'execution.sendEnabled',
+        executionMode === 'mainnet-live' ? true : runtimeMode === 'execute',
+      ),
+      allowMainnetNoopForDiagnostics: readBooleanField(
+        errors,
+        executionIn,
+        'allowMainnetNoopForDiagnostics',
+        'execution.allowMainnetNoopForDiagnostics',
+        defaults.execution.allowMainnetNoopForDiagnostics,
+      ),
       rebuildTickDelta: readOptionalIntField(errors, executionIn, 'rebuildTickDelta', 'execution.rebuildTickDelta', defaults.execution.rebuildTickDelta),
       maxRetries: readIntField(errors, executionIn, 'maxRetries', 'execution.maxRetries', defaults.execution.maxRetries),
       retryBackoffMs,
@@ -418,12 +522,8 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
       ),
     },
     operator: {
-      runtimeMode:
-        typeof operatorIn.runtimeMode === 'string'
-          ? (operatorIn.runtimeMode as RuntimeMode)
-          : operatorIn.runtimeMode === undefined
-            ? defaults.operator.runtimeMode
-            : (pushType(errors, 'operator.runtimeMode', "'dry-run' | 'simulate-only' | 'execute'", operatorIn.runtimeMode), defaults.operator.runtimeMode),
+      executionMode,
+      runtimeMode,
       executionPausedDefault:
         typeof operatorIn.executionPausedDefault === 'boolean'
           ? operatorIn.executionPausedDefault
@@ -446,10 +546,16 @@ export function validateConfig(input: unknown): ValidateConfigResult {
 
   const errors: ConfigError[] = [];
   const defaulted = getDefaultConfig(normalized.value.cluster);
-  const allowedClusters = new Set<Cluster>(['devnet', 'mainnet-beta', 'localnet']);
+  const allowedClusters = new Set<Cluster>(['devnet', 'mainnet', 'localnet']);
   if (!allowedClusters.has(normalized.value.cluster)) {
-    pushRange(errors, 'cluster', "'devnet' | 'mainnet-beta' | 'localnet'", normalized.value.cluster);
+    pushRange(errors, 'cluster', "'devnet' | 'mainnet' | 'localnet'", normalized.value.cluster);
   }
+
+  const allowedExecutionModes = new Set<ExecutionMode>(['devnet-live', 'mainnet-shadow', 'mainnet-live']);
+  if (!allowedExecutionModes.has(normalized.value.executionMode)) {
+    pushRange(errors, 'executionMode', "'devnet-live' | 'mainnet-shadow' | 'mainnet-live'", normalized.value.executionMode);
+  }
+
   if (
     normalized.value.receiptIdlHashMode !== undefined &&
     normalized.value.receiptIdlHashMode !== 'full-v1'
@@ -562,6 +668,18 @@ export function validateConfig(input: unknown): ValidateConfigResult {
   if (!Number.isInteger(e.minUsdcMinorToSwap)) pushType(errors, 'execution.minUsdcMinorToSwap', 'integer', e.minUsdcMinorToSwap);
   else if (e.minUsdcMinorToSwap < 0) pushRange(errors, 'execution.minUsdcMinorToSwap', '>= 0', e.minUsdcMinorToSwap);
 
+  if (typeof e.sendEnabled !== 'boolean') {
+    pushType(errors, 'execution.sendEnabled', 'boolean', e.sendEnabled);
+  }
+  if (typeof e.allowMainnetNoopForDiagnostics !== 'boolean') {
+    pushType(
+      errors,
+      'execution.allowMainnetNoopForDiagnostics',
+      'boolean',
+      e.allowMainnetNoopForDiagnostics,
+    );
+  }
+
   const operator = normalized.value.operator;
   const allowedRuntimeModes = new Set<RuntimeMode>(['dry-run', 'simulate-only', 'execute']);
   if (!allowedRuntimeModes.has(operator.runtimeMode)) {
@@ -571,25 +689,37 @@ export function validateConfig(input: unknown): ValidateConfigResult {
     pushType(errors, 'operator.executionPausedDefault', 'boolean', operator.executionPausedDefault);
   }
 
-  if (normalized.value.cluster === 'mainnet-beta' && e.swapRouter === 'noop') {
-    pushRange(errors, 'execution.swapRouter', "mainnet-beta requires 'jupiter' or 'orca'", e.swapRouter);
-  }
-
-  if (
-    normalized.value.cluster === 'mainnet-beta' &&
-    operator.runtimeMode === 'execute' &&
-    input !== undefined &&
-    isRecord(input) &&
-    !('operator' in input)
-  ) {
-    pushRange(errors, 'operator.runtimeMode', 'mainnet-beta execute must be explicitly configured', operator.runtimeMode);
-  }
-
-  if (normalized.value.cluster === 'mainnet-beta' && operator.runtimeMode === 'execute') {
-    const hasExplicitMainnetRouter = input !== undefined && isRecord(input) && isRecord(input.execution) && 'swapRouter' in input.execution;
-    if (!hasExplicitMainnetRouter && e.swapRouter === defaulted.execution.swapRouter) {
-      pushRange(errors, 'execution.swapRouter', 'mainnet-beta execute requires an explicit router selection', e.swapRouter);
+  if (normalized.value.executionMode === 'mainnet-shadow') {
+    if (normalized.value.cluster !== 'mainnet') {
+      pushRange(errors, 'cluster', 'mainnet-shadow requires cluster=mainnet', normalized.value.cluster);
     }
+    if (e.sendEnabled) {
+      pushRange(errors, 'execution.sendEnabled', 'mainnet-shadow requires sendEnabled=false', e.sendEnabled);
+    }
+    if (e.swapRouter === 'noop' && !e.allowMainnetNoopForDiagnostics) {
+      pushRange(
+        errors,
+        'execution.swapRouter',
+        'mainnet-shadow requires jupiter/orca unless allowMainnetNoopForDiagnostics=true',
+        e.swapRouter,
+      );
+    }
+  }
+
+  if (normalized.value.executionMode === 'mainnet-live') {
+    if (normalized.value.cluster !== 'mainnet') {
+      pushRange(errors, 'cluster', 'mainnet-live requires cluster=mainnet', normalized.value.cluster);
+    }
+    if (!e.sendEnabled) {
+      pushRange(errors, 'execution.sendEnabled', 'mainnet-live requires sendEnabled=true', e.sendEnabled);
+    }
+    if (e.swapRouter === 'noop') {
+      pushRange(errors, 'execution.swapRouter', 'mainnet-live does not allow noop router', e.swapRouter);
+    }
+  }
+
+  if (normalized.value.executionMode === 'devnet-live' && normalized.value.cluster === 'mainnet') {
+    pushRange(errors, 'executionMode', 'cluster=mainnet requires mainnet-shadow or mainnet-live', normalized.value.executionMode);
   }
 
   const receiptIdentityComplete =
@@ -598,11 +728,11 @@ export function validateConfig(input: unknown): ValidateConfigResult {
     normalized.value.receiptIdlHash !== undefined &&
     normalized.value.receiptIdlPath !== undefined;
 
-  if (operator.runtimeMode === 'execute' && normalized.value.cluster !== 'devnet' && !receiptIdentityComplete) {
+  if (normalized.value.executionMode === 'mainnet-live' && !receiptIdentityComplete) {
     pushRange(
       errors,
       'receiptProgramId',
-      'receipt identity must be fully configured when execute mode is enabled outside devnet',
+      'receipt identity must be fully configured when mainnet-live is enabled',
       {
         receiptProgramId: normalized.value.receiptProgramId,
         receiptIdlHashMode: normalized.value.receiptIdlHashMode,
@@ -610,6 +740,13 @@ export function validateConfig(input: unknown): ValidateConfigResult {
         receiptIdlPath: normalized.value.receiptIdlPath,
       },
     );
+  }
+
+  if (normalized.value.executionMode === 'mainnet-live') {
+    const hasExplicitMainnetRouter = input !== undefined && isRecord(input) && isRecord(input.execution) && 'swapRouter' in input.execution;
+    if (!hasExplicitMainnetRouter && e.swapRouter === defaulted.execution.swapRouter) {
+      pushRange(errors, 'execution.swapRouter', 'mainnet-live requires an explicit router selection', e.swapRouter);
+    }
   }
 
   const ui = normalized.value.ui;

@@ -29,7 +29,7 @@ This repo is a monorepo. The boundaries are intentional — do not blur them.
 - Cluster gating is enforced in one place (`getSwapAdapter`) and raises `SWAP_ROUTER_UNSUPPORTED_CLUSTER` for invalid router/cluster combinations.
 - Cluster defaults:
   - `devnet`: `orca` (or explicit `noop` for deterministic harness runs)
-  - `mainnet-beta`: `jupiter`
+  - `mainnet`: `jupiter`
   - `localnet`: `noop`
 - `buildExitTransaction` remains router-agnostic; router-specific quote/instruction behavior lives in adapter implementations.
 

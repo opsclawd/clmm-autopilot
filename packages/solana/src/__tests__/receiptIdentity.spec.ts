@@ -140,9 +140,10 @@ describe('receiptIdentity resolver', () => {
     ).toThrowError(/idlPath could not be loaded/);
   });
 
-  it('returns null for non-devnet clusters', () => {
+  it('resolves config identity for non-devnet clusters when config is complete', () => {
     const res = resolveReceiptRuntimeIdentity({ ...DEFAULT_CONFIG, cluster: 'localnet' });
-    expect(res).toBeNull();
+    expect(res?.source).toBe('config');
+    expect(res?.programId.toBase58()).toBe(DEFAULT_CONFIG.receiptProgramId);
   });
 
   it('still validates forced config fallback on non-devnet clusters', () => {
@@ -161,7 +162,7 @@ describe('receiptIdentity resolver', () => {
     ).toThrowError(/Config fallback receipt identity is not fully configured/);
   });
 
-  it('returns null on non-devnet after successful forced config validation', () => {
+  it('returns config identity on non-devnet after successful forced config validation', () => {
     const actualHash = computeReceiptIdlHashFullV1(defaultReceiptIdl);
     const res = resolveReceiptRuntimeIdentity(
       {
@@ -174,6 +175,34 @@ describe('receiptIdentity resolver', () => {
       },
       { RECEIPT_IDENTITY_SOURCE: 'config' },
     );
-    expect(res).toBeNull();
+    expect(res?.source).toBe('config');
+    expect(res?.programId.toBase58()).toBe('A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm');
+  });
+
+  it('rejects non-devnet config identity when idlPath is unloadable', () => {
+    const actualHash = computeReceiptIdlHashFullV1(defaultReceiptIdl);
+    expect(() =>
+      resolveReceiptRuntimeIdentity({
+        ...DEFAULT_CONFIG,
+        cluster: 'localnet',
+        receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
+        receiptIdlHashMode: 'full-v1',
+        receiptIdlHash: actualHash,
+        receiptIdlPath: 'deployments/devnet/does-not-exist.idl.json',
+      }),
+    ).toThrowError(/idlPath could not be loaded/);
+  });
+
+  it('rejects non-devnet config identity when idl hash does not match the configured artifact', () => {
+    expect(() =>
+      resolveReceiptRuntimeIdentity({
+        ...DEFAULT_CONFIG,
+        cluster: 'localnet',
+        receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
+        receiptIdlHashMode: 'full-v1',
+        receiptIdlHash: '0'.repeat(64),
+        receiptIdlPath: 'deployments/devnet/receipt.idl.json',
+      }),
+    ).toThrowError(/idlHash does not match runtime IDL hash/);
   });
 });

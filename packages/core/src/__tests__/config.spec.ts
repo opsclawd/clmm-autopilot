@@ -108,11 +108,12 @@ describe('validateConfig', () => {
   });
 
   it('defaults swapRouter by cluster', () => {
-    const mainnet = validateConfig({ cluster: 'mainnet-beta' });
+    const mainnet = validateConfig({ cluster: 'mainnet' });
     expect(mainnet.ok).toBe(true);
     if (mainnet.ok) {
       expect(mainnet.value.execution.swapRouter).toBe('jupiter');
-      expect(mainnet.value.operator.runtimeMode).toBe('dry-run');
+      expect(mainnet.value.operator.runtimeMode).toBe('simulate-only');
+      expect(mainnet.value.executionMode).toBe('mainnet-shadow');
       expect(mainnet.value.receiptProgramId).toBeUndefined();
     }
 
@@ -134,13 +135,24 @@ describe('validateConfig', () => {
   });
 
   it('derives cluster-specific defaults without leaking devnet receipt identity', () => {
-    const mainnet = getDefaultConfig('mainnet-beta');
-    expect(mainnet.operator.runtimeMode).toBe('dry-run');
+    const mainnet = getDefaultConfig('mainnet');
+    expect(mainnet.operator.runtimeMode).toBe('simulate-only');
+    expect(mainnet.executionMode).toBe('mainnet-shadow');
     expect(mainnet.receiptProgramId).toBeUndefined();
 
     const devnet = getDefaultConfig('devnet');
     expect(devnet.operator.runtimeMode).toBe('simulate-only');
+    expect(devnet.executionMode).toBe('devnet-live');
     expect(devnet.receiptProgramId).toBeDefined();
+  });
+
+  it('normalizes mainnet-beta alias to mainnet', () => {
+    const res = validateConfig({ cluster: 'mainnet-beta' });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.value.cluster).toBe('mainnet');
+      expect(res.value.executionMode).toBe('mainnet-shadow');
+    }
   });
 
   it('rejects invalid ui.sampleBufferSize', () => {
@@ -224,7 +236,7 @@ describe('validateConfig', () => {
 
   it('rejects noop router on mainnet', () => {
     const res = validateConfig({
-      cluster: 'mainnet-beta',
+      cluster: 'mainnet',
       execution: { swapRouter: 'noop' },
       operator: { runtimeMode: 'execute', executionPausedDefault: false },
       receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
@@ -240,7 +252,7 @@ describe('validateConfig', () => {
 
   it('requires receipt identity for execute mode outside devnet', () => {
     const res = validateConfig({
-      cluster: 'mainnet-beta',
+      cluster: 'mainnet',
       operator: { runtimeMode: 'execute', executionPausedDefault: false },
       execution: { swapRouter: 'jupiter' },
     });

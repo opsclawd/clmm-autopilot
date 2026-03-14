@@ -9,7 +9,8 @@
     "lint": "echo \"(solana) lint handled at repo root\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "e2e:devnet": "vite-node src/e2eDevnet.cli.ts",
-    "e2e:certify:devnet": "vite-node src/e2eCertification.cli.ts"
+    "e2e:certify:devnet": "vite-node src/e2eCertification.cli.ts",
+    "shadow:mainnet": "vite-node src/mainnetShadow.cli.ts"
   },
   "devDependencies": {
     "@types/bn.js": "^5.2.0",

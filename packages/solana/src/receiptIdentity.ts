@@ -245,7 +245,11 @@ export function assertReceiptProgramMatchesIdlAddress(
   return idl;
 }
 
-function assertConfigIdentity(config: AutopilotConfig): void {
+function assertConfigIdentity(config: AutopilotConfig): {
+  programId: PublicKey;
+  idlHashMode: ReceiptRuntimeIdentity['idlHashMode'];
+  idlHash: string;
+} {
   if (!config.receiptProgramId || !config.receiptIdlHashMode || !config.receiptIdlHash || !config.receiptIdlPath) {
     fail('RECEIPT_PROGRAM_NOT_CONFIGURED', 'Config fallback receipt identity is not fully configured', {
       receiptProgramId: config.receiptProgramId,
@@ -256,9 +260,16 @@ function assertConfigIdentity(config: AutopilotConfig): void {
   }
 
   const programId = parseRequiredProgramId(config.receiptProgramId, 'config');
-  assertHashMode(config.receiptIdlHashMode, 'config');
+  const idlHashMode = assertHashMode(config.receiptIdlHashMode, 'config');
+  if (!/^[a-f0-9]{64}$/i.test(config.receiptIdlHash)) {
+    fail('RECEIPT_IDL_MISMATCH', 'config.idlHash must be a 64-char hex sha256', {
+      expected: config.receiptIdlHash,
+    });
+  }
+
   const idl = assertReceiptProgramMatchesIdlAddress(programId, config.receiptIdlPath, 'config');
-  assertHashMatches(config.receiptIdlHash, idl, 'config');
+  const idlHash = assertHashMatches(config.receiptIdlHash, idl, 'config');
+  return { programId, idlHashMode, idlHash };
 }
 
 export function resolveReceiptRuntimeIdentity(
@@ -268,16 +279,7 @@ export function resolveReceiptRuntimeIdentity(
   const forceConfig = env.RECEIPT_IDENTITY_SOURCE === 'config';
   if (forceConfig) {
     // Forced fallback mode must validate config identity even on non-devnet clusters.
-    assertConfigIdentity(config);
-
-    if (config.cluster !== 'devnet') {
-      return null;
-    }
-
-    const idlHashMode = assertHashMode(config.receiptIdlHashMode!, 'config');
-    const programId = parseRequiredProgramId(config.receiptProgramId!, 'config');
-    const configIdl = assertReceiptProgramMatchesIdlAddress(programId, config.receiptIdlPath!, 'config');
-    const idlHash = assertHashMatches(config.receiptIdlHash!, configIdl, 'config');
+    const { programId, idlHashMode, idlHash } = assertConfigIdentity(config);
 
     return {
       source: 'config',
@@ -290,7 +292,18 @@ export function resolveReceiptRuntimeIdentity(
   }
 
   if (config.cluster !== 'devnet') {
-    return null;
+    if (!config.receiptProgramId || !config.receiptIdlHashMode || !config.receiptIdlHash || !config.receiptIdlPath) {
+      return null;
+    }
+    const { programId, idlHashMode, idlHash } = assertConfigIdentity(config);
+    return {
+      source: 'config',
+      programId,
+      idlPath: config.receiptIdlPath,
+      idlHashMode,
+      idlHash,
+      expectedUpgradeAuthority: parseOptionalPubkey(config.expectedUpgradeAuthority, 'config.expectedUpgradeAuthority'),
+    };
   }
 
   const manifest = getDefaultDevnetReceiptManifest();

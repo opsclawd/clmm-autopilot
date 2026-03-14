@@ -24,8 +24,10 @@ const CANONICAL_CODES: CanonicalErrorCode[] = [
   'ORCA_DECODE_FAILED',
   'EXECUTION_PAUSED',
   'EXECUTION_MODE_BLOCKED',
+  'EXECUTION_MODE_SEND_FORBIDDEN',
   'WALLET_PROVIDER_MISSING',
   'RUNTIME_MODE_INVALID',
+  'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW',
 ];
 
 function isCanonicalCode(value: unknown): value is CanonicalErrorCode {

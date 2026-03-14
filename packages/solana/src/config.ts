@@ -1,14 +1,18 @@
 import type { SolanaConfig } from './types';
 
-const allowedClusters = new Set(['devnet', 'mainnet-beta', 'localnet']);
+const allowedClusters = new Set(['devnet', 'mainnet', 'localnet', 'mainnet-beta']);
 const allowedCommitments = new Set(['processed', 'confirmed', 'finalized']);
 
 export function loadSolanaConfig(env: Record<string, string | undefined> = process.env): SolanaConfig {
   const rpcUrl = env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com';
-  const cluster = (env.SOLANA_CLUSTER ?? 'devnet') as SolanaConfig['cluster'];
+  const clusterRaw = env.SOLANA_CLUSTER ?? 'devnet';
+  const cluster = (clusterRaw === 'mainnet-beta' ? 'mainnet' : clusterRaw) as SolanaConfig['cluster'];
   const commitment = (env.SOLANA_COMMITMENT ?? 'confirmed') as SolanaConfig['commitment'];
 
-  if (!allowedClusters.has(cluster)) throw new Error(`Invalid SOLANA_CLUSTER: ${cluster}`);
+  if (!allowedClusters.has(clusterRaw)) throw new Error(`Invalid SOLANA_CLUSTER: ${clusterRaw}`);
+  if (clusterRaw === 'mainnet-beta') {
+    console.warn('[config] SOLANA_CLUSTER=\"mainnet-beta\" is deprecated; use \"mainnet\".');
+  }
   if (!allowedCommitments.has(commitment)) throw new Error(`Invalid SOLANA_COMMITMENT: ${commitment}`);
 
   let parsed: URL;

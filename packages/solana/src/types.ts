@@ -21,12 +21,24 @@ export type CanonicalErrorCode =
   | 'SWAP_ROUTER_UNSUPPORTED_CLUSTER'
   | 'EXECUTION_PAUSED'
   | 'EXECUTION_MODE_BLOCKED'
+  | 'EXECUTION_MODE_SEND_FORBIDDEN'
   | 'WALLET_PROVIDER_MISSING'
-  | 'RUNTIME_MODE_INVALID';
+  | 'RUNTIME_MODE_INVALID'
+  | 'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW';
+
+export type ShadowSimulationClass =
+  | 'SIM_OK'
+  | 'SIM_RPC_ERROR'
+  | 'SIM_ACCOUNT_MISSING'
+  | 'SIM_QUOTE_STALE'
+  | 'SIM_SLIPPAGE_EXCEEDED'
+  | 'SIM_TOKEN2022_ACCOUNT_MISMATCH'
+  | 'SIM_RECEIPT_CONFIG_ERROR'
+  | 'SIM_UNKNOWN';
 
 export type SolanaConfig = {
   rpcUrl: string;
-  cluster: 'devnet' | 'mainnet-beta' | 'localnet';
+  cluster: 'devnet' | 'mainnet' | 'localnet';
   commitment: 'processed' | 'confirmed' | 'finalized';
 };
 

@@ -1,5 +1,6 @@
 export type CanonicalCode =
   | 'EXECUTION_MODE_BLOCKED'
+  | 'EXECUTION_MODE_SEND_FORBIDDEN'
   | 'EXECUTION_PAUSED'
   | 'WALLET_PROVIDER_MISSING'
   | 'RPC_URL_MISSING'
@@ -20,7 +21,8 @@ export type CanonicalCode =
   | 'BLOCKHASH_EXPIRED'
   | 'MISSING_ATTESTATION_HASH'
   | 'ORCA_DECODE_FAILED'
-  | 'CONFIG_INVALID';
+  | 'CONFIG_INVALID'
+  | 'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW';
 
 export type UiError = {
   code: CanonicalCode;
@@ -31,6 +33,7 @@ export type UiError = {
 
 const messages: Record<CanonicalCode, Omit<UiError, 'code'>> = {
   EXECUTION_MODE_BLOCKED: { title: 'Mode blocked', message: 'Runtime mode does not allow execution.' },
+  EXECUTION_MODE_SEND_FORBIDDEN: { title: 'Send forbidden', message: 'Execution transport forbids submission in this mode.' },
   EXECUTION_PAUSED: { title: 'Execution paused', message: 'Execution is paused by operator control.' },
   WALLET_PROVIDER_MISSING: { title: 'Wallet missing', message: 'A connected wallet/provider is required for execute mode.' },
   RPC_URL_MISSING: { title: 'RPC misconfigured', message: 'RPC URL is missing or invalid for this runtime.' },
@@ -61,6 +64,10 @@ const messages: Record<CanonicalCode, Omit<UiError, 'code'>> = {
   MISSING_ATTESTATION_HASH: { title: 'Missing attestation hash', message: 'Execution attestation hash is missing or invalid.' },
   ORCA_DECODE_FAILED: { title: 'Orca decode failed', message: 'Unable to decode required Orca account data.' },
   CONFIG_INVALID: { title: 'Invalid configuration', message: 'Autopilot configuration is invalid. Fix config values before execution.' },
+  RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW: {
+    title: 'Shadow receipt config incomplete',
+    message: 'Shadow mode requires complete receipt configuration for structural planning.',
+  },
 };
 
 function safeJson(value: unknown): string {

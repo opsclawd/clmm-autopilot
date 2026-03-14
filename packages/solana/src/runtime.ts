@@ -1,4 +1,4 @@
-import type { AutopilotConfig, RuntimeMode } from '@clmm-autopilot/core';
+import type { AutopilotConfig, ExecutionMode, RuntimeMode } from '@clmm-autopilot/core';
 import { resolveReceiptRuntimeIdentity, type ReceiptRuntimeIdentity } from './receiptIdentity';
 import { getSwapAdapter } from './swap/registry';
 import type { CanonicalErrorCode, SolanaConfig } from './types';
@@ -15,6 +15,7 @@ export type RuntimeEnvironment = {
 };
 
 export type EffectiveOperatorState = {
+  executionMode: ExecutionMode;
   runtimeMode: RuntimeMode;
   executionPausedDefault: boolean;
   executionPausedOverride?: boolean;
@@ -48,6 +49,7 @@ export function deriveEffectiveOperatorState(
   executionPausedOverride?: boolean,
 ): EffectiveOperatorState {
   return {
+    executionMode: config.executionMode,
     runtimeMode: config.operator.runtimeMode,
     executionPausedDefault: config.operator.executionPausedDefault,
     executionPausedOverride,
@@ -81,12 +83,6 @@ export function validateRuntimeStartup(params: StartupValidationInput): Effectiv
 export function enforceExecutionGate(params: ExecutionGateInput): ExecutionGateResult {
   const operatorState = validateRuntimeStartup(params);
 
-  if (operatorState.runtimeMode === 'dry-run') {
-    fail('EXECUTION_MODE_BLOCKED', 'Execution is blocked while runtime mode is dry-run', {
-      runtimeMode: operatorState.runtimeMode,
-    });
-  }
-
   if (operatorState.executionPaused) {
     fail('EXECUTION_PAUSED', 'Execution is paused by operator control', {
       executionPausedDefault: operatorState.executionPausedDefault,
@@ -94,8 +90,33 @@ export function enforceExecutionGate(params: ExecutionGateInput): ExecutionGateR
     });
   }
 
+  getSwapAdapter(params.config.execution.swapRouter, params.config.cluster);
+
+  if (operatorState.executionMode === 'mainnet-shadow') {
+    if (params.config.execution.sendEnabled) {
+      fail('EXECUTION_MODE_SEND_FORBIDDEN', 'mainnet-shadow requires sendEnabled=false', {
+        executionMode: operatorState.executionMode,
+        sendEnabled: params.config.execution.sendEnabled,
+      });
+    }
+    const receiptIdentity = resolveReceiptRuntimeIdentity(params.config, params.runtimeEnvironment?.receiptIdentityEnv);
+    if (!receiptIdentity) {
+      fail(
+        'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW',
+        'Shadow mode receipt identity could not be resolved from config',
+      );
+    }
+    return { operatorState, receiptIdentity };
+  }
+
+  if (operatorState.runtimeMode === 'dry-run') {
+    fail('EXECUTION_MODE_BLOCKED', 'Execution is blocked while runtime mode is dry-run', {
+      runtimeMode: operatorState.runtimeMode,
+      executionMode: operatorState.executionMode,
+    });
+  }
+
   if (operatorState.runtimeMode === 'simulate-only') {
-    getSwapAdapter(params.config.execution.swapRouter, params.config.cluster);
     return { operatorState, receiptIdentity: null };
   }
 
@@ -118,8 +139,6 @@ export function enforceExecutionGate(params: ExecutionGateInput): ExecutionGateR
   if (!receiptIdentity) {
     fail('RECEIPT_PROGRAM_NOT_CONFIGURED', 'Execute mode requires receipt program identity configuration');
   }
-
-  getSwapAdapter(params.config.execution.swapRouter, params.config.cluster);
 
   return { operatorState, receiptIdentity };
 }

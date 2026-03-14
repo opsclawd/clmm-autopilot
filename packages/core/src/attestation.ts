@@ -192,7 +192,7 @@ function clusterToU8(cluster: SolanaCluster | number): number {
   switch (cluster) {
     case 'devnet':
       return 0;
-    case 'mainnet-beta':
+    case 'mainnet':
       return 1;
     case 'localnet':
       return 2;
