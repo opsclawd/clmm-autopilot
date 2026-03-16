@@ -1,0 +1,9 @@
+{
+  "cluster": "mainnet",
+  "programId": "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm",
+  "idlPath": "deployments/devnet/receipt.idl.json",
+  "idlHashMode": "full-v1",
+  "idlHash": "a940da3a73fe037f9c596ad6f4771ab39706deef299ebe45aa0820be9b039161",
+  "deployedAt": "2026-03-15T00:00:00.000Z",
+  "gitCommit": "0000000000000000000000000000000000000000"
+}

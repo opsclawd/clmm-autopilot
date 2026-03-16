@@ -98,8 +98,17 @@ Required env/config:
 - `SHADOW_AUTHORITY` (or `AUTHORITY_PUBKEY`)
 - `SHADOW_POSITION_ADDRESSES` (default source mode: configured list)
 - `SHADOW_DISCOVER_POSITIONS=true` to opt into discovery when no configured list is provided
+- receipt identity must resolve before startup:
+  - preferred: checked-in `deployments/mainnet/receipt.json`, or `RECEIPT_MANIFEST_PATH`
+  - fallback: complete receipt identity fields in `AUTOPILOT_CONFIG` / `SHADOW_AUTOPILOT_CONFIG`
 - optional `SHADOW_DB_PATH` (default: `artifacts/shadow/mainnet/shadow.db`)
 - optional `SHADOW_ROLLUP_EVERY_EVALS` (default: `50`)
+
+Startup behavior:
+
+- the runner resolves receipt identity before the monitoring loop starts
+- the runner verifies the receipt program account on mainnet before monitoring positions
+- startup-class receipt failures stop the process immediately instead of being retried forever
 
 Storage:
 
@@ -327,12 +336,12 @@ If this fails, do not run harness until manifest/IDL drift is fixed.
   - **Action:** Do not retry in same UTC day epoch; wait for next epoch/day or use a different position.
 
 - `RECEIPT_PROGRAM_NOT_CONFIGURED`
-  - **Cause:** Forced config fallback identity is incomplete/invalid (`RECEIPT_IDENTITY_SOURCE=config`) or non-devnet fallback identity was requested but incomplete.
-  - **Action:** Prefer manifest mode (unset `RECEIPT_IDENTITY_SOURCE`) or provide complete config fallback fields.
+  - **Cause:** Mainnet/devnet receipt manifest could not be resolved, `RECEIPT_MANIFEST_PATH` points at a bad file, or forced config fallback identity is incomplete.
+  - **Action:** Prefer a valid manifest (`deployments/<cluster>/receipt.json` or `RECEIPT_MANIFEST_PATH`) or provide complete config fallback fields.
 
 - `RECEIPT_IDL_MISMATCH`
-  - **Cause:** Runtime `full-v1` hash of committed IDL artifact differs from configured hash.
-  - **Action:** Re-run deploy script to refresh `receipt.idl.json` + manifest atomically.
+  - **Cause:** Runtime `full-v1` hash of the referenced IDL artifact differs from configured hash, or the manifest/config points at the wrong IDL path.
+  - **Action:** Refresh the manifest + IDL atomically and verify the referenced `idlPath` matches the intended cluster deployment.
 
 - `RECEIPT_PROGRAM_VERIFICATION_FAILED`
   - **Cause:** Program missing, non-executable, wrong owner, strict authority mismatch, or `HOLD` while `REQUIRE_RECEIPT_PROOF=1`.

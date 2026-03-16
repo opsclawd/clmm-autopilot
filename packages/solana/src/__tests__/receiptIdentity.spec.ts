@@ -9,6 +9,8 @@ import {
 } from '../receiptIdentity';
 import defaultReceiptIdl from '../../../../deployments/devnet/receipt.idl.json';
 
+const MAINNET_MANIFEST_FIXTURE = 'packages/solana/src/__tests__/fixtures/mainnet-receipt-manifest.json';
+
 function mkConfig(overrides?: Partial<AutopilotConfig>): AutopilotConfig {
   return {
     ...DEFAULT_CONFIG,
@@ -177,6 +179,33 @@ describe('receiptIdentity resolver', () => {
     );
     expect(res?.source).toBe('config');
     expect(res?.programId.toBase58()).toBe('A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm');
+  });
+
+  it('prefers manifest identity on mainnet when a manifest path is configured', () => {
+    const res = resolveReceiptRuntimeIdentity(
+      {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet',
+      },
+      { RECEIPT_MANIFEST_PATH: MAINNET_MANIFEST_FIXTURE },
+    );
+
+    expect(res?.source).toBe('manifest');
+    expect(res?.programId.toBase58()).toBe('A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm');
+    expect(res?.idlPath).toBe('deployments/devnet/receipt.idl.json');
+  });
+
+  it('returns null on mainnet when no manifest or config identity is present', () => {
+    const res = resolveReceiptRuntimeIdentity({
+      ...DEFAULT_CONFIG,
+      cluster: 'mainnet',
+      receiptProgramId: undefined,
+      receiptIdlHashMode: undefined,
+      receiptIdlHash: undefined,
+      receiptIdlPath: undefined,
+    });
+
+    expect(res).toBeNull();
   });
 
   it('rejects non-devnet config identity when idlPath is unloadable', () => {

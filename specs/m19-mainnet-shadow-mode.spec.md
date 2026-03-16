@@ -66,6 +66,7 @@ Introduce a formal execution mode in config:
   - simulation runs normally
   - **send/sign path is disabled**
   - **receipt write is not submitted on-chain**
+  - receipt identity must still resolve successfully so the receipt step can be validated structurally
 - Any attempt to send a transaction in `mainnet-shadow` must hard-fail with a canonical error:
   - `EXECUTION_MODE_SEND_FORBIDDEN`
 
@@ -155,6 +156,12 @@ If receipt write cannot be simulated without on-chain side effects, the shadow a
 - whether receipt config is valid
 - whether the receipt step is considered structurally buildable
 
+Receipt identity for shadow mode may come from either:
+- cluster manifest (`deployments/mainnet/receipt.json` by default, or `RECEIPT_MANIFEST_PATH`)
+- complete explicit config fallback identity
+
+Manifest identity is preferred when present.
+
 ## E) Trigger-quality observation
 Shadow mode must produce evidence on whether policy behavior is sensible.
 
@@ -198,20 +205,28 @@ Update config to support mainnet shadow mode:
 - `cluster = "mainnet"`
 - `executionMode = "mainnet-shadow"`
 - `swapRouter = "jupiter"` by default on mainnet
-- receipt config present if the builder requires it for structural validation
+- receipt identity must be resolvable at startup, via either:
+  - checked-in mainnet manifest (`deployments/mainnet/receipt.json`)
+  - `RECEIPT_MANIFEST_PATH`
+  - complete receipt identity fields in config
 - dry-run / send-disabled flag must not be optional if `executionMode=mainnet-shadow`
 
 ### Validation rules
 - `mainnet-shadow + swapRouter=noop` is allowed only for specific diagnostic runs; default remains `jupiter`
 - `mainnet-shadow + sendEnabled=true` must fail config validation
-- if mainnet receipt config is missing but builder expects receipt planning, fail fast with canonical error:
+- shadow startup must resolve receipt identity before entering the monitor loop
+- shadow startup must verify the configured/manifested receipt program on-chain before monitoring positions
+- if mainnet receipt identity is missing or not resolvable, fail fast with canonical error:
   - `RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW`
+- if the manifest/config points at a bad IDL artifact or hash, fail fast before monitoring
+- if receipt program verification fails, fail fast before monitoring rather than looping with per-position retries
 
 ## H) Operator workflow
 Provide a runbook for operating shadow mode in production-like conditions.
 
 ### Runbook must include
 - required env vars
+- receipt identity source selection (`deployments/mainnet/receipt.json`, `RECEIPT_MANIFEST_PATH`, or explicit config fallback)
 - RPC requirements
 - how to start monitoring
 - how to inspect current shadow artifacts
@@ -224,6 +239,7 @@ Provide a runbook for operating shadow mode in production-like conditions.
   - Token-2022 issue
   - receipt config issue
 - how to stop the shadow process safely
+- how to interpret startup-class receipt failures versus per-position evaluation failures
 
 ## I) Testing
 
@@ -231,6 +247,7 @@ Provide a runbook for operating shadow mode in production-like conditions.
 - config validation:
   - `mainnet-shadow` rejects send-enabled config
   - `mainnet-shadow` rejects live send path
+  - mainnet manifest/config receipt identity resolution behaves deterministically
 - artifact creation:
   - triggered decision produces persistent artifact
   - non-trigger evaluation records minimal artifact or metric entry per design
@@ -241,6 +258,8 @@ Provide a runbook for operating shadow mode in production-like conditions.
 - builder path in shadow mode uses the same tx construction as live mode
 - shadow mode never invokes the signer/send function
 - triggered decision persists artifact even when simulation fails
+- runner aborts startup on fatal receipt identity / receipt verification failures
+- `executeOnce()` startup-class `ERROR` results are surfaced, not silently skipped
 
 ### Manual/mainnet acceptance run
 A manual shadow run on mainnet must demonstrate:
@@ -248,6 +267,7 @@ A manual shadow run on mainnet must demonstrate:
 - at least one complete trigger evaluation artifact
 - at least one candidate tx simulation attempt
 - proof that no send occurred
+- successful receipt identity resolution from the intended mainnet manifest or explicit config fallback
 
 ## Deliverables
 - `executionMode` support with enforced `mainnet-shadow`
@@ -263,6 +283,7 @@ A manual shadow run on mainnet must demonstrate:
 - Candidate exit transactions can be built and simulated on mainnet.
 - Simulation results are classified into canonical error/success categories.
 - The send/sign path is technically unreachable in shadow mode.
+- The runner fails fast on startup-class receipt identity / verification errors instead of silently looping.
 - Operators can run shadow mode, inspect outputs, and diagnose failures using the runbook.
 - A multi-day shadow run yields analyzable evidence about trigger quality and tx/simulation reliability.
 

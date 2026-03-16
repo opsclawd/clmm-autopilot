@@ -25,6 +25,8 @@ import {
 import type { CanonicalErrorCode, ShadowSimulationClass } from './types';
 import { PDAUtil, ParsablePosition } from '@orca-so/whirlpools-sdk';
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, unpackAccount } from '@solana/spl-token';
+import { getReceiptManifestForCluster, resolveReceiptRuntimeIdentity } from './receiptIdentity';
+import { verifyReceiptProgramOnChain } from './receiptProgramVerification';
 
 const ORCA_WHIRLPOOL_PROGRAM_ID = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
 
@@ -51,6 +53,20 @@ type ShadowMetrics = {
   triggerUpCount: number;
   triggerDownCount: number;
 };
+
+type TypedShadowError = Error & { code: CanonicalErrorCode; retryable: boolean; debug?: unknown };
+
+function fail(code: CanonicalErrorCode, message: string, debug?: unknown): never {
+  const err = new Error(message) as TypedShadowError;
+  err.code = code;
+  err.retryable = false;
+  if (debug !== undefined) err.debug = debug;
+  throw err;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 function parseBoolean(raw: string | undefined, fallback = false): boolean {
   if (raw === undefined) return fallback;
@@ -103,7 +119,41 @@ function createSessionId(authority: PublicKey, positions: readonly PublicKey[]):
   return `shadow-${new Date().toISOString().replace(/[:.]/g, '-')}-${digest}`;
 }
 
-function loadShadowConfig(env: Record<string, string | undefined>): AutopilotConfig {
+function mergeManifestReceiptIdentity(
+  input: unknown,
+  env: Record<string, string | undefined>,
+): unknown {
+  if (!isRecord(input)) return input;
+  const hasExplicitIdentityField =
+    input.receiptProgramId !== undefined ||
+    input.receiptIdlHashMode !== undefined ||
+    input.receiptIdlHash !== undefined ||
+    input.receiptIdlPath !== undefined ||
+    input.expectedUpgradeAuthority !== undefined;
+  if (hasExplicitIdentityField) return input;
+
+  const manifest = getReceiptManifestForCluster('mainnet', env);
+  if (!manifest) return input;
+  return {
+    ...input,
+    receiptProgramId: manifest.programId,
+    receiptIdlHashMode: manifest.idlHashMode,
+    receiptIdlHash: manifest.idlHash,
+    receiptIdlPath: manifest.idlPath,
+    ...(manifest.expectedUpgradeAuthority ? { expectedUpgradeAuthority: manifest.expectedUpgradeAuthority } : {}),
+  };
+}
+
+export function isFatalShadowStartupCode(code: CanonicalErrorCode | undefined): boolean {
+  return (
+    code === 'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW' ||
+    code === 'RECEIPT_PROGRAM_NOT_CONFIGURED' ||
+    code === 'RECEIPT_IDL_MISMATCH' ||
+    code === 'RECEIPT_PROGRAM_VERIFICATION_FAILED'
+  );
+}
+
+export function loadShadowConfig(env: Record<string, string | undefined>): AutopilotConfig {
   const raw = env.SHADOW_AUTOPILOT_CONFIG ?? env.AUTOPILOT_CONFIG;
   const fallbackCluster = env.SOLANA_CLUSTER ?? 'mainnet';
   const fallbackInput = {
@@ -119,7 +169,7 @@ function loadShadowConfig(env: Record<string, string | undefined>): AutopilotCon
     },
   };
 
-  const parsed = raw ? JSON.parse(raw) : fallbackInput;
+  const parsed = mergeManifestReceiptIdentity(raw ? JSON.parse(raw) : fallbackInput, env);
   const validated = validateConfig(parsed);
   if (!validated.ok) {
     const summary = validated.errors.map((e) => `${e.path}:${e.code}`).join(', ');
@@ -136,6 +186,13 @@ function loadShadowConfig(env: Record<string, string | undefined>): AutopilotCon
   }
   if (config.execution.sendEnabled) {
     throw new Error('CONFIG_INVALID: mainnet-shadow requires execution.sendEnabled=false');
+  }
+  const receiptIdentity = resolveReceiptRuntimeIdentity(config, env);
+  if (!receiptIdentity) {
+    fail(
+      'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW',
+      'Shadow mode receipt identity must be configured via manifest or config before startup',
+    );
   }
   return config;
 }
@@ -286,6 +343,14 @@ export async function runMainnetShadow(env: Record<string, string | undefined> =
   const discoveryEnabled = parseBoolean(env.SHADOW_DISCOVER_POSITIONS, false);
 
   const connection = new Connection(rpcUrl, 'confirmed');
+  const receiptIdentity = resolveReceiptRuntimeIdentity(config, env);
+  if (!receiptIdentity) {
+    fail(
+      'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW',
+      'Shadow mode receipt identity must be configured via manifest or config before startup',
+    );
+  }
+  await verifyReceiptProgramOnChain(connection, receiptIdentity);
   let positions = configuredPositions;
   let positionSourceMode: PositionSourceMode = 'configured';
   if (positions.length === 0) {
@@ -369,8 +434,30 @@ export async function runMainnetShadow(env: Record<string, string | undefined> =
               walletConnected: false,
               signingAvailable: false,
             },
+            receiptIdentityEnv: env,
             transport: new ShadowSubmitter(config.executionMode),
           });
+
+          if (result.status === 'ERROR' && !result.refresh) {
+            const normalized = normalizeSolanaError({
+              code: result.errorCode,
+              message: result.errorMessage,
+              debug: result.errorDebug,
+            });
+            if (isFatalShadowStartupCode(normalized.code as CanonicalErrorCode | undefined)) {
+              throw normalized;
+            }
+            console.error(
+              JSON.stringify({
+                ts: new Date().toISOString(),
+                event: 'shadow.position_failed',
+                position: positionAddress,
+                code: normalized.code,
+                message: normalized.message,
+              }),
+            );
+            continue;
+          }
 
           if (result.refresh?.decision.nextState) {
             state.policyState = result.refresh.decision.nextState;
@@ -502,6 +589,9 @@ export async function runMainnetShadow(env: Record<string, string | undefined> =
               message: normalized.message,
             }),
           );
+          if (isFatalShadowStartupCode(normalized.code as CanonicalErrorCode | undefined)) {
+            throw normalized;
+          }
         }
       }
 

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
 import { PublicKey } from '@solana/web3.js';
-import { buildShadowTriggerRecord } from '../mainnetShadow';
+import { buildShadowTriggerRecord, isFatalShadowStartupCode, loadShadowConfig } from '../mainnetShadow';
+
+const MAINNET_MANIFEST_FIXTURE = 'packages/solana/src/__tests__/fixtures/mainnet-receipt-manifest.json';
 
 describe('buildShadowTriggerRecord', () => {
   it('persists the snapshot whirlpool address and explicit build status', () => {
@@ -86,5 +88,38 @@ describe('buildShadowTriggerRecord', () => {
     expect(record.whirlpoolAddress).toBe(params.refresh.snapshot.whirlpoolAddress);
     expect(record.whirlpoolAddress).not.toBe(params.result.shadow!.receiptPdaExpected);
     expect(record.txBuildStatus).toBe('BUILD_OK');
+  });
+});
+
+describe('loadShadowConfig', () => {
+  it('hydrates missing receipt identity from the configured mainnet manifest', () => {
+    const config = loadShadowConfig({
+      RECEIPT_MANIFEST_PATH: MAINNET_MANIFEST_FIXTURE,
+    });
+
+    expect(config.cluster).toBe('mainnet');
+    expect(config.executionMode).toBe('mainnet-shadow');
+    expect(config.receiptProgramId).toBe('A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm');
+    expect(config.receiptIdlPath).toBe('deployments/devnet/receipt.idl.json');
+  });
+
+  it('fails fast when an explicit receipt manifest path is invalid', () => {
+    expect(() =>
+      loadShadowConfig({
+        RECEIPT_MANIFEST_PATH: 'packages/solana/src/__tests__/fixtures/does-not-exist.json',
+      }),
+    ).toThrow(/manifest identity could not be loaded/);
+  });
+
+  it('fails fast when neither manifest nor config provides mainnet receipt identity', () => {
+    expect(() => loadShadowConfig({})).toThrow(/receipt identity must be configured/i);
+  });
+});
+
+describe('isFatalShadowStartupCode', () => {
+  it('marks receipt identity failures as fatal to the shadow runner', () => {
+    expect(isFatalShadowStartupCode('RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW')).toBe(true);
+    expect(isFatalShadowStartupCode('RECEIPT_IDL_MISMATCH')).toBe(true);
+    expect(isFatalShadowStartupCode('SIMULATION_FAILED')).toBe(false);
   });
 });

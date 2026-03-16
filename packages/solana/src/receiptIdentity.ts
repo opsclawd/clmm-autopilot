@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AutopilotConfig, ReceiptIdlHashMode } from '@clmm-autopilot/core';
 import { PublicKey } from '@solana/web3.js';
 import type { CanonicalErrorCode } from './types';
 
 export type ReceiptDeploymentManifest = {
-  cluster: 'devnet';
+  cluster: 'devnet' | 'mainnet';
   programId: string;
   idlPath: string;
   idlHashMode: ReceiptIdlHashMode;
@@ -51,13 +51,11 @@ type ReceiptIdlFullV1 = {
 };
 
 const DEVNET_MANIFEST_PATH = 'deployments/devnet/receipt.json';
-const DEVNET_IDL_PATH = 'deployments/devnet/receipt.idl.json';
+const MAINNET_MANIFEST_PATH = 'deployments/mainnet/receipt.json';
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(MODULE_DIR, '../../..');
-const KNOWN_IDL_ARTIFACT_PATHS: Record<string, string> = {
-  [DEVNET_IDL_PATH]: resolve(REPO_ROOT, DEVNET_IDL_PATH),
-};
 let defaultDevnetManifestCache: ReceiptDeploymentManifest | undefined;
+const manifestCache = new Map<string, ReceiptDeploymentManifest>();
 const idlArtifactCache = new Map<string, ReceiptIdlArtifact>();
 
 function fail(code: CanonicalErrorCode, message: string, debug?: unknown): never {
@@ -120,26 +118,74 @@ export function computeReceiptIdlHashFullV1(idl: unknown): string {
   return createHash('sha256').update(canonical).digest('hex');
 }
 
+function loadReceiptManifestFromPath(manifestPath: string, source: string): ReceiptDeploymentManifest {
+  const absolutePath = resolveArtifactPath(manifestPath);
+  const cached = manifestCache.get(absolutePath);
+  if (cached) return cached;
+
+  const manifestRaw = readJsonFromDisk(
+    absolutePath,
+    'RECEIPT_PROGRAM_NOT_CONFIGURED',
+    'manifest identity could not be loaded',
+    { manifestPath, absolutePath, source },
+  );
+  if (!manifestRaw || typeof manifestRaw !== 'object' || Array.isArray(manifestRaw)) {
+    fail('RECEIPT_PROGRAM_NOT_CONFIGURED', 'manifest identity must be a JSON object', {
+      manifestPath,
+      absolutePath,
+      source,
+      receivedType: typeof manifestRaw,
+    });
+  }
+
+  const manifest = manifestRaw as ReceiptDeploymentManifest;
+  manifestCache.set(absolutePath, manifest);
+  return manifest;
+}
+
+function maybeLoadReceiptManifestFromPath(manifestPath: string, source: string): ReceiptDeploymentManifest | null {
+  const absolutePath = resolveArtifactPath(manifestPath);
+  if (!existsSync(absolutePath)) return null;
+  return loadReceiptManifestFromPath(manifestPath, source);
+}
+
 export function getDefaultDevnetReceiptManifest(): ReceiptDeploymentManifest {
   if (defaultDevnetManifestCache) {
     return defaultDevnetManifestCache;
   }
 
-  const manifestRaw = readJsonFromDisk(
-    resolve(REPO_ROOT, DEVNET_MANIFEST_PATH),
-    'RECEIPT_PROGRAM_NOT_CONFIGURED',
-    'manifest identity could not be loaded',
-    { manifestPath: DEVNET_MANIFEST_PATH },
-  );
-  if (!manifestRaw || typeof manifestRaw !== 'object' || Array.isArray(manifestRaw)) {
-    fail('RECEIPT_PROGRAM_NOT_CONFIGURED', 'manifest identity must be a JSON object', {
-      manifestPath: DEVNET_MANIFEST_PATH,
-      receivedType: typeof manifestRaw,
+  defaultDevnetManifestCache = loadReceiptManifestFromPath(DEVNET_MANIFEST_PATH, 'manifest');
+  return defaultDevnetManifestCache;
+}
+
+export function getReceiptManifestForCluster(
+  cluster: AutopilotConfig['cluster'],
+  env: Record<string, string | undefined> = typeof process !== 'undefined' ? process.env : {},
+): ReceiptDeploymentManifest | null {
+  const overridePath = env.RECEIPT_MANIFEST_PATH?.trim();
+  const manifestPath =
+    overridePath ||
+    (cluster === 'devnet'
+      ? DEVNET_MANIFEST_PATH
+      : cluster === 'mainnet'
+        ? MAINNET_MANIFEST_PATH
+        : undefined);
+  if (!manifestPath) return null;
+
+  const manifest = overridePath
+    ? loadReceiptManifestFromPath(manifestPath, 'manifest')
+    : cluster === 'devnet'
+      ? getDefaultDevnetReceiptManifest()
+      : maybeLoadReceiptManifestFromPath(manifestPath, 'manifest');
+  if (!manifest) return null;
+  if (manifest.cluster !== cluster) {
+    fail('RECEIPT_PROGRAM_NOT_CONFIGURED', 'manifest cluster does not match runtime cluster', {
+      expectedCluster: cluster,
+      actualCluster: manifest.cluster,
+      manifestPath,
     });
   }
-
-  defaultDevnetManifestCache = manifestRaw as ReceiptDeploymentManifest;
-  return defaultDevnetManifestCache;
+  return manifest;
 }
 
 function parseOptionalPubkey(value: string | undefined, path: string): PublicKey | undefined {
@@ -186,19 +232,15 @@ function normalizeIdlPath(idlPath: string): string {
   return normalized;
 }
 
-export function loadReceiptIdlArtifact(idlPath: string, source = 'receipt'): ReceiptIdlArtifact {
-  const normalized = normalizeIdlPath(idlPath);
-  const cached = idlArtifactCache.get(normalized);
-  if (cached) return cached;
+function resolveArtifactPath(path: string): string {
+  const normalized = normalizeIdlPath(path);
+  return isAbsolute(normalized) ? normalized : resolve(REPO_ROOT, normalized);
+}
 
-  const artifactPath = KNOWN_IDL_ARTIFACT_PATHS[normalized];
-  if (!artifactPath) {
-    fail('RECEIPT_IDL_MISMATCH', `${source}.idlPath could not be loaded`, {
-      idlPath,
-      normalizedIdlPath: normalized,
-      available: Object.keys(KNOWN_IDL_ARTIFACT_PATHS),
-    });
-  }
+export function loadReceiptIdlArtifact(idlPath: string, source = 'receipt'): ReceiptIdlArtifact {
+  const artifactPath = resolveArtifactPath(idlPath);
+  const cached = idlArtifactCache.get(artifactPath);
+  if (cached) return cached;
 
   const artifactRaw = readJsonFromDisk(
     artifactPath,
@@ -206,21 +248,19 @@ export function loadReceiptIdlArtifact(idlPath: string, source = 'receipt'): Rec
     `${source}.idlPath could not be loaded`,
     {
       idlPath,
-      normalizedIdlPath: normalized,
-      available: Object.keys(KNOWN_IDL_ARTIFACT_PATHS),
+      artifactPath,
     },
   );
   if (!artifactRaw || typeof artifactRaw !== 'object' || Array.isArray(artifactRaw)) {
     fail('RECEIPT_IDL_MISMATCH', `${source}.idlPath could not be loaded`, {
       idlPath,
-      normalizedIdlPath: normalized,
+      artifactPath,
       receivedType: typeof artifactRaw,
-      available: Object.keys(KNOWN_IDL_ARTIFACT_PATHS),
     });
   }
 
   const artifact = artifactRaw as ReceiptIdlArtifact;
-  idlArtifactCache.set(normalized, artifact);
+  idlArtifactCache.set(artifactPath, artifact);
   return artifact;
 }
 
@@ -291,6 +331,22 @@ export function resolveReceiptRuntimeIdentity(
     };
   }
 
+  const manifest = getReceiptManifestForCluster(config.cluster, env);
+  if (manifest) {
+    const programId = parseRequiredProgramId(manifest.programId, 'manifest');
+    const idlHashMode = assertHashMode(manifest.idlHashMode, 'manifest');
+    const manifestIdl = assertReceiptProgramMatchesIdlAddress(programId, manifest.idlPath, 'manifest');
+    const idlHash = assertHashMatches(manifest.idlHash, manifestIdl, 'manifest');
+    return {
+      source: 'manifest',
+      programId,
+      idlPath: manifest.idlPath,
+      idlHashMode,
+      idlHash,
+      expectedUpgradeAuthority: parseOptionalPubkey(manifest.expectedUpgradeAuthority, 'manifest.expectedUpgradeAuthority'),
+    };
+  }
+
   if (config.cluster !== 'devnet') {
     if (!config.receiptProgramId || !config.receiptIdlHashMode || !config.receiptIdlHash || !config.receiptIdlPath) {
       return null;
@@ -306,17 +362,5 @@ export function resolveReceiptRuntimeIdentity(
     };
   }
 
-  const manifest = getDefaultDevnetReceiptManifest();
-  const programId = parseRequiredProgramId(manifest.programId, 'manifest');
-  const idlHashMode = assertHashMode(manifest.idlHashMode, 'manifest');
-  const manifestIdl = assertReceiptProgramMatchesIdlAddress(programId, manifest.idlPath, 'manifest');
-  const idlHash = assertHashMatches(manifest.idlHash, manifestIdl, 'manifest');
-  return {
-    source: 'manifest',
-    programId,
-    idlPath: manifest.idlPath,
-    idlHashMode,
-    idlHash,
-    expectedUpgradeAuthority: parseOptionalPubkey(manifest.expectedUpgradeAuthority, 'manifest.expectedUpgradeAuthority'),
-  };
+  return null;
 }
