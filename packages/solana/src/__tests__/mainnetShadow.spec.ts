@@ -1,7 +1,75 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
-import { PublicKey } from '@solana/web3.js';
-import { buildShadowTriggerRecord } from '../mainnetShadow';
+import { Connection, PublicKey } from '@solana/web3.js';
+
+const MAINNET_MANIFEST_FIXTURE = 'packages/solana/src/__tests__/fixtures/mainnet-receipt-manifest.json';
+const AUTHORITY = new PublicKey(new Uint8Array(32).fill(6)).toBase58();
+const POSITION = new PublicKey(new Uint8Array(32).fill(7)).toBase58();
+
+const { executeOnceMock, loadPositionSnapshotMock, verifyReceiptProgramOnChainMock } = vi.hoisted(() => ({
+  executeOnceMock: vi.fn(),
+  loadPositionSnapshotMock: vi.fn(),
+  verifyReceiptProgramOnChainMock: vi.fn(),
+}));
+
+vi.mock('../index', () => ({
+  createRuntimeCounterRegistry: vi.fn(() => ({
+    increment: vi.fn(),
+    snapshot: vi.fn(() => ({
+      signerInvocations: 0,
+      submitInvocations: 0,
+      walletPromptCount: 0,
+      shadowTxSignaturesEmitted: 0,
+    })),
+  })),
+  executeOnce: executeOnceMock,
+  loadPositionSnapshot: loadPositionSnapshotMock,
+  ShadowSubmitter: class {
+    readonly kind = 'shadow';
+
+    constructor(_executionMode: string) {}
+
+    async submit(): Promise<string> {
+      throw new Error('Shadow submit should not be called in tests');
+    }
+  },
+  classifyShadowSimulationResult: vi.fn(() => 'SIM_UNKNOWN'),
+}));
+
+vi.mock('../receiptProgramVerification', () => ({
+  verifyReceiptProgramOnChain: verifyReceiptProgramOnChainMock,
+}));
+
+import { buildShadowTriggerRecord, isFatalShadowStartupCode, loadShadowConfig, runMainnetShadow } from '../mainnetShadow';
+
+function shadowEnv(overrides: Record<string, string | undefined> = {}): Record<string, string | undefined> {
+  return {
+    SOLANA_RPC_URL: 'http://127.0.0.1:8899',
+    SHADOW_AUTHORITY: AUTHORITY,
+    SHADOW_POSITION_ADDRESSES: POSITION,
+    SHADOW_DB_PATH: `/tmp/mainnet-shadow-test-${Date.now()}-${Math.random().toString(16).slice(2)}.db`,
+    RECEIPT_MANIFEST_PATH: MAINNET_MANIFEST_FIXTURE,
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  executeOnceMock.mockReset();
+  loadPositionSnapshotMock.mockReset();
+  verifyReceiptProgramOnChainMock.mockReset();
+  loadPositionSnapshotMock.mockResolvedValue({ currentTickIndex: 15 });
+  verifyReceiptProgramOnChainMock.mockResolvedValue({
+    programId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
+    owner: 'BPFLoaderUpgradeab1e11111111111111111111111',
+  });
+  vi.spyOn(Connection.prototype, 'getSlot').mockResolvedValue(1);
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('buildShadowTriggerRecord', () => {
   it('persists the snapshot whirlpool address and explicit build status', () => {
@@ -86,5 +154,70 @@ describe('buildShadowTriggerRecord', () => {
     expect(record.whirlpoolAddress).toBe(params.refresh.snapshot.whirlpoolAddress);
     expect(record.whirlpoolAddress).not.toBe(params.result.shadow!.receiptPdaExpected);
     expect(record.txBuildStatus).toBe('BUILD_OK');
+  });
+});
+
+describe('loadShadowConfig', () => {
+  it('hydrates missing receipt identity from the configured mainnet manifest', () => {
+    const config = loadShadowConfig({
+      RECEIPT_MANIFEST_PATH: MAINNET_MANIFEST_FIXTURE,
+    });
+
+    expect(config.cluster).toBe('mainnet');
+    expect(config.executionMode).toBe('mainnet-shadow');
+    expect(config.receiptProgramId).toBe('A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm');
+    expect(config.receiptIdlPath).toBe('deployments/devnet/receipt.idl.json');
+  });
+
+  it('fails fast when an explicit receipt manifest path is invalid', () => {
+    expect(() =>
+      loadShadowConfig({
+        RECEIPT_MANIFEST_PATH: 'packages/solana/src/__tests__/fixtures/does-not-exist.json',
+      }),
+    ).toThrow(/manifest identity could not be loaded/);
+  });
+
+  it('fails fast when neither manifest nor config provides mainnet receipt identity', () => {
+    expect(() => loadShadowConfig({})).toThrow(/receipt identity must be configured/i);
+  });
+});
+
+describe('isFatalShadowStartupCode', () => {
+  it('marks receipt identity failures as fatal to the shadow runner', () => {
+    expect(isFatalShadowStartupCode('RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW')).toBe(true);
+    expect(isFatalShadowStartupCode('RECEIPT_IDL_MISMATCH')).toBe(true);
+    expect(isFatalShadowStartupCode('SIMULATION_FAILED')).toBe(false);
+  });
+});
+
+describe('runMainnetShadow', () => {
+  it('aborts before monitoring when receipt verification fails at startup', async () => {
+    const error = Object.assign(new Error('receipt program mismatch'), {
+      code: 'RECEIPT_PROGRAM_VERIFICATION_FAILED' as const,
+      retryable: false,
+    });
+    verifyReceiptProgramOnChainMock.mockRejectedValueOnce(error);
+
+    await expect(runMainnetShadow(shadowEnv())).rejects.toMatchObject({
+      code: 'RECEIPT_PROGRAM_VERIFICATION_FAILED',
+    });
+    expect(verifyReceiptProgramOnChainMock).toHaveBeenCalledTimes(1);
+    expect(loadPositionSnapshotMock).not.toHaveBeenCalled();
+    expect(executeOnceMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces startup-class executeOnce errors instead of silently continuing', async () => {
+    executeOnceMock.mockResolvedValueOnce({
+      status: 'ERROR',
+      errorCode: 'RECEIPT_IDL_MISMATCH',
+      errorMessage: 'manifest idl mismatch',
+    });
+
+    await expect(runMainnetShadow(shadowEnv())).rejects.toMatchObject({
+      code: 'RECEIPT_IDL_MISMATCH',
+    });
+    expect(verifyReceiptProgramOnChainMock).toHaveBeenCalledTimes(1);
+    expect(loadPositionSnapshotMock).toHaveBeenCalledTimes(1);
+    expect(executeOnceMock).toHaveBeenCalledTimes(1);
   });
 });
