@@ -18,8 +18,11 @@
     "test": "pnpm -r test",
     "e2e:devnet": "pnpm -C packages/solana e2e:devnet",
     "e2e:certify:devnet": "pnpm -C packages/solana e2e:certify:devnet",
+    "receipt:build": "node ./scripts/build-receipt.mjs",
     "receipt:check:devnet": "node ./scripts/check-devnet-receipt-consistency.mjs",
+    "receipt:check:mainnet": "node ./scripts/check-mainnet-receipt-consistency.mjs",
     "receipt:deploy:devnet": "node ./scripts/deploy-receipt-devnet.mjs",
+    "receipt:deploy:mainnet": "node ./scripts/deploy-receipt-mainnet.mjs",
     "positions:devnet": "node ./scripts/find-devnet-whirlpool-positions.mjs",
     "check:anchor-tooling": "node ./scripts/check-anchor-tooling.mjs",
     "shadow:mainnet": "pnpm -C packages/solana shadow:mainnet"

@@ -16,6 +16,27 @@ export type ReceiptDeploymentManifest = {
   gitCommit: string;
   deployerPubkey?: string;
   expectedUpgradeAuthority?: string;
+  observedUpgradeAuthority?: string;
+  deployedSlot?: number;
+  deploySignature?: string;
+  programBinaryPath?: string;
+  programBinarySha256?: string;
+  toolchain?: ReceiptReleaseToolchain;
+  verifiedBuild?: ReceiptVerifiedBuildMetadata;
+};
+
+export type ReceiptReleaseToolchain = {
+  anchorVersion: string;
+  solanaVersion: string;
+  solanaVerifyVersion?: string;
+};
+
+export type ReceiptVerifiedBuildMetadata = {
+  tool: 'solana-verify';
+  version: string;
+  evidencePath: string;
+  executableHash: string;
+  programHash: string;
 };
 
 export type ReceiptRuntimeIdentity = {

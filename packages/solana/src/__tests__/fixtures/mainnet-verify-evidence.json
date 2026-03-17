@@ -1,0 +1,19 @@
+{
+  "tool": "solana-verify",
+  "version": "0.4.12",
+  "verifiedAt": "2026-03-16T00:00:00.000Z",
+  "executableHashCommand": [
+    "solana-verify",
+    "get-executable-hash",
+    "packages/solana/src/__tests__/fixtures/mainnet-receipt.so"
+  ],
+  "programHashCommand": [
+    "solana-verify",
+    "get-program-hash",
+    "-u",
+    "https://api.mainnet-beta.solana.com",
+    "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm"
+  ],
+  "executableHash": "11c7b4f6b3a9f9874fd429f159300064c5c33d8d7fc8ee75cfbff0bc67ce7fd1",
+  "programHash": "11c7b4f6b3a9f9874fd429f159300064c5c33d8d7fc8ee75cfbff0bc67ce7fd1"
+}

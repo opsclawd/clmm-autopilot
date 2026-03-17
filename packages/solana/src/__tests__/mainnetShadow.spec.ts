@@ -166,7 +166,7 @@ describe('loadShadowConfig', () => {
     expect(config.cluster).toBe('mainnet');
     expect(config.executionMode).toBe('mainnet-shadow');
     expect(config.receiptProgramId).toBe('A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm');
-    expect(config.receiptIdlPath).toBe('deployments/devnet/receipt.idl.json');
+    expect(config.receiptIdlPath).toBe('deployments/mainnet/receipt.idl.json');
   });
 
   it('fails fast when an explicit receipt manifest path is invalid', () => {

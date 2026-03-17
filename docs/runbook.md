@@ -5,7 +5,9 @@
 ```bash
 pnpm install
 pnpm -r test
+pnpm receipt:build
 pnpm receipt:check:devnet
+pnpm receipt:check:mainnet -- --rpc-url <RPC_URL>
 pnpm e2e:devnet
 pnpm e2e:certify:devnet
 pnpm shadow:mainnet
@@ -16,6 +18,18 @@ Deploy/update devnet receipt program identity (manual acceptance workflow):
 ```bash
 pnpm receipt:deploy:devnet
 ```
+
+Devnet receipt deploy expects a fixed program keypair via `RECEIPT_PROGRAM_KEYPAIR` (or `--program-keypair`) and uses `solana program deploy --program-id ...` instead of mutating source files after deployment.
+
+Mainnet receipt release workflow:
+
+```bash
+pnpm receipt:deploy:mainnet -- --dry-run --rpc-url <RPC_URL> --program-keypair <PROGRAM_KEYPAIR> --expected-upgrade-authority <MULTISIG_PUBKEY>
+pnpm receipt:deploy:mainnet -- --rpc-url <RPC_URL> --program-keypair <PROGRAM_KEYPAIR> --expected-upgrade-authority <MULTISIG_PUBKEY>
+pnpm receipt:check:mainnet -- --rpc-url <RPC_URL>
+```
+
+See `docs/release-receipt-mainnet.md` for the full `m20` release sequence and retained artifacts.
 
 Harness env vars:
 
@@ -299,19 +313,40 @@ When `status=SKIPPED`, the artifact also includes a stable top-level `skipReason
 
 If this fails, do not run harness until manifest/IDL drift is fixed.
 
+`pnpm receipt:check:mainnet -- --rpc-url <RPC_URL>` is mandatory after a mainnet release. It additionally asserts:
+
+1. `programBinarySha256` matches the retained `programBinaryPath`
+2. pinned Anchor/Solana/`solana-verify` versions are recorded in the manifest
+3. `solana-verify` local executable hash equals the on-chain program hash
+4. the observed upgrade authority matches the expected multisig
+5. retained verify evidence exists on disk
+
 ## Deploy flow details
 
 `pnpm receipt:deploy:devnet` runs:
 
 1. `anchor build`
-2. `anchor deploy --provider.cluster devnet`
-3. Syncs `declare_id!()` and `Anchor.toml` to the deployed program id
-4. Re-runs `anchor build` so committed IDL/artifacts embed the deployed program id
-5. Copies `target/idl/receipt.json` to `deployments/devnet/receipt.idl.json`
-6. Computes `full-v1` IDL hash
-7. Atomically writes `deployments/devnet/receipt.json`
-8. Verifies with `solana program show <PROGRAM_ID> --url devnet`
-9. Runs consistency guard
+2. Validates fixed identity across `declare_id!`, `Anchor.toml`, the supplied program keypair, and the built IDL address
+3. Deploys with `solana program deploy ... --program-id <PROGRAM_KEYPAIR> --url <RPC_URL> --keypair <WALLET>`
+4. Copies `target/idl/receipt.json` to `deployments/devnet/receipt.idl.json`
+5. Computes `full-v1` IDL hash
+6. Atomically writes `deployments/devnet/receipt.json`
+7. Runs consistency guard
+
+`pnpm receipt:deploy:mainnet` runs:
+
+1. `cd programs/receipt && anchor build --verifiable`
+2. Validates fixed identity across source, Anchor config, program keypair, and built IDL
+3. Computes the retained `.so` SHA-256 and deploy-cost preflight
+4. Deploys with `solana program deploy ... --program-id <PROGRAM_KEYPAIR> --url <RPC_URL> --keypair <WALLET>`
+5. Transfers upgrade authority with `solana program set-upgrade-authority <PROGRAM_ID> --new-upgrade-authority <MULTISIG> --skip-new-upgrade-authority-signer-check`
+6. Copies the retained IDL and `.so` to `deployments/mainnet/`
+7. Runs `solana-verify get-executable-hash` and `solana-verify get-program-hash`
+8. Atomically writes:
+   - `deployments/mainnet/receipt.json`
+   - `deployments/mainnet/receipt.provenance.json`
+   - `deployments/mainnet/receipt.verify.json`
+9. Runs the mainnet consistency guard before release artifacts are published
 
 ## Failure → Action mapping
 
