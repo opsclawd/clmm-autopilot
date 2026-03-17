@@ -46,7 +46,7 @@ This command performs the release in order:
 
 1. `cd programs/receipt && anchor build --verifiable`
 2. `solana program deploy target/deploy/receipt.so --program-id <PROGRAM_KEYPAIR> --url <RPC> --keypair <WALLET>`
-3. `solana program set-upgrade-authority <PROGRAM_ID> --new-upgrade-authority <MULTISIG> --url <RPC> --keypair <WALLET>`
+3. `solana program set-upgrade-authority <PROGRAM_ID> --new-upgrade-authority <MULTISIG> --skip-new-upgrade-authority-signer-check --url <RPC> --keypair <WALLET>`
 4. `solana-verify get-executable-hash deployments/mainnet/receipt.so`
 5. `solana-verify get-program-hash -u <RPC> <PROGRAM_ID>`
 6. `pnpm receipt:check:mainnet -- --rpc-url <RPC>`

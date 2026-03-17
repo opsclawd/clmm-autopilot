@@ -339,7 +339,7 @@ If this fails, do not run harness until manifest/IDL drift is fixed.
 2. Validates fixed identity across source, Anchor config, program keypair, and built IDL
 3. Computes the retained `.so` SHA-256 and deploy-cost preflight
 4. Deploys with `solana program deploy ... --program-id <PROGRAM_KEYPAIR> --url <RPC_URL> --keypair <WALLET>`
-5. Transfers upgrade authority with `solana program set-upgrade-authority <PROGRAM_ID> --new-upgrade-authority <MULTISIG>`
+5. Transfers upgrade authority with `solana program set-upgrade-authority <PROGRAM_ID> --new-upgrade-authority <MULTISIG> --skip-new-upgrade-authority-signer-check`
 6. Copies the retained IDL and `.so` to `deployments/mainnet/`
 7. Runs `solana-verify get-executable-hash` and `solana-verify get-program-hash`
 8. Atomically writes:

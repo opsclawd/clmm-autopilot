@@ -314,22 +314,27 @@ export function runProgramDeploy({ binaryPath, programKeypairPath, rpcUrl, walle
   return { ...parseDeployOutput(stdout), stdout, stderr };
 }
 
+export function buildSetUpgradeAuthorityArgs({ programId, rpcUrl, walletPath, expectedUpgradeAuthority }) {
+  return [
+    'program',
+    'set-upgrade-authority',
+    programId,
+    '--new-upgrade-authority',
+    expectedUpgradeAuthority,
+    '--skip-new-upgrade-authority-signer-check',
+    '--url',
+    rpcUrl,
+    '--keypair',
+    walletPath,
+    '--output',
+    'json-compact',
+  ];
+}
+
 export function runSetUpgradeAuthority({ programId, rpcUrl, walletPath, expectedUpgradeAuthority }) {
   const result = spawnCaptured(
     'solana',
-    [
-      'program',
-      'set-upgrade-authority',
-      programId,
-      '--new-upgrade-authority',
-      expectedUpgradeAuthority,
-      '--url',
-      rpcUrl,
-      '--keypair',
-      walletPath,
-      '--output',
-      'json-compact',
-    ],
+    buildSetUpgradeAuthorityArgs({ programId, rpcUrl, walletPath, expectedUpgradeAuthority }),
     { cwd: REPO_ROOT },
   );
   const stdout = result.stdout?.trim() ?? '';
