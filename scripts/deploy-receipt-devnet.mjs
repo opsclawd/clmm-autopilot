@@ -44,11 +44,6 @@ function main() {
     fail('Devnet deploy requires --program-keypair or RECEIPT_PROGRAM_KEYPAIR');
   }
 
-  const expectedUpgradeAuthority =
-    typeof args['expected-upgrade-authority'] === 'string'
-      ? args['expected-upgrade-authority']
-      : process.env.EXPECTED_UPGRADE_AUTHORITY;
-
   assertPinnedToolchain();
   console.log('[m15] anchor build');
   buildReceipt();
@@ -87,8 +82,6 @@ function main() {
     deployedAt: new Date().toISOString(),
     gitCommit,
     deployerPubkey: walletPubkey,
-    ...(expectedUpgradeAuthority ? { expectedUpgradeAuthority } : {}),
-    ...(expectedUpgradeAuthority ? { observedUpgradeAuthority: expectedUpgradeAuthority } : {}),
     ...(typeof deploy.deploySignature === 'string' ? { deploySignature: deploy.deploySignature } : {}),
     ...(typeof deployedSlot === 'number' ? { deployedSlot } : {}),
     toolchain: {

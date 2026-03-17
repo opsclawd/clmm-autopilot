@@ -15,6 +15,7 @@ import { checkReceiptConsistency } from '../checkReceiptConsistency';
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(MODULE_DIR, '../../../..');
+const DEVNET_MANIFEST_FIXTURE = resolve(REPO_ROOT, 'deployments/devnet/receipt.json');
 const MAINNET_MANIFEST_FIXTURE = resolve(REPO_ROOT, 'packages/solana/src/__tests__/fixtures/mainnet-receipt-manifest.json');
 const TMP_ROOT = resolve('/tmp', 'clmm-autopilot-check-receipt-consistency');
 
@@ -24,6 +25,32 @@ afterEach(() => {
 });
 
 describe('checkReceiptConsistency', () => {
+  it('uses an explicit devnet manifest override when resolving runtime identity', async () => {
+    verifyReceiptProgramOnChainMock.mockResolvedValue({
+      programId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
+      owner: 'BPFLoaderUpgradeab1e11111111111111111111111',
+      upgradeAuthority: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
+    });
+
+    const tempDir = resolve(TMP_ROOT, 'devnet-override');
+    mkdirSync(tempDir, { recursive: true });
+    const manifestPath = resolve(tempDir, 'receipt.json');
+    const manifest = JSON.parse(readFileSync(DEVNET_MANIFEST_FIXTURE, 'utf8'));
+    manifest.expectedUpgradeAuthority = 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm';
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+
+    await checkReceiptConsistency({
+      cluster: 'devnet',
+      manifestPath,
+      rpcUrl: 'https://api.devnet.solana.com',
+    });
+
+    expect(verifyReceiptProgramOnChainMock).toHaveBeenCalledTimes(1);
+    expect(verifyReceiptProgramOnChainMock.mock.calls[0]?.[1].expectedUpgradeAuthority?.toBase58()).toBe(
+      'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
+    );
+  });
+
   it('accepts the mainnet release fixture when local artifacts and authority metadata are consistent', async () => {
     verifyReceiptProgramOnChainMock.mockResolvedValue({
       programId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',

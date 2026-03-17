@@ -281,7 +281,7 @@ export async function checkReceiptConsistency({
 
   const resolved = resolveReceiptRuntimeIdentity(
     { ...DEFAULT_CONFIG, cluster },
-    cluster === 'mainnet' ? { RECEIPT_MANIFEST_PATH: selectedManifestPath } : {},
+    manifestPath ? { RECEIPT_MANIFEST_PATH: selectedManifestPath } : {},
   );
   if (!resolved) fail(`Resolver returned null for ${cluster} identity`);
 
