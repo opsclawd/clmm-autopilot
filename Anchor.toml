@@ -14,14 +14,13 @@ members = [
 cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
-[provider.devnet]
-cluster = "https://api.devnet.solana.com"
-wallet = "~/.config/solana/id.json"
-
 [programs.localnet]
 receipt = "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm"
 
 [programs.devnet]
+receipt = "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm"
+
+[programs.mainnet]
 receipt = "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm"
 
 [toolchain]

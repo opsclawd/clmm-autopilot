@@ -1,9 +1,28 @@
 {
   "cluster": "mainnet",
   "programId": "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm",
-  "idlPath": "deployments/devnet/receipt.idl.json",
+  "idlPath": "deployments/mainnet/receipt.idl.json",
   "idlHashMode": "full-v1",
   "idlHash": "a940da3a73fe037f9c596ad6f4771ab39706deef299ebe45aa0820be9b039161",
   "deployedAt": "2026-03-15T00:00:00.000Z",
-  "gitCommit": "0000000000000000000000000000000000000000"
+  "gitCommit": "1111111aaaa2222bbbb3333cccc4444dddd5555",
+  "deployerPubkey": "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm",
+  "expectedUpgradeAuthority": "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm",
+  "observedUpgradeAuthority": "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm",
+  "deployedSlot": 333333333,
+  "deploySignature": "A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm",
+  "programBinaryPath": "packages/solana/src/__tests__/fixtures/mainnet-receipt.so",
+  "programBinarySha256": "4e31f65972a37276da4bc3298bb6c7c0f989b55903526e4b2dba811f57ff903e",
+  "toolchain": {
+    "anchorVersion": "0.32.1",
+    "solanaVersion": "2.3.0",
+    "solanaVerifyVersion": "0.4.12"
+  },
+  "verifiedBuild": {
+    "tool": "solana-verify",
+    "version": "0.4.12",
+    "evidencePath": "packages/solana/src/__tests__/fixtures/mainnet-verify-evidence.json",
+    "executableHash": "11c7b4f6b3a9f9874fd429f159300064c5c33d8d7fc8ee75cfbff0bc67ce7fd1",
+    "programHash": "11c7b4f6b3a9f9874fd429f159300064c5c33d8d7fc8ee75cfbff0bc67ce7fd1"
+  }
 }

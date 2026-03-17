@@ -192,7 +192,7 @@ describe('receiptIdentity resolver', () => {
 
     expect(res?.source).toBe('manifest');
     expect(res?.programId.toBase58()).toBe('A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm');
-    expect(res?.idlPath).toBe('deployments/devnet/receipt.idl.json');
+    expect(res?.idlPath).toBe('deployments/mainnet/receipt.idl.json');
   });
 
   it('returns null on mainnet when no manifest or config identity is present', () => {

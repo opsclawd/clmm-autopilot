@@ -5,6 +5,7 @@ const REQUIRED = [
   { cmd: 'solana --version', name: 'solana CLI', expected: '2.3.0' },
   { cmd: 'solana-test-validator --version', name: 'solana-test-validator', expected: '2.3.0' },
   { cmd: 'anchor --version', name: 'anchor CLI', expected: '0.32.1' },
+  { cmd: 'solana-verify --version', name: 'solana-verify', expected: '0.4.12' },
 ];
 
 let ok = true;

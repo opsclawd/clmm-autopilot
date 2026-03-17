@@ -1,4 +1,4 @@
-# Spec Traceability (M0-M19)
+# Spec Traceability (M0-M20)
 
 | Milestone | Status | Evidence |
 | --- | --- | --- |
@@ -22,3 +22,4 @@
 | M17 e2e harness completion | met | Devnet harness now emits canonical `schemaVersion:1` artifacts for all outcomes, includes post-state economic assertions (liquidity/balances/fees/swap-or-valid-skip), and exposes first-class scenario/suite certification runners. |
 | M18 production readiness guardrails | met | Core config now carries explicit operator runtime mode + paused default with cluster-safe defaults; Solana runtime adds RPC/runtime validation, a single execution gate, structured event envelopes, and in-memory counters; web/mobile shells surface effective operator state and session pause override; runbook/checklist updates document mode, pause precedence, and observability expectations. |
 | M19 mainnet shadow mode | met | Core config adds `executionMode` + mainnet alias normalization and send-enable matrix; Solana runtime uses structural transport enforcement (`ShadowSubmitter`) and shadow-only send prohibition; new mainnet shadow runner writes deterministic SQLite artifacts (`shadow_evaluations`, `shadow_triggers`, `shadow_metrics_rollups`) with cold-start markers, position-source mode, simulation classification, and zero-send counters; runbook/checklist updated with M19 promotion gates. |
+| M20 mainnet receipt release engineering | met | Mainnet receipt release now uses fixed-ID validation, `anchor build --verifiable` from `programs/receipt/`, `solana program deploy --program-id`, mandatory authority transfer to multisig, retained mainnet manifest/IDL/provenance artifacts, `solana-verify` hash evidence, and dedicated deploy/check scripts plus runbook coverage. |
