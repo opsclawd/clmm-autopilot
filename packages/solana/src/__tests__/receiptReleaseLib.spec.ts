@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import {
+  assertExactToolVersion,
+  buildSetUpgradeAuthorityArgs,
 // @ts-expect-error Test-only import from an untyped root script module.
-import { buildSetUpgradeAuthorityArgs } from '../../../../scripts/receipt-release-lib.mjs';
+} from '../../../../scripts/receipt-release-lib.mjs';
 
 describe('receipt release lib', () => {
   it('opts out of new-authority signer enforcement for multisig/pubkey transfers', () => {
@@ -26,5 +29,16 @@ describe('receipt release lib', () => {
       '--output',
       'json-compact',
     ]);
+  });
+
+  it('accepts the pinned semver token exactly', () => {
+    expect(assertExactToolVersion('anchor CLI', 'anchor-cli 0.32.1', '0.32.1')).toBe('0.32.1');
+    expect(assertExactToolVersion('solana CLI', 'solana-cli 2.3.0 (src:abcd1234; feat:42)', '2.3.0')).toBe('2.3.0');
+  });
+
+  it('rejects drifted tool versions that only share a prefix', () => {
+    expect(() => assertExactToolVersion('anchor CLI', 'anchor-cli 0.32.10', '0.32.1')).toThrow(
+      /anchor CLI version mismatch/,
+    );
   });
 });

@@ -120,25 +120,33 @@ export function readToolVersion(cmd, args = ['--version']) {
   return run(cmd, args).split(/\r?\n/)[0].trim();
 }
 
+export function extractVersionToken(toolName, versionOutput) {
+  const match = versionOutput.match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\b/);
+  if (!match?.[1]) {
+    throw new Error(`Unable to parse ${toolName} version from: ${versionOutput}`);
+  }
+  return match[1];
+}
+
+export function assertExactToolVersion(toolName, versionOutput, expectedVersion) {
+  const actualVersion = extractVersionToken(toolName, versionOutput);
+  if (actualVersion !== expectedVersion) {
+    throw new Error(`${toolName} version mismatch: ${versionOutput} (expected ${expectedVersion})`);
+  }
+  return actualVersion;
+}
+
 export function assertPinnedToolchain({ requireSolanaVerify = false } = {}) {
   const anchorVersion = readToolVersion('anchor', ['--version']);
-  if (!anchorVersion.includes(TOOLCHAIN.anchorVersion)) {
-    throw new Error(`anchor CLI version mismatch: ${anchorVersion} (expected contains ${TOOLCHAIN.anchorVersion})`);
-  }
+  assertExactToolVersion('anchor CLI', anchorVersion, TOOLCHAIN.anchorVersion);
 
   const solanaVersion = readToolVersion('solana', ['--version']);
-  if (!solanaVersion.includes(TOOLCHAIN.solanaVersion)) {
-    throw new Error(`solana CLI version mismatch: ${solanaVersion} (expected contains ${TOOLCHAIN.solanaVersion})`);
-  }
+  assertExactToolVersion('solana CLI', solanaVersion, TOOLCHAIN.solanaVersion);
 
   if (!requireSolanaVerify) return TOOLCHAIN;
 
   const solanaVerifyVersion = readToolVersion('solana-verify', ['--version']);
-  if (!solanaVerifyVersion.includes(TOOLCHAIN.solanaVerifyVersion)) {
-    throw new Error(
-      `solana-verify version mismatch: ${solanaVerifyVersion} (expected contains ${TOOLCHAIN.solanaVerifyVersion})`,
-    );
-  }
+  assertExactToolVersion('solana-verify', solanaVerifyVersion, TOOLCHAIN.solanaVerifyVersion);
 
   return TOOLCHAIN;
 }
