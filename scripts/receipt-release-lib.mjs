@@ -18,6 +18,7 @@ export const REPO_ROOT = resolve(__dirname, '..');
 export const PROGRAM_DIR = resolve(REPO_ROOT, 'programs/receipt');
 export const TARGET_IDL_PATH = resolve(REPO_ROOT, 'target/idl/receipt.json');
 export const TARGET_BINARY_PATH = resolve(REPO_ROOT, 'target/deploy/receipt.so');
+export const VERIFIABLE_BINARY_PATH = resolve(REPO_ROOT, 'target/verifiable/receipt.so');
 export const ANCHOR_TOML_PATH = resolve(REPO_ROOT, 'Anchor.toml');
 export const LIB_RS_PATH = resolve(REPO_ROOT, 'programs/receipt/src/lib.rs');
 export const DEPLOYMENT_DIRS = {
@@ -238,11 +239,22 @@ export function getGitCommit() {
   return run('git', ['rev-parse', 'HEAD']);
 }
 
-export function getProgramArtifactSize() {
-  if (!existsSync(TARGET_BINARY_PATH)) {
-    throw new Error(`Program binary missing: ${TARGET_BINARY_PATH}`);
+export function getExpectedBuiltBinaryPaths({ verifiable = false } = {}) {
+  return verifiable ? [VERIFIABLE_BINARY_PATH] : [TARGET_BINARY_PATH];
+}
+
+export function resolveBuiltBinaryPath({ verifiable = false } = {}) {
+  for (const candidate of getExpectedBuiltBinaryPaths({ verifiable })) {
+    if (existsSync(candidate)) return candidate;
   }
-  return statSync(TARGET_BINARY_PATH).size;
+
+  const expected = getExpectedBuiltBinaryPaths({ verifiable });
+  throw new Error(`Program binary missing; checked: ${expected.join(', ')}`);
+}
+
+export function getBuiltProgramArtifactSize(opts = {}) {
+  const binaryPath = resolveBuiltBinaryPath(opts);
+  return statSync(binaryPath).size;
 }
 
 export function parseIntegerFromOutput(output, label) {

@@ -4,7 +4,6 @@ import {
   DEPLOYMENT_DIRS,
   IDL_HASH_MODE,
   REPO_ROOT,
-  TARGET_BINARY_PATH,
   TARGET_IDL_PATH,
   TOOLCHAIN,
   assertBuiltIdentity,
@@ -15,12 +14,13 @@ import {
   copyFileAtomic,
   estimateRentLamports,
   extractProgramShowSlot,
+  getBuiltProgramArtifactSize,
   getGitCommit,
-  getProgramArtifactSize,
   getWalletPubkey,
   parseArgs,
   readBalanceLamports,
   readProgramShow,
+  resolveBuiltBinaryPath,
   runProgramDeploy,
   runSetUpgradeAuthority,
   runSolanaVerifyHashes,
@@ -77,9 +77,10 @@ function main() {
   buildReceipt({ verifiable: true });
 
   const programId = assertBuiltIdentity('mainnet', programKeypairPath);
-  const binarySha256 = computeFileSha256(TARGET_BINARY_PATH);
+  const builtBinaryPath = resolveBuiltBinaryPath({ verifiable: true });
+  const binarySha256 = computeFileSha256(builtBinaryPath);
   const idlHash = computeIdlHash(TARGET_IDL_PATH);
-  const binarySizeBytes = getProgramArtifactSize();
+  const binarySizeBytes = getBuiltProgramArtifactSize({ verifiable: true });
   const estimatedRentLamports = estimateRentLamports(binarySizeBytes, rpcUrl);
   const deployerBalanceLamports = readBalanceLamports(walletPath, rpcUrl);
 
@@ -135,7 +136,7 @@ function main() {
           },
           commands: {
             build: ['anchor', 'build', '--verifiable'],
-            deploy: ['solana', 'program', 'deploy', TARGET_BINARY_PATH, '--program-id', programKeypairPath, '--url', rpcUrl, '--keypair', walletPath],
+            deploy: ['solana', 'program', 'deploy', builtBinaryPath, '--program-id', programKeypairPath, '--url', rpcUrl, '--keypair', walletPath],
             transferAuthority: [
               'solana',
               'program',
@@ -162,7 +163,7 @@ function main() {
 
   console.log(`[m20] deploying fixed program id: ${programId}`);
   const deploy = runProgramDeploy({
-    binaryPath: TARGET_BINARY_PATH,
+    binaryPath: builtBinaryPath,
     programKeypairPath,
     rpcUrl,
     walletPath,
@@ -183,7 +184,7 @@ function main() {
   });
 
   copyFileAtomic(TARGET_IDL_PATH, idlOutputPath);
-  copyFileAtomic(TARGET_BINARY_PATH, binaryOutputPath);
+  copyFileAtomic(builtBinaryPath, binaryOutputPath);
 
   const verifiedBuild = runSolanaVerifyHashes({
     binaryPath: binaryOutputPath,
@@ -206,7 +207,7 @@ function main() {
     idlHash,
     programBinarySha256: binarySha256,
     buildCommand: ['anchor', 'build', '--verifiable'],
-    deployCommand: ['solana', 'program', 'deploy', TARGET_BINARY_PATH, '--program-id', programKeypairPath, '--url', rpcUrl, '--keypair', walletPath],
+    deployCommand: ['solana', 'program', 'deploy', builtBinaryPath, '--program-id', programKeypairPath, '--url', rpcUrl, '--keypair', walletPath],
     authorityTransferCommand: [
       'solana',
       'program',

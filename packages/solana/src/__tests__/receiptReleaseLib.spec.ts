@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   assertExactToolVersion,
   buildSetUpgradeAuthorityArgs,
+  getExpectedBuiltBinaryPaths,
+  TARGET_BINARY_PATH,
+  VERIFIABLE_BINARY_PATH,
 // @ts-expect-error Test-only import from an untyped root script module.
 } from '../../../../scripts/receipt-release-lib.mjs';
 
@@ -40,5 +43,10 @@ describe('receipt release lib', () => {
     expect(() => assertExactToolVersion('anchor CLI', 'anchor-cli 0.32.10', '0.32.1')).toThrow(
       /anchor CLI version mismatch/,
     );
+  });
+
+  it('requires the canonical verifiable artifact path for verifiable builds', () => {
+    expect(getExpectedBuiltBinaryPaths({ verifiable: true })).toEqual([VERIFIABLE_BINARY_PATH]);
+    expect(getExpectedBuiltBinaryPaths()).toEqual([TARGET_BINARY_PATH]);
   });
 });
