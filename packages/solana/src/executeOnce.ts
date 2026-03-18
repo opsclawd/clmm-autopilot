@@ -15,6 +15,12 @@ import {
 } from '@clmm-autopilot/core';
 import { Connection, PublicKey, VersionedTransaction, type AddressLookupTableAccount, type TransactionInstruction } from '@solana/web3.js';
 import { buildExitTransaction, type ExitDirection } from './executionBuilder';
+import {
+  createSqliteLocalReceiptLedger,
+  type LocalReceiptClaimParams,
+  type LocalReceiptKey,
+  type LocalReceiptLedger,
+} from './localReceiptLedger';
 import { computeExecutionRequirements } from './requirements';
 import { normalizeSolanaError } from './errors';
 import { loadPositionSnapshot } from './orcaInspector';
@@ -150,6 +156,8 @@ export type ExecuteOnceParams = RefreshParams & {
   transport?: ExecutionTransport;
   sleep?: (ms: number) => Promise<void>;
   nowUnixMs?: () => number;
+  receiptLedger?: LocalReceiptLedger;
+  // Deprecated test seam retained to ease migration onto receiptLedger.
   checkExistingReceipt?: (receiptPda: PublicKey) => Promise<boolean>;
   onSimulationComplete?: (summary: string) => Promise<void> | void;
   observer?: RuntimeObserver;
@@ -189,6 +197,17 @@ export type ExecuteOnceResult = {
     executionIntent: {
       removeLiquidityPlanned: boolean;
       collectFeesPlanned: boolean;
+      localReceiptDbPath?: string;
+      localReceiptReadPlanned: boolean;
+      localReceiptClaimed: boolean;
+      localReceiptConfirmed: boolean;
+      localReceiptStatus: 'not_configured' | 'clear' | 'pending' | 'confirmed' | 'failed';
+      onChainReceiptEnabled: boolean;
+      onChainReceiptWritePlanned: boolean;
+      onChainReceiptConfigValid: boolean;
+      onChainReceiptStepStructurallyBuildable: boolean;
+      onChainReceiptIxIncluded: boolean;
+      onChainReceiptVerified: boolean;
       receiptWritePlanned: boolean;
       receiptConfigValid: boolean;
       receiptStepStructurallyBuildable: boolean;
@@ -224,12 +243,16 @@ export type ExecuteOnceResult = {
       removeLiquidityPlanned: boolean;
       collectFeesPlanned: boolean;
       swapInstructionCount: number;
+      onChainReceiptEnabled: boolean;
       receiptIxIncluded: boolean;
     };
     tokenProgramSummary: {
       mintAProgram: string;
       mintBProgram: string;
     };
+    localReceiptStatus: 'not_configured' | 'clear' | 'pending' | 'confirmed' | 'failed';
+    onChainReceiptEnabled: boolean;
+    onChainReceiptVerified: boolean;
     receiptPdaExpected?: string;
     receiptConfigValid: boolean;
     receiptStepStructurallyBuildable: boolean;
@@ -387,9 +410,50 @@ function buildMetadata(params: {
   };
 }
 
+function buildExecutionIntent(params: {
+  config: AutopilotConfig;
+  removeLiquidityPlanned: boolean;
+  collectFeesPlanned: boolean;
+  localReceiptReadPlanned: boolean;
+  localReceiptClaimed: boolean;
+  localReceiptConfirmed: boolean;
+  localReceiptStatus: NonNullable<ExecuteOnceResult['metadata']>['executionIntent']['localReceiptStatus'];
+  onChainReceiptEnabled: boolean;
+  onChainReceiptWritePlanned: boolean;
+  onChainReceiptConfigValid: boolean;
+  onChainReceiptStepStructurallyBuildable: boolean;
+  onChainReceiptIxIncluded: boolean;
+  onChainReceiptVerified: boolean;
+}): NonNullable<ExecuteOnceResult['metadata']>['executionIntent'] {
+  return {
+    removeLiquidityPlanned: params.removeLiquidityPlanned,
+    collectFeesPlanned: params.collectFeesPlanned,
+    localReceiptDbPath: params.config.execution.localReceiptDbPath,
+    localReceiptReadPlanned: params.localReceiptReadPlanned,
+    localReceiptClaimed: params.localReceiptClaimed,
+    localReceiptConfirmed: params.localReceiptConfirmed,
+    localReceiptStatus: params.localReceiptStatus,
+    onChainReceiptEnabled: params.onChainReceiptEnabled,
+    onChainReceiptWritePlanned: params.onChainReceiptWritePlanned,
+    onChainReceiptConfigValid: params.onChainReceiptConfigValid,
+    onChainReceiptStepStructurallyBuildable: params.onChainReceiptStepStructurallyBuildable,
+    onChainReceiptIxIncluded: params.onChainReceiptIxIncluded,
+    onChainReceiptVerified: params.onChainReceiptVerified,
+    receiptWritePlanned: params.onChainReceiptWritePlanned,
+    receiptConfigValid: params.onChainReceiptConfigValid,
+    receiptStepStructurallyBuildable: params.onChainReceiptStepStructurallyBuildable,
+    receiptIxIncluded: params.onChainReceiptIxIncluded,
+  };
+}
+
 export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnceResult> {
   const sleep = params.sleep ?? (async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
+  const ownedReceiptLedger =
+    !params.receiptLedger && params.config.execution.localReceiptDbPath
+      ? createSqliteLocalReceiptLedger(params.config.execution.localReceiptDbPath)
+      : null;
+  const receiptLedger = params.receiptLedger ?? ownedReceiptLedger;
   const effectiveRuntimeMode = deriveRuntimeModeFromExecutionMode(
     params.config.executionMode,
     params.config.operator.runtimeMode,
@@ -418,6 +482,15 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   let sendStarted = false;
   let txBuilt = false;
   let shadowDetails: ExecuteOnceResult['shadow'] | undefined;
+  let localReceiptKey: LocalReceiptKey | undefined;
+  let localReceiptClaimToken: string | undefined;
+  let localReceiptReadPlanned = Boolean(receiptLedger);
+  let localReceiptClaimed = false;
+  let localReceiptConfirmed = false;
+  let localReceiptStatus: NonNullable<ExecuteOnceResult['metadata']>['executionIntent']['localReceiptStatus'] =
+    receiptLedger ? 'clear' : 'not_configured';
+  let onChainReceiptVerified = false;
+  let sig = '';
   let operatorState = {
     ...deriveEffectiveOperatorState(params.config, runtimeEnvironment.executionPausedOverride),
     runtimeMode: effectiveRuntimeMode,
@@ -451,8 +524,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     });
     operatorState = gate.operatorState;
     const receiptIdentity = gate.receiptIdentity;
-    const receiptConfigValid = Boolean(receiptIdentity);
-    const receiptStepStructurallyBuildable = Boolean(receiptIdentity);
+    const onChainReceiptEnabled = params.config.execution.onChainReceiptEnabled;
+    const receiptConfigValid = onChainReceiptEnabled ? Boolean(receiptIdentity) : false;
+    const receiptStepStructurallyBuildable = onChainReceiptEnabled ? Boolean(receiptIdentity) : false;
     const receiptIxIncluded = operatorState.executionMode !== 'mainnet-shadow' && Boolean(receiptIdentity);
     if (receiptIdentity) {
       await verifyReceiptProgramOnChain(params.connection, receiptIdentity);
@@ -525,15 +599,22 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             blockhashRefreshed: false,
             retryAttempts,
           },
-          executionIntent: {
-            removeLiquidityPlanned: false,
-            collectFeesPlanned: false,
-            receiptWritePlanned: false,
-            receiptConfigValid,
-            receiptStepStructurallyBuildable,
-            receiptIxIncluded: false,
-          },
-        }),
+            executionIntent: buildExecutionIntent({
+              config: params.config,
+              removeLiquidityPlanned: false,
+              collectFeesPlanned: false,
+              localReceiptReadPlanned,
+              localReceiptClaimed,
+              localReceiptConfirmed,
+              localReceiptStatus,
+              onChainReceiptEnabled,
+              onChainReceiptWritePlanned: false,
+              onChainReceiptConfigValid: receiptConfigValid,
+              onChainReceiptStepStructurallyBuildable: receiptStepStructurallyBuildable,
+              onChainReceiptIxIncluded: false,
+              onChainReceiptVerified,
+            }),
+          }),
       };
     }
 
@@ -743,22 +824,104 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         removeLiquidityPlanned: true,
         collectFeesPlanned: true,
         swapInstructionCount: assembled.swapIxs.length,
+        onChainReceiptEnabled,
         receiptIxIncluded,
       },
       tokenProgramSummary: {
         mintAProgram: snapshot.tokenProgramA.toBase58(),
         mintBProgram: snapshot.tokenProgramB.toBase58(),
       },
+      localReceiptStatus,
+      onChainReceiptEnabled,
+      onChainReceiptVerified,
       receiptPdaExpected: receiptPda?.toBase58(),
       receiptConfigValid,
       receiptStepStructurallyBuildable,
       receiptIxIncluded,
     };
-    if (receiptPda) {
-      const existingReceipt = params.checkExistingReceipt
-        ? await params.checkExistingReceipt(receiptPda)
-        : Boolean(await withRetry('fetchReceiptByPda.precheck', () => fetchReceiptByPda(params.connection, receiptPda)));
-      if (existingReceipt) {
+    localReceiptKey = {
+      cluster: params.config.cluster,
+      authority: params.authority.toBase58(),
+      positionMint: snapshot.positionMint.toBase58(),
+      epoch,
+    };
+    if (receiptLedger && localReceiptKey) {
+      if (params.checkExistingReceipt && receiptPda) {
+        const existingReceipt = await params.checkExistingReceipt(receiptPda);
+        if (existingReceipt) {
+          localReceiptStatus = 'confirmed';
+          if (shadowDetails) shadowDetails.localReceiptStatus = localReceiptStatus;
+          emitRuntimeEvent(
+            params.observer,
+            counters,
+            baseEvent(params, correlationId, operatorState, {
+              event: 'execution.receipt_precheck_exists',
+              status: 'failed',
+              direction,
+              whirlpool: snapshot.whirlpool.toBase58(),
+              errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+              details: {
+                epoch,
+                localReceiptStatus,
+                source: 'legacy-checkExistingReceipt',
+                onChainReceiptPda: receiptPda.toBase58(),
+              },
+            }),
+          );
+          return {
+            status: 'ERROR',
+            refresh: effectiveRefresh,
+            errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+            errorMessage: 'Execution receipt already exists for canonical epoch',
+            shadow: shadowDetails,
+            metadata: buildMetadata({
+              config: params.config,
+              operatorState,
+              counters,
+              decision: {
+                decision: effectiveRefresh.decision.decision,
+                reasonCode: effectiveRefresh.decision.reasonCode,
+              },
+              swap: {
+                swapPlanned: assembled.plan.swapPlanned,
+                swapSkipped: !assembled.plan.swapPlanned,
+                swapSkipReason: assembled.plan.swapSkipReason,
+                swapRouter: assembled.plan.swapRouter,
+                swapInstructionCount: assembled.swapIxs.length,
+              },
+              reliability: {
+                quoteRebuilt,
+                ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
+                blockhashRefreshed,
+                retryAttempts,
+              },
+              executionIntent: buildExecutionIntent({
+                config: params.config,
+                removeLiquidityPlanned: true,
+                collectFeesPlanned: true,
+                localReceiptReadPlanned,
+                localReceiptClaimed,
+                localReceiptConfirmed,
+                localReceiptStatus,
+                onChainReceiptEnabled,
+                onChainReceiptWritePlanned: Boolean(receiptPda),
+                onChainReceiptConfigValid: receiptConfigValid,
+                onChainReceiptStepStructurallyBuildable: receiptStepStructurallyBuildable,
+                onChainReceiptIxIncluded: receiptIxIncluded,
+                onChainReceiptVerified,
+              }),
+            }),
+          };
+        }
+      }
+      const precheck = receiptLedger.inspect(
+        localReceiptKey,
+        nowUnixMs(),
+        params.config.execution.localReceiptClaimTtlMs,
+      );
+      if (precheck.kind === 'blocked') {
+        localReceiptStatus = precheck.status;
+        if (shadowDetails) shadowDetails.localReceiptStatus = localReceiptStatus;
         emitRuntimeEvent(
           params.observer,
           counters,
@@ -768,14 +931,22 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             direction,
             whirlpool: snapshot.whirlpool.toBase58(),
             errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
-            details: { receiptPda: receiptPda.toBase58(), epoch },
+            details: {
+              epoch,
+              localReceiptStatus: precheck.status,
+              localReceiptDbPath: receiptLedger.dbPath,
+              onChainReceiptPda: receiptPda?.toBase58(),
+            },
           }),
         );
         return {
           status: 'ERROR',
           refresh: effectiveRefresh,
           errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
-          errorMessage: 'Execution receipt already exists for canonical epoch',
+          errorMessage:
+            precheck.status === 'confirmed'
+              ? 'Local receipt ledger already contains a confirmed execution for this epoch'
+              : 'Local receipt ledger contains a fresh pending execution claim for this epoch',
           shadow: shadowDetails,
           metadata: buildMetadata({
             config: params.config,
@@ -798,17 +969,26 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
               blockhashRefreshed,
               retryAttempts,
             },
-            executionIntent: {
+            executionIntent: buildExecutionIntent({
+              config: params.config,
               removeLiquidityPlanned: true,
               collectFeesPlanned: true,
-              receiptWritePlanned: true,
-              receiptConfigValid,
-              receiptStepStructurallyBuildable,
-              receiptIxIncluded,
-            },
+              localReceiptReadPlanned,
+              localReceiptClaimed,
+              localReceiptConfirmed,
+              localReceiptStatus,
+              onChainReceiptEnabled,
+              onChainReceiptWritePlanned: Boolean(receiptPda),
+              onChainReceiptConfigValid: receiptConfigValid,
+              onChainReceiptStepStructurallyBuildable: receiptStepStructurallyBuildable,
+              onChainReceiptIxIncluded: receiptIxIncluded,
+              onChainReceiptVerified,
+            }),
           }),
         };
       }
+      localReceiptStatus = 'clear';
+      if (shadowDetails) shadowDetails.localReceiptStatus = localReceiptStatus;
       emitRuntimeEvent(
         params.observer,
         counters,
@@ -817,7 +997,11 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           status: 'ok',
           direction,
           whirlpool: snapshot.whirlpool.toBase58(),
-          details: { receiptPda: receiptPda.toBase58(), epoch },
+          details: {
+            epoch,
+            localReceiptDbPath: receiptLedger.dbPath,
+            onChainReceiptPda: receiptPda?.toBase58(),
+          },
         }),
       );
     }
@@ -984,14 +1168,21 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             blockhashRefreshed,
             retryAttempts,
           },
-          executionIntent: {
+          executionIntent: buildExecutionIntent({
+            config: params.config,
             removeLiquidityPlanned: true,
             collectFeesPlanned: true,
-            receiptWritePlanned: false,
-            receiptConfigValid,
-            receiptStepStructurallyBuildable,
-            receiptIxIncluded,
-          },
+            localReceiptReadPlanned,
+            localReceiptClaimed,
+            localReceiptConfirmed,
+            localReceiptStatus,
+            onChainReceiptEnabled,
+            onChainReceiptWritePlanned: false,
+            onChainReceiptConfigValid: receiptConfigValid,
+            onChainReceiptStepStructurallyBuildable: receiptStepStructurallyBuildable,
+            onChainReceiptIxIncluded: receiptIxIncluded,
+            onChainReceiptVerified,
+          }),
         }),
         execution: {
           unsignedTxBuilt: true,
@@ -1002,7 +1193,78 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       };
     }
 
-    let sig: string;
+    if (receiptLedger && localReceiptKey) {
+      localReceiptClaimToken = `${correlationId}:${nowUnixMs()}`;
+      const claim = receiptLedger.claim({
+        ...(localReceiptKey satisfies LocalReceiptKey),
+        executionMode: params.config.executionMode,
+        positionAddress: snapshot.position.toBase58(),
+        whirlpoolAddress: snapshot.whirlpool.toBase58(),
+        direction,
+        attestationHash,
+        attestationPayloadBytes,
+        claimToken: localReceiptClaimToken,
+        nowUnixMs: nowUnixMs(),
+        claimTtlMs: params.config.execution.localReceiptClaimTtlMs,
+        onChainReceiptEnabled,
+        onChainReceiptPda: receiptPda?.toBase58(),
+      } satisfies LocalReceiptClaimParams);
+      if (claim.kind === 'blocked') {
+        localReceiptStatus = claim.status;
+        if (shadowDetails) shadowDetails.localReceiptStatus = localReceiptStatus;
+        return {
+          status: 'ERROR',
+          refresh: effectiveRefresh,
+          errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+          errorMessage:
+            claim.status === 'confirmed'
+              ? 'Local receipt ledger already contains a confirmed execution for this epoch'
+              : 'Local receipt ledger contains a fresh pending execution claim for this epoch',
+          shadow: shadowDetails,
+          metadata: buildMetadata({
+            config: params.config,
+            operatorState,
+            counters,
+            decision: {
+              decision: effectiveRefresh.decision.decision,
+              reasonCode: effectiveRefresh.decision.reasonCode,
+            },
+            swap: {
+              swapPlanned: assembled.plan.swapPlanned,
+              swapSkipped: !assembled.plan.swapPlanned,
+              swapSkipReason: assembled.plan.swapSkipReason,
+              swapRouter: assembled.plan.swapRouter,
+              swapInstructionCount: assembled.swapIxs.length,
+            },
+            reliability: {
+              quoteRebuilt,
+              ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
+              blockhashRefreshed,
+              retryAttempts,
+            },
+            executionIntent: buildExecutionIntent({
+              config: params.config,
+              removeLiquidityPlanned: true,
+              collectFeesPlanned: true,
+              localReceiptReadPlanned,
+              localReceiptClaimed,
+              localReceiptConfirmed,
+              localReceiptStatus,
+              onChainReceiptEnabled,
+              onChainReceiptWritePlanned: Boolean(receiptPda),
+              onChainReceiptConfigValid: receiptConfigValid,
+              onChainReceiptStepStructurallyBuildable: receiptStepStructurallyBuildable,
+              onChainReceiptIxIncluded: receiptIxIncluded,
+              onChainReceiptVerified,
+            }),
+          }),
+        };
+      }
+      localReceiptClaimed = true;
+      localReceiptStatus = 'pending';
+      if (shadowDetails) shadowDetails.localReceiptStatus = localReceiptStatus;
+    }
+
     const submitTx = async (): Promise<string> => {
       counters.increment('submitInvocations');
       if (transport.kind === 'live') {
@@ -1088,6 +1350,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         await sleep(params.config.execution.receiptPollIntervalMs);
       }
     }
+    onChainReceiptVerified = Boolean(receipt);
 
     emitRuntimeEvent(
       params.observer,
@@ -1112,6 +1375,23 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           details: { receiptPda: receiptPda?.toBase58() },
         }),
       );
+    }
+    if (receiptLedger && localReceiptKey && localReceiptClaimToken) {
+      receiptLedger.confirm({
+        ...localReceiptKey,
+        claimToken: localReceiptClaimToken,
+        nowUnixMs: nowUnixMs(),
+        txSignature: sig,
+        confirmedSlot: receipt ? Number(receipt.slot) : undefined,
+        onChainReceiptPda: receiptPda?.toBase58(),
+        onChainReceiptVerified,
+      });
+      localReceiptConfirmed = true;
+      localReceiptStatus = 'confirmed';
+      if (shadowDetails) {
+        shadowDetails.localReceiptStatus = localReceiptStatus;
+        shadowDetails.onChainReceiptVerified = onChainReceiptVerified;
+      }
     }
 
     return {
@@ -1139,14 +1419,21 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           blockhashRefreshed,
           retryAttempts,
         },
-        executionIntent: {
+        executionIntent: buildExecutionIntent({
+          config: params.config,
           removeLiquidityPlanned: true,
           collectFeesPlanned: true,
-          receiptWritePlanned: Boolean(receiptPda),
-          receiptConfigValid,
-          receiptStepStructurallyBuildable,
-          receiptIxIncluded,
-        },
+          localReceiptReadPlanned,
+          localReceiptClaimed,
+          localReceiptConfirmed,
+          localReceiptStatus,
+          onChainReceiptEnabled,
+          onChainReceiptWritePlanned: Boolean(receiptPda),
+          onChainReceiptConfigValid: receiptConfigValid,
+          onChainReceiptStepStructurallyBuildable: receiptStepStructurallyBuildable,
+          onChainReceiptIxIncluded: receiptIxIncluded,
+          onChainReceiptVerified,
+        }),
       }),
       execution: {
         unsignedTxBuilt: true,
@@ -1172,6 +1459,24 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       (normalized.debug as Record<string, unknown>).txBuilt === true;
     if (shadowDetails) {
       shadowDetails.txBuildStatus = txBuilt || txBuiltFromError ? 'BUILD_OK' : 'BUILD_FAILED';
+    }
+    if (receiptLedger && localReceiptKey && localReceiptClaimToken && localReceiptClaimed && !localReceiptConfirmed) {
+      try {
+        receiptLedger.fail({
+          ...localReceiptKey,
+          claimToken: localReceiptClaimToken,
+          nowUnixMs: nowUnixMs(),
+          errorCode: normalized.code,
+          errorMessage: normalized.message,
+          errorDebug: normalized.debug,
+          ...(sig ? { txSignature: sig } : {}),
+          onChainReceiptPda: shadowDetails?.receiptPdaExpected,
+        });
+        localReceiptStatus = 'failed';
+        if (shadowDetails) shadowDetails.localReceiptStatus = localReceiptStatus;
+      } catch {
+        // Prefer the original execution error if the ledger row was already taken over.
+      }
     }
     const event =
       normalized.code === 'EXECUTION_PAUSED'
@@ -1220,15 +1525,24 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           blockhashRefreshed,
           retryAttempts,
         },
-        executionIntent: {
+        executionIntent: buildExecutionIntent({
+          config: params.config,
           removeLiquidityPlanned: shadowDetails?.candidateInstructionSummary.removeLiquidityPlanned ?? false,
           collectFeesPlanned: shadowDetails?.candidateInstructionSummary.collectFeesPlanned ?? false,
-          receiptWritePlanned: false,
-          receiptConfigValid: shadowDetails?.receiptConfigValid ?? false,
-          receiptStepStructurallyBuildable: shadowDetails?.receiptStepStructurallyBuildable ?? false,
-          receiptIxIncluded: shadowDetails?.receiptIxIncluded ?? false,
-        },
+          localReceiptReadPlanned,
+          localReceiptClaimed,
+          localReceiptConfirmed,
+          localReceiptStatus,
+          onChainReceiptEnabled: params.config.execution.onChainReceiptEnabled,
+          onChainReceiptWritePlanned: false,
+          onChainReceiptConfigValid: shadowDetails?.receiptConfigValid ?? false,
+          onChainReceiptStepStructurallyBuildable: shadowDetails?.receiptStepStructurallyBuildable ?? false,
+          onChainReceiptIxIncluded: shadowDetails?.receiptIxIncluded ?? false,
+          onChainReceiptVerified,
+        }),
       }),
     };
+  } finally {
+    ownedReceiptLedger?.close();
   }
 }

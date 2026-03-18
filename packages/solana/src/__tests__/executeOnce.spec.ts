@@ -92,6 +92,10 @@ import { createRuntimeCounterRegistry } from '../telemetry';
 
 const EXECUTE_CONFIG = {
   ...DEFAULT_CONFIG,
+  execution: {
+    ...DEFAULT_CONFIG.execution,
+    localReceiptDbPath: ':memory:',
+  },
   operator: {
     ...DEFAULT_CONFIG.operator,
     runtimeMode: 'execute' as const,
@@ -334,7 +338,7 @@ describe('executeOnce', () => {
     expect(triggerEvent?.status).toBe('hypothetical');
   });
 
-  it('mainnet-shadow omits receipt ix while still computing expected receipt PDA', async () => {
+  it('mainnet-shadow omits receipt ix when on-chain receipts are disabled', async () => {
     const authority = new PublicKey(new Uint8Array(32).fill(20));
     const connection = {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
@@ -371,6 +375,7 @@ describe('executeOnce', () => {
         executionMode: 'mainnet-shadow',
         execution: {
           ...DEFAULT_CONFIG.execution,
+          onChainReceiptEnabled: false,
           swapRouter: 'noop',
           sendEnabled: false,
           allowMainnetNoopForDiagnostics: true,
@@ -403,7 +408,7 @@ describe('executeOnce', () => {
 
     expect(result.status).toBe('SIMULATED');
     expect(result.shadow?.receiptIxIncluded).toBe(false);
-    expect(result.shadow?.receiptPdaExpected).toBeDefined();
+    expect(result.shadow?.receiptPdaExpected).toBeUndefined();
     expect(result.metadata?.executionIntent.receiptIxIncluded).toBe(false);
     expect(buildExitTransactionMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -457,6 +462,7 @@ describe('executeOnce', () => {
         executionMode: 'mainnet-shadow',
         execution: {
           ...DEFAULT_CONFIG.execution,
+          onChainReceiptEnabled: false,
           swapRouter: 'noop',
           sendEnabled: false,
           allowMainnetNoopForDiagnostics: true,
@@ -538,6 +544,7 @@ describe('executeOnce', () => {
         executionMode: 'mainnet-shadow',
         execution: {
           ...DEFAULT_CONFIG.execution,
+          onChainReceiptEnabled: false,
           swapRouter: 'noop',
           sendEnabled: false,
           allowMainnetNoopForDiagnostics: true,

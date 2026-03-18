@@ -25,6 +25,9 @@ export type AutopilotConfig = {
     cooldownMs: number;
   };
   execution: {
+    localReceiptDbPath?: string;
+    onChainReceiptEnabled: boolean;
+    localReceiptClaimTtlMs: number;
     slippageBpsCap: number;
     feeBufferLamports: number;
     txFeeLamports: number;
@@ -79,6 +82,10 @@ function defaultExecutionModeForCluster(cluster: Cluster): ExecutionMode {
   return cluster === 'mainnet' ? 'mainnet-shadow' : 'devnet-live';
 }
 
+function defaultOnChainReceiptEnabledForClusterExecution(cluster: Cluster, executionMode: ExecutionMode): boolean {
+  return cluster === 'devnet' && executionMode === 'devnet-live';
+}
+
 export function deriveExecutionModeFromLegacy(cluster: Cluster, runtimeMode: RuntimeMode): ExecutionMode {
   if (cluster === 'mainnet') {
     return runtimeMode === 'execute' ? 'mainnet-live' : 'mainnet-shadow';
@@ -130,6 +137,9 @@ export function getDefaultConfig(clusterInput: ClusterInput = 'devnet'): Autopil
       cooldownMs: 90_000,
     },
     execution: {
+      localReceiptDbPath: undefined,
+      onChainReceiptEnabled: defaultOnChainReceiptEnabledForClusterExecution(cluster, executionMode),
+      localReceiptClaimTtlMs: 300_000,
       slippageBpsCap: 50,
       txFeeLamports: 20_000,
       feeBufferLamports: cluster === 'mainnet' ? 15_000_000 : 10_000_000,
@@ -456,6 +466,27 @@ function normalizeAutopilotConfig(input: unknown): ValidateConfigResult {
       cooldownMs: readIntField(errors, policyIn, 'cooldownMs', 'policy.cooldownMs', defaults.policy.cooldownMs),
     },
     execution: {
+      localReceiptDbPath: readOptionalStringField(
+        errors,
+        executionIn,
+        'localReceiptDbPath',
+        'execution.localReceiptDbPath',
+        defaults.execution.localReceiptDbPath,
+      ),
+      onChainReceiptEnabled: readBooleanField(
+        errors,
+        executionIn,
+        'onChainReceiptEnabled',
+        'execution.onChainReceiptEnabled',
+        defaultOnChainReceiptEnabledForClusterExecution(cluster, executionMode),
+      ),
+      localReceiptClaimTtlMs: readIntField(
+        errors,
+        executionIn,
+        'localReceiptClaimTtlMs',
+        'execution.localReceiptClaimTtlMs',
+        defaults.execution.localReceiptClaimTtlMs,
+      ),
       slippageBpsCap: readIntField(errors, executionIn, 'slippageBpsCap', 'execution.slippageBpsCap', defaults.execution.slippageBpsCap),
       feeBufferLamports: readIntField(errors, executionIn, 'feeBufferLamports', 'execution.feeBufferLamports', defaults.execution.feeBufferLamports),
       txFeeLamports: readIntField(errors, executionIn, 'txFeeLamports', 'execution.txFeeLamports', defaults.execution.txFeeLamports),
@@ -594,6 +625,17 @@ export function validateConfig(input: unknown): ValidateConfigResult {
   else if (p.cooldownMs < 0) pushRange(errors, 'policy.cooldownMs', '>= 0', p.cooldownMs);
 
   const e = normalized.value.execution;
+  if (e.localReceiptDbPath !== undefined && e.localReceiptDbPath.trim() === '') {
+    pushRange(errors, 'execution.localReceiptDbPath', 'non-empty string | undefined', e.localReceiptDbPath);
+  }
+  if (typeof e.onChainReceiptEnabled !== 'boolean') {
+    pushType(errors, 'execution.onChainReceiptEnabled', 'boolean', e.onChainReceiptEnabled);
+  }
+  if (!Number.isInteger(e.localReceiptClaimTtlMs)) {
+    pushType(errors, 'execution.localReceiptClaimTtlMs', 'integer', e.localReceiptClaimTtlMs);
+  } else if (e.localReceiptClaimTtlMs <= 0) {
+    pushRange(errors, 'execution.localReceiptClaimTtlMs', '> 0', e.localReceiptClaimTtlMs);
+  }
   if (!Number.isInteger(e.slippageBpsCap)) pushType(errors, 'execution.slippageBpsCap', 'integer', e.slippageBpsCap);
   else if (e.slippageBpsCap < 0 || e.slippageBpsCap > 50) pushRange(errors, 'execution.slippageBpsCap', '0..50 (bps)', e.slippageBpsCap);
 
@@ -704,6 +746,14 @@ export function validateConfig(input: unknown): ValidateConfigResult {
         e.swapRouter,
       );
     }
+    if (e.onChainReceiptEnabled) {
+      pushRange(
+        errors,
+        'execution.onChainReceiptEnabled',
+        'mainnet-shadow requires onChainReceiptEnabled=false',
+        e.onChainReceiptEnabled,
+      );
+    }
   }
 
   if (normalized.value.executionMode === 'mainnet-live') {
@@ -728,17 +778,28 @@ export function validateConfig(input: unknown): ValidateConfigResult {
     normalized.value.receiptIdlHash !== undefined &&
     normalized.value.receiptIdlPath !== undefined;
 
-  if (normalized.value.executionMode === 'mainnet-live' && !receiptIdentityComplete) {
+  if (normalized.value.execution.onChainReceiptEnabled && !receiptIdentityComplete) {
     pushRange(
       errors,
       'receiptProgramId',
-      'receipt identity must be fully configured when mainnet-live is enabled',
+      'receipt identity must be fully configured when onChainReceiptEnabled=true',
       {
         receiptProgramId: normalized.value.receiptProgramId,
         receiptIdlHashMode: normalized.value.receiptIdlHashMode,
         receiptIdlHash: normalized.value.receiptIdlHash,
         receiptIdlPath: normalized.value.receiptIdlPath,
       },
+    );
+  }
+
+  const requiresLocalReceiptDb =
+    normalized.value.executionMode === 'mainnet-live' || normalized.value.operator.runtimeMode === 'execute';
+  if (requiresLocalReceiptDb && !e.localReceiptDbPath) {
+    pushRange(
+      errors,
+      'execution.localReceiptDbPath',
+      'live execution requires an explicit local receipt db path',
+      e.localReceiptDbPath,
     );
   }
 

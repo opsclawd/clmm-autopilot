@@ -28,6 +28,7 @@ async function makeEnv(secret?: string): Promise<{ env: Record<string, string>; 
       RPC_URL: 'http://127.0.0.1:8899',
       AUTHORITY_KEYPAIR: keyPath,
       POSITION_ADDRESS: new PublicKey(new Uint8Array(32).fill(7)).toBase58(),
+      LOCAL_RECEIPT_DB_PATH: join(dir, 'local-receipts.db'),
       E2E_ARTIFACT_DIR: join(dir, 'artifacts'),
     },
     cleanup: () => rm(dir, { recursive: true, force: true }),

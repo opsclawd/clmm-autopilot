@@ -82,6 +82,8 @@ export function validateRuntimeStartup(params: StartupValidationInput): Effectiv
 
 export function enforceExecutionGate(params: ExecutionGateInput): ExecutionGateResult {
   const operatorState = validateRuntimeStartup(params);
+  const requiresLocalReceiptDb =
+    operatorState.executionMode === 'mainnet-live' || operatorState.runtimeMode === 'execute';
 
   if (operatorState.executionPaused) {
     fail('EXECUTION_PAUSED', 'Execution is paused by operator control', {
@@ -92,6 +94,10 @@ export function enforceExecutionGate(params: ExecutionGateInput): ExecutionGateR
 
   getSwapAdapter(params.config.execution.swapRouter, params.config.cluster);
 
+  if (requiresLocalReceiptDb && !params.config.execution.localReceiptDbPath) {
+    fail('CONFIG_INVALID', 'Execute mode requires execution.localReceiptDbPath');
+  }
+
   if (operatorState.executionMode === 'mainnet-shadow') {
     if (params.config.execution.sendEnabled) {
       fail('EXECUTION_MODE_SEND_FORBIDDEN', 'mainnet-shadow requires sendEnabled=false', {
@@ -99,14 +105,13 @@ export function enforceExecutionGate(params: ExecutionGateInput): ExecutionGateR
         sendEnabled: params.config.execution.sendEnabled,
       });
     }
-    const receiptIdentity = resolveReceiptRuntimeIdentity(params.config, params.runtimeEnvironment?.receiptIdentityEnv);
-    if (!receiptIdentity) {
-      fail(
-        'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW',
-        'Shadow mode receipt identity could not be resolved from config',
-      );
+    if (params.config.execution.onChainReceiptEnabled) {
+      fail('CONFIG_INVALID', 'mainnet-shadow requires execution.onChainReceiptEnabled=false', {
+        executionMode: operatorState.executionMode,
+        onChainReceiptEnabled: params.config.execution.onChainReceiptEnabled,
+      });
     }
-    return { operatorState, receiptIdentity };
+    return { operatorState, receiptIdentity: null };
   }
 
   if (operatorState.runtimeMode === 'dry-run') {
@@ -117,7 +122,14 @@ export function enforceExecutionGate(params: ExecutionGateInput): ExecutionGateR
   }
 
   if (operatorState.runtimeMode === 'simulate-only') {
-    return { operatorState, receiptIdentity: null };
+    if (!params.config.execution.onChainReceiptEnabled) {
+      return { operatorState, receiptIdentity: null };
+    }
+    const receiptIdentity = resolveReceiptRuntimeIdentity(params.config, params.runtimeEnvironment?.receiptIdentityEnv);
+    if (!receiptIdentity) {
+      fail('RECEIPT_PROGRAM_NOT_CONFIGURED', 'Simulate-only mode requires receipt program identity when on-chain receipts are enabled');
+    }
+    return { operatorState, receiptIdentity };
   }
 
   if (operatorState.runtimeMode !== 'execute') {
@@ -133,6 +145,10 @@ export function enforceExecutionGate(params: ExecutionGateInput): ExecutionGateR
         signingAvailable: params.runtimeEnvironment?.signingAvailable ?? false,
       });
     }
+  }
+
+  if (!params.config.execution.onChainReceiptEnabled) {
+    return { operatorState, receiptIdentity: null };
   }
 
   const receiptIdentity = resolveReceiptRuntimeIdentity(params.config, params.runtimeEnvironment?.receiptIdentityEnv);

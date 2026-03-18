@@ -8,6 +8,7 @@ pnpm -r test
 pnpm receipt:build
 pnpm receipt:check:devnet
 pnpm receipt:check:mainnet -- --rpc-url <RPC_URL>
+pnpm receipt:local -- --db-path <PATH> [--authority <PUBKEY>] [--position-mint <PUBKEY>] [--position-address <PUBKEY>] [--epoch <UNIX_DAY>] [--status pending|confirmed|failed]
 pnpm e2e:devnet
 pnpm e2e:certify:devnet
 pnpm shadow:mainnet
@@ -35,6 +36,8 @@ Harness env vars:
 
 - `RPC_URL` (required)
 - `AUTHORITY_KEYPAIR` (required, dev-only local keypair JSON path)
+- `LOCAL_RECEIPT_DB_PATH` (required; SQLite path used for local duplicate protection)
+- `ONCHAIN_RECEIPT_ENABLED` (optional: `1|0|true|false`, default `1` on devnet harness)
 - `POSITION_ADDRESS` (optional when `POSITION_ADDRESS_CANDIDATES` is set; exact devnet position account)
 - `POSITION_ADDRESS_CANDIDATES` (optional comma-separated fallback list; harness picks the first SOL/USDC candidate without a receipt for the current UTC-day epoch)
 - `SWAP_ROUTER` (optional: `noop` | `orca` | `jupiter`, default `noop` for deterministic harness runs)
@@ -48,6 +51,9 @@ App/runtime operator config:
 - `executionMode` (`devnet-live` | `mainnet-shadow` | `mainnet-live`)
 - `operator.runtimeMode` (`dry-run` | `simulate-only` | `execute`) (legacy compatibility)
 - `operator.executionPausedDefault` (`true` | `false`)
+- `execution.localReceiptDbPath` (explicit SQLite path for live duplicate protection)
+- `execution.onChainReceiptEnabled` (`true` | `false`)
+- `execution.localReceiptClaimTtlMs` (stale pending-claim recovery window)
 
 Pause precedence:
 
@@ -67,10 +73,10 @@ Execution mode is now the primary operator control:
   - full decision/build/sim path on mainnet
   - send path is structurally blocked by `ShadowSubmitter`
   - receipt ix is omitted from simulated candidate tx
-  - expected receipt PDA is still computed and persisted
+  - on-chain receipts must stay disabled
 - `mainnet-live`
   - full live path on mainnet
-  - requires explicit receipt config and send-enabled execution
+  - requires explicit local receipt DB config and send-enabled execution
 
 - `dry-run`
   - evaluates monitoring + policy only
@@ -95,8 +101,10 @@ Mainnet guardrails:
 - no silent `noop` router fallback
 - mainnet shadow defaults to `jupiter`; `noop` allowed only with explicit diagnostics override
 - execute requires explicit operator config
-- execute requires full receipt identity config
+- execute requires explicit `execution.localReceiptDbPath`
+- receipt identity is required only when `execution.onChainReceiptEnabled=true`
 - any send attempt in shadow mode fails with `EXECUTION_MODE_SEND_FORBIDDEN`
+- `mainnet-shadow` rejects `execution.onChainReceiptEnabled=true`
 
 ## Mainnet Shadow Runner (M19)
 
@@ -112,17 +120,17 @@ Required env/config:
 - `SHADOW_AUTHORITY` (or `AUTHORITY_PUBKEY`)
 - `SHADOW_POSITION_ADDRESSES` (default source mode: configured list)
 - `SHADOW_DISCOVER_POSITIONS=true` to opt into discovery when no configured list is provided
-- receipt identity must resolve before startup:
-  - preferred: checked-in `deployments/mainnet/receipt.json`, or `RECEIPT_MANIFEST_PATH`
-  - fallback: complete receipt identity fields in `AUTOPILOT_CONFIG` / `SHADOW_AUTOPILOT_CONFIG`
+- local receipt storage is configured through `SHADOW_AUTOPILOT_CONFIG` / `AUTOPILOT_CONFIG`:
+  - set `execution.localReceiptDbPath` explicitly for any live send path
+  - on mainnet shadow, local receipt reads are optional and on-chain receipts remain disabled
 - optional `SHADOW_DB_PATH` (default: `artifacts/shadow/mainnet/shadow.db`)
 - optional `SHADOW_ROLLUP_EVERY_EVALS` (default: `50`)
 
 Startup behavior:
 
-- the runner resolves receipt identity before the monitoring loop starts
-- the runner verifies the receipt program account on mainnet before monitoring positions
-- startup-class receipt failures stop the process immediately instead of being retried forever
+- the runner prints the local receipt DB path and on-chain toggle state at startup
+- when on-chain receipts are disabled, duplicate protection is limited to processes sharing the same SQLite file
+- startup-class config/runtime failures stop the process immediately instead of being retried forever
 
 Storage:
 
@@ -156,7 +164,8 @@ Gate order:
 1. runtime mode
 2. effective paused state
 3. wallet/provider presence
-4. receipt identity presence
+4. local receipt DB presence for live execution
+5. receipt identity presence when on-chain receipts are enabled
 5. router/cluster compatibility
 
 Example:
@@ -177,9 +186,9 @@ node scripts/find-devnet-whirlpool-positions.mjs --wallet "$WALLET_ADDRESS"
 
 ## What `pnpm e2e:devnet` does
 
-0. Resolves receipt identity from `deployments/devnet/receipt.json` (manifest is source of truth on devnet unless explicitly overridden with `RECEIPT_IDENTITY_SOURCE=config`)
-1. Verifies receipt program account exists + executable + upgradeable-loader owner
-2. If `expectedUpgradeAuthority` is set in manifest, enforces strict authority match
+0. Uses `LOCAL_RECEIPT_DB_PATH` as the authoritative local receipt ledger for duplicate protection
+1. When `ONCHAIN_RECEIPT_ENABLED=1`, resolves receipt identity from `deployments/devnet/receipt.json` (manifest is source of truth on devnet unless explicitly overridden with `RECEIPT_IDENTITY_SOURCE=config`)
+2. When `ONCHAIN_RECEIPT_ENABLED=1`, verifies the receipt program account exists + executable + upgradeable-loader owner
 3. Fetches position snapshot from devnet
 4. Enforces SOL/USDC guardrail (`NOT_SOL_USDC` on mismatch)
 5. Evaluates policy decision from canonical tick samples
@@ -187,18 +196,25 @@ node scripts/find-devnet-whirlpool-positions.mjs --wallet "$WALLET_ADDRESS"
 7. If HOLD:
    - exits `0` when `REQUIRE_RECEIPT_PROOF` is unset/false
    - fails fast when `REQUIRE_RECEIPT_PROOF=1`
-8. If TRIGGER: checks canonical receipt PDA pre-state (must be `count=0`)
-   - when `POSITION_ADDRESS_CANDIDATES` is set, the harness first skips candidates that already have a receipt for the current epoch
+8. If TRIGGER: checks the local receipt ledger pre-state (must be clear)
+   - when `POSITION_ADDRESS_CANDIDATES` is set, the harness first skips candidates that already have a local confirmed/fresh pending receipt for the current epoch
 9. If swap is planned and router is not `noop`, fetches swap quote via configured adapter (`execution.swapRouter`) and computes canonical attestation payload/hash
 10. Builds tx + simulates (simulation gate)
-11. Sends + confirms
-12. Checks canonical receipt PDA post-state (must be `count=1`) and verifies:
+11. Claims the local receipt ledger and sends + confirms
+12. When `ONCHAIN_RECEIPT_ENABLED=1`, checks canonical receipt PDA post-state (must be `count=1`) and verifies:
     - authority
     - position_mint
     - epoch
     - direction
     - stored hash equals local attestation hash
-13. Executes the same flow a second time in the same epoch and requires deterministic rejection with `ALREADY_EXECUTED_THIS_EPOCH`
+13. When `ONCHAIN_RECEIPT_ENABLED=0`, checks the local receipt ledger for a confirmed row instead of an on-chain PDA
+14. Executes the same flow a second time in the same epoch and requires deterministic rejection with `ALREADY_EXECUTED_THIS_EPOCH`
+
+## Local Receipt Recovery
+
+- Stale `pending` claims recover automatically by TTL takeover using `execution.localReceiptClaimTtlMs`
+- Failed executions are recorded as `failed` with error metadata and can be retried safely
+- Mid-epoch cutover from on-chain receipts to SQLite-only mode is unsupported in this rollout unless the local ledger was already seeded for that epoch
 
 Logs are JSON (structured) and failure exits non-zero.
 
