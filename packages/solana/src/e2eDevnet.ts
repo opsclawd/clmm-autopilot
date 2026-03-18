@@ -22,6 +22,7 @@ import {
 import { getAta } from './ata';
 import { executeOnce, type ExecuteOnceCertificationHooks } from './executeOnce';
 import { fetchJupiterQuote } from './jupiter';
+import { createSqliteLocalReceiptLedger, type LocalReceiptLedger } from './localReceiptLedger';
 import { loadPositionSnapshot, type PositionSnapshot } from './orcaInspector';
 import { deriveReceiptPda, fetchReceiptByPda, type ReceiptAccount } from './receipt';
 import { resolveReceiptRuntimeIdentity, type ReceiptRuntimeIdentity } from './receiptIdentity';
@@ -203,6 +204,20 @@ function parseBooleanEnvFlag(env: HarnessEnv, key: string): boolean {
   throw codedError('CONFIG_INVALID', `${key} must be one of: 1, 0, true, false (received '${raw}')`);
 }
 
+function parseBooleanEnvFlagWithDefault(env: HarnessEnv, key: string, fallback: boolean): boolean {
+  const raw = env[key]?.trim();
+  if (!raw) return fallback;
+  if (raw === '1' || raw.toLowerCase() === 'true') return true;
+  if (raw === '0' || raw.toLowerCase() === 'false') return false;
+  throw codedError('CONFIG_INVALID', `${key} must be one of: 1, 0, true, false (received '${raw}')`);
+}
+
+function parseRequiredPathEnv(env: HarnessEnv, key: 'LOCAL_RECEIPT_DB_PATH'): string {
+  const value = env[key]?.trim();
+  if (!value) throw codedError('CONFIG_INVALID', `Missing required env: ${key}`);
+  return value;
+}
+
 function parseAuthority(secretKeyJson: string): Keypair {
   let raw: unknown;
   try {
@@ -325,7 +340,10 @@ async function resolveHarnessPosition(params: {
   authority: PublicKey;
   connection: Connection;
   epoch: number;
-  receiptIdentity: ReceiptRuntimeIdentity;
+  receiptIdentity: ReceiptRuntimeIdentity | null;
+  receiptLedger: LocalReceiptLedger | null;
+  claimTtlMs: number;
+  nowUnixMs: number;
   deps: HarnessDeps;
   logger: HarnessLogger;
 }): Promise<ResolvedHarnessPosition> {
@@ -359,28 +377,56 @@ async function resolveHarnessPosition(params: {
         continue;
       }
 
-      const [receiptPda] = deriveReceiptPda({
-        authority: params.authority,
-        positionMint: snapshot.positionMint,
-        epoch: params.epoch,
-        programId: params.receiptIdentity.programId,
-      });
-      const existing = await params.deps.fetchReceiptByPda(params.connection, receiptPda);
-      if (existing) {
+      const localBlocked = params.receiptLedger?.inspect(
+        {
+          cluster: 'devnet',
+          authority: params.authority.toBase58(),
+          positionMint: snapshot.positionMint.toBase58(),
+          epoch: params.epoch,
+        },
+        params.nowUnixMs,
+        params.claimTtlMs,
+      );
+      if (localBlocked?.kind === 'blocked') {
         skippedAlreadyExecuted += 1;
         log(params.logger, 'position.candidate.skip', {
           position: candidate.toBase58(),
           reason: 'ALREADY_EXECUTED_THIS_EPOCH',
-          receiptPda: receiptPda.toBase58(),
+          source: 'local-ledger',
         });
         continue;
       }
+      if (params.receiptIdentity) {
+        const [receiptPda] = deriveReceiptPda({
+          authority: params.authority,
+          positionMint: snapshot.positionMint,
+          epoch: params.epoch,
+          programId: params.receiptIdentity.programId,
+        });
+        const existing = await params.deps.fetchReceiptByPda(params.connection, receiptPda);
+        if (existing) {
+          skippedAlreadyExecuted += 1;
+          log(params.logger, 'position.candidate.skip', {
+            position: candidate.toBase58(),
+            reason: 'ALREADY_EXECUTED_THIS_EPOCH',
+            receiptPda: receiptPda.toBase58(),
+            source: 'on-chain',
+          });
+          continue;
+        }
 
-      log(params.logger, 'position.candidate.select', {
-        position: candidate.toBase58(),
-        receiptPda: receiptPda.toBase58(),
-        epoch: params.epoch,
-      });
+        log(params.logger, 'position.candidate.select', {
+          position: candidate.toBase58(),
+          receiptPda: receiptPda.toBase58(),
+          epoch: params.epoch,
+        });
+      } else {
+        log(params.logger, 'position.candidate.select', {
+          position: candidate.toBase58(),
+          epoch: params.epoch,
+          source: 'local-ledger',
+        });
+      }
       return {
         position: candidate,
         snapshot,
@@ -607,6 +653,7 @@ export async function runDevnetE2EWithArtifact(
   let receiptFoundBefore = false;
   let receiptFoundAfter = false;
   let skipReason = '';
+  let localReceiptLedger: LocalReceiptLedger | null = null;
 
   try {
     const rpcUrlRaw = parseRequiredEnv(env, 'RPC_URL');
@@ -614,9 +661,12 @@ export async function runDevnetE2EWithArtifact(
     const authorityPath = parseRequiredEnv(env, 'AUTHORITY_KEYPAIR');
     const forceDecision = parseForceDecision(env);
     const requireReceiptProof = parseBooleanEnvFlag(env, 'REQUIRE_RECEIPT_PROOF');
+    const onChainReceiptEnabled = parseBooleanEnvFlagWithDefault(env, 'ONCHAIN_RECEIPT_ENABLED', true);
+    const localReceiptDbPath = parseRequiredPathEnv(env, 'LOCAL_RECEIPT_DB_PATH');
 
     const authorityKp = await loadAuthorityFromPath(authorityPath);
     authority = authorityKp.publicKey.toBase58();
+    localReceiptLedger = createSqliteLocalReceiptLedger(localReceiptDbPath);
     assertPositionSourceConfigured(env);
     const connection = new Connection(rpcUrlRaw, 'confirmed');
 
@@ -626,6 +676,8 @@ export async function runDevnetE2EWithArtifact(
       execution: {
         ...DEFAULT_CONFIG.execution,
         swapRouter: parseSwapRouter(env),
+        localReceiptDbPath,
+        onChainReceiptEnabled,
       },
       operator: {
         ...DEFAULT_CONFIG.operator,
@@ -633,26 +685,34 @@ export async function runDevnetE2EWithArtifact(
       },
     };
     swapRouter = config.execution.swapRouter;
-    const receiptIdentity = resolveReceiptRuntimeIdentity(config, env);
-    if (!receiptIdentity) {
-      throw codedError('RECEIPT_PROGRAM_NOT_CONFIGURED', 'Resolved receipt identity is missing for devnet harness');
-    }
-    const verification = await verifyReceiptProgramOnChain(
-      {
-        getAccountInfo: (pubkey, commitment) => deps.getAccountInfo(connection, pubkey),
-        getParsedAccountInfo: (pubkey, commitment) => deps.getParsedAccountInfo(connection, pubkey),
-      },
-      receiptIdentity,
-    );
-    log(logger, 'receipt.program.verify.ok', {
-      programId: verification.programId,
-      owner: verification.owner,
+    log(logger, 'receipt.backend', {
+      localReceiptDbPath,
+      onChainReceiptEnabled,
     });
-    if (verification.programDataAddress) {
-      log(logger, 'receipt.program.authority.ok', {
-        programData: verification.programDataAddress,
-        expectedUpgradeAuthority: receiptIdentity.expectedUpgradeAuthority?.toBase58(),
+    const receiptIdentity = onChainReceiptEnabled ? resolveReceiptRuntimeIdentity(config, env) : null;
+    if (onChainReceiptEnabled) {
+      if (!receiptIdentity) {
+        throw codedError('RECEIPT_PROGRAM_NOT_CONFIGURED', 'Resolved receipt identity is missing for devnet harness');
+      }
+      const verification = await verifyReceiptProgramOnChain(
+        {
+          getAccountInfo: (pubkey, commitment) => deps.getAccountInfo(connection, pubkey),
+          getParsedAccountInfo: (pubkey, commitment) => deps.getParsedAccountInfo(connection, pubkey),
+        },
+        receiptIdentity,
+      );
+      log(logger, 'receipt.program.verify.ok', {
+        programId: verification.programId,
+        owner: verification.owner,
       });
+      if (verification.programDataAddress) {
+        log(logger, 'receipt.program.authority.ok', {
+          programData: verification.programDataAddress,
+          expectedUpgradeAuthority: receiptIdentity.expectedUpgradeAuthority?.toBase58(),
+        });
+      }
+    } else {
+      log(logger, 'receipt.program.skip', { reason: 'ONCHAIN_RECEIPT_DISABLED', localReceiptDbPath });
     }
     const configuredAdapter = getSwapAdapter(config.execution.swapRouter, config.cluster);
 
@@ -664,6 +724,9 @@ export async function runDevnetE2EWithArtifact(
       connection,
       epoch,
       receiptIdentity,
+      receiptLedger: localReceiptLedger,
+      claimTtlMs: config.execution.localReceiptClaimTtlMs,
+      nowUnixMs: runStartedMs,
       deps,
       logger,
     });
@@ -736,26 +799,47 @@ export async function runDevnetE2EWithArtifact(
         snapshot,
       });
 
-      const [receiptPda] = deriveReceiptPda({
-        authority: authorityKp.publicKey,
-        positionMint: snapshot.positionMint,
+      const localReceiptKey = {
+        cluster: 'devnet',
+        authority: authorityKp.publicKey.toBase58(),
+        positionMint: snapshot.positionMint.toBase58(),
         epoch,
-        programId: receiptIdentity.programId,
-      });
-      receiptPdaBase58 = receiptPda.toBase58();
+      } as const;
+      const localPrecheck = localReceiptLedger.inspect(
+        localReceiptKey,
+        runStartedMs,
+        config.execution.localReceiptClaimTtlMs,
+      );
+      const [receiptPda] = receiptIdentity
+        ? deriveReceiptPda({
+            authority: authorityKp.publicKey,
+            positionMint: snapshot.positionMint,
+            epoch,
+            programId: receiptIdentity.programId,
+          })
+        : [undefined];
+      receiptPdaBase58 = receiptPda?.toBase58() ?? '';
 
-      const existing = await deps.fetchReceiptByPda(connection, receiptPda);
-      receiptFoundBefore = Boolean(existing);
+      receiptFoundBefore = localPrecheck.kind === 'blocked';
       assertions.push(makeAssertion({
         name: 'precheck.receiptAbsent',
         pass: !receiptFoundBefore,
         actual: receiptFoundBefore ? 1 : 0,
         expected: 0,
       }));
-      if (existing) {
-        throw codedError('ALREADY_EXECUTED_THIS_EPOCH', 'Execution receipt already exists for this epoch');
+      if (localPrecheck.kind === 'blocked') {
+        throw codedError('ALREADY_EXECUTED_THIS_EPOCH', 'Local receipt ledger already contains a receipt for this epoch');
       }
-      log(logger, 'receipt.precheck.ok', { receiptPda: receiptPda.toBase58(), epoch, count: 0 });
+      if (receiptPda) {
+        const existing = await deps.fetchReceiptByPda(connection, receiptPda);
+        if (existing) {
+          receiptFoundBefore = true;
+          throw codedError('ALREADY_EXECUTED_THIS_EPOCH', 'Execution receipt already exists for this epoch');
+        }
+        log(logger, 'receipt.precheck.ok', { receiptPda: receiptPda.toBase58(), epoch, count: 0, source: 'on-chain' });
+      } else {
+        log(logger, 'receipt.precheck.ok', { epoch, count: 0, source: 'local-ledger' });
+      }
 
       const quotePlan = getQuoteMintsAndAmount(snapshot, decision);
       const swapDecision = decideSwap(quotePlan.amount, quotePlan.direction, config);
@@ -895,6 +979,7 @@ export async function runDevnetE2EWithArtifact(
           walletConnected: true,
           signingAvailable: true,
         },
+        receiptLedger: localReceiptLedger,
         signAndSend: async (tx: VersionedTransaction) => {
           tx.sign([authorityKp]);
           return connection.sendRawTransaction(tx.serialize(), { maxRetries: 1 });
@@ -956,44 +1041,70 @@ export async function runDevnetE2EWithArtifact(
         }));
       }
 
-      if (result.status !== 'EXECUTED' || !result.txSignature || !result.receiptPda) {
+      if (result.status !== 'EXECUTED' || !result.txSignature) {
         throw codedError(result.errorCode ?? 'EXECUTION_FAILED', result.errorMessage ?? 'Execution failed');
       }
-      if (result.receiptPda !== receiptPda.toBase58()) {
+      if (receiptPda && result.receiptPda !== receiptPda.toBase58()) {
         throw codedError(RECEIPT_MISMATCH_CODE, 'Execution returned unexpected receipt PDA');
       }
 
-      log(logger, 'tx.send-confirm.ok', { signature: result.txSignature, receiptPda: result.receiptPda });
-
-      const fetchedReceipt = await deps.fetchReceiptByPda(connection, receiptPda);
-      receiptFoundAfter = Boolean(fetchedReceipt);
-      assertions.push(makeAssertion({
-        name: 'post.receiptPresent',
-        pass: receiptFoundAfter,
-        actual: receiptFoundAfter ? 1 : 0,
-        expected: 1,
-      }));
-      if (!fetchedReceipt) throw codedError('DATA_UNAVAILABLE', 'Receipt was not found after confirmed send');
-
-      verifyReceipt(fetchedReceipt, {
-        authority: authorityKp.publicKey,
-        positionMint: snapshot.positionMint,
-        epoch,
-        direction: decideDirection(decision),
-        attestationHashHex: Buffer.from(attestationHash).toString('hex'),
+      log(logger, 'tx.send-confirm.ok', {
+        signature: result.txSignature,
+        ...(result.receiptPda ? { receiptPda: result.receiptPda } : {}),
       });
 
-      log(logger, 'receipt.postcheck.ok', {
-        receiptPda: receiptPda.toBase58(),
-        count: 1,
-      });
-      log(logger, 'receipt.verify.ok', {
-        authority: fetchedReceipt.authority.toBase58(),
-        positionMint: fetchedReceipt.positionMint.toBase58(),
-        epoch: fetchedReceipt.epoch,
-        direction: fetchedReceipt.direction,
-        storedHash: Buffer.from(fetchedReceipt.attestationHash).toString('hex'),
-      });
+      if (receiptPda) {
+        const fetchedReceipt = await deps.fetchReceiptByPda(connection, receiptPda);
+        receiptFoundAfter = Boolean(fetchedReceipt);
+        assertions.push(makeAssertion({
+          name: 'post.receiptPresent',
+          pass: receiptFoundAfter,
+          actual: receiptFoundAfter ? 1 : 0,
+          expected: 1,
+        }));
+        if (!fetchedReceipt) throw codedError('DATA_UNAVAILABLE', 'Receipt was not found after confirmed send');
+
+        verifyReceipt(fetchedReceipt, {
+          authority: authorityKp.publicKey,
+          positionMint: snapshot.positionMint,
+          epoch,
+          direction: decideDirection(decision),
+          attestationHashHex: Buffer.from(attestationHash).toString('hex'),
+        });
+
+        log(logger, 'receipt.postcheck.ok', {
+          receiptPda: receiptPda.toBase58(),
+          count: 1,
+        });
+        log(logger, 'receipt.verify.ok', {
+          authority: fetchedReceipt.authority.toBase58(),
+          positionMint: fetchedReceipt.positionMint.toBase58(),
+          epoch: fetchedReceipt.epoch,
+          direction: fetchedReceipt.direction,
+          storedHash: Buffer.from(fetchedReceipt.attestationHash).toString('hex'),
+        });
+      } else {
+        const localConfirmed = localReceiptLedger.inspect(
+          localReceiptKey,
+          runStartedMs,
+          config.execution.localReceiptClaimTtlMs,
+        );
+        receiptFoundAfter = localConfirmed.kind === 'blocked' && localConfirmed.status === 'confirmed';
+        assertions.push(makeAssertion({
+          name: 'post.receiptPresent',
+          pass: receiptFoundAfter,
+          actual: receiptFoundAfter ? 1 : 0,
+          expected: 1,
+        }));
+        if (!receiptFoundAfter) {
+          throw codedError('DATA_UNAVAILABLE', 'Local receipt was not confirmed after send');
+        }
+        log(logger, 'receipt.postcheck.ok', {
+          epoch,
+          count: 1,
+          source: 'local-ledger',
+        });
+      }
 
       const duplicateResult = await deps.executeOnce(executeParams);
       const duplicateBlocked = duplicateResult.status === 'ERROR' && duplicateResult.errorCode === 'ALREADY_EXECUTED_THIS_EPOCH';
@@ -1106,6 +1217,7 @@ export async function runDevnetE2EWithArtifact(
     }));
     status = matchesExpected ? 'EXPECTED_FAILURE' : 'FAIL';
   }
+  localReceiptLedger?.close();
 
   if (options.expectation?.allowSkip && scenarioName === 'token2022-certification') {
     const rawToken2022Position = parseOptionalToken2022Position(env);

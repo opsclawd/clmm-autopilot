@@ -10,6 +10,10 @@ const USDC_MINT = new PublicKey('BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k');
 const POSITION_MINT = new PublicKey(new Uint8Array(32).fill(12));
 const EXECUTE_CONFIG = {
   ...DEFAULT_CONFIG,
+  execution: {
+    ...DEFAULT_CONFIG.execution,
+    localReceiptDbPath: ':memory:',
+  },
   operator: {
     ...DEFAULT_CONFIG.operator,
     runtimeMode: 'execute' as const,

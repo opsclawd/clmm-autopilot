@@ -1,23 +1,6 @@
-import { mkdirSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import type { CanonicalErrorCode, ShadowSimulationClass } from '../types';
-
-const require = createRequire(import.meta.url);
-
-type DatabaseSyncLike = {
-  exec: (sql: string) => void;
-  prepare: (sql: string) => {
-    run: (...args: any[]) => void;
-    get: (...args: any[]) => any;
-  };
-  close: () => void;
-};
-
-function openSqlite(path: string): DatabaseSyncLike {
-  const sqlite = require('node:sqlite') as { DatabaseSync: new (filename: string) => DatabaseSyncLike };
-  return new sqlite.DatabaseSync(path);
-}
+import { initializeWalMode, openSqliteDatabase, type DatabaseSyncLike } from '../sqlite';
 
 export type PositionSourceMode = 'configured' | 'discovered';
 
@@ -95,16 +78,13 @@ export class ShadowArtifactStore {
 
   constructor(dbPath: string) {
     this.dbPath = resolve(dbPath);
-    mkdirSync(dirname(this.dbPath), { recursive: true });
-    this.db = openSqlite(this.dbPath);
+    this.db = openSqliteDatabase(this.dbPath);
     this.init();
   }
 
   private init(): void {
+    initializeWalMode(this.db);
     this.db.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = NORMAL;
-
       CREATE TABLE IF NOT EXISTS run_sessions (
         session_id TEXT PRIMARY KEY,
         started_at TEXT NOT NULL,

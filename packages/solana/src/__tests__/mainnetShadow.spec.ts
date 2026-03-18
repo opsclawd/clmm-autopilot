@@ -133,12 +133,16 @@ describe('buildShadowTriggerRecord', () => {
             removeLiquidityPlanned: true,
             collectFeesPlanned: true,
             swapInstructionCount: 2,
+            onChainReceiptEnabled: false,
             receiptIxIncluded: false,
           },
           tokenProgramSummary: {
             mintAProgram: new PublicKey(new Uint8Array(32).fill(4)).toBase58(),
             mintBProgram: new PublicKey(new Uint8Array(32).fill(5)).toBase58(),
           },
+          localReceiptStatus: 'clear' as const,
+          onChainReceiptEnabled: false,
+          onChainReceiptVerified: false,
           receiptPdaExpected: new PublicKey(new Uint8Array(32).fill(9)).toBase58(),
           receiptConfigValid: true,
           receiptStepStructurallyBuildable: true,
@@ -158,27 +162,31 @@ describe('buildShadowTriggerRecord', () => {
 });
 
 describe('loadShadowConfig', () => {
-  it('hydrates missing receipt identity from the configured mainnet manifest', () => {
+  it('defaults mainnet-shadow to local-ledger-only mode', () => {
+    const config = loadShadowConfig({});
+
+    expect(config.execution.onChainReceiptEnabled).toBe(false);
+    expect(config.receiptProgramId).toBeUndefined();
+  });
+
+  it('ignores receipt manifest paths when on-chain receipts are disabled', () => {
     const config = loadShadowConfig({
-      RECEIPT_MANIFEST_PATH: MAINNET_MANIFEST_FIXTURE,
+      RECEIPT_MANIFEST_PATH: 'packages/solana/src/__tests__/fixtures/does-not-exist.json',
     });
 
-    expect(config.cluster).toBe('mainnet');
-    expect(config.executionMode).toBe('mainnet-shadow');
-    expect(config.receiptProgramId).toBe('A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm');
-    expect(config.receiptIdlPath).toBe('deployments/mainnet/receipt.idl.json');
+    expect(config.execution.onChainReceiptEnabled).toBe(false);
   });
 
-  it('fails fast when an explicit receipt manifest path is invalid', () => {
+  it('rejects on-chain receipts in mainnet-shadow config', () => {
     expect(() =>
       loadShadowConfig({
-        RECEIPT_MANIFEST_PATH: 'packages/solana/src/__tests__/fixtures/does-not-exist.json',
+        SHADOW_AUTOPILOT_CONFIG: JSON.stringify({
+          cluster: 'mainnet',
+          executionMode: 'mainnet-shadow',
+          execution: { onChainReceiptEnabled: true },
+        }),
       }),
-    ).toThrow(/manifest identity could not be loaded/);
-  });
-
-  it('fails fast when neither manifest nor config provides mainnet receipt identity', () => {
-    expect(() => loadShadowConfig({})).toThrow(/receipt identity must be configured/i);
+    ).toThrow(/onChainReceiptEnabled/);
   });
 });
 
@@ -191,19 +199,24 @@ describe('isFatalShadowStartupCode', () => {
 });
 
 describe('runMainnetShadow', () => {
-  it('aborts before monitoring when receipt verification fails at startup', async () => {
+  it('does not verify the receipt program when on-chain receipts are disabled', async () => {
     const error = Object.assign(new Error('receipt program mismatch'), {
       code: 'RECEIPT_PROGRAM_VERIFICATION_FAILED' as const,
       retryable: false,
     });
     verifyReceiptProgramOnChainMock.mockRejectedValueOnce(error);
+    executeOnceMock.mockResolvedValueOnce({
+      status: 'ERROR',
+      errorCode: 'RECEIPT_IDL_MISMATCH',
+      errorMessage: 'manifest idl mismatch',
+    });
 
     await expect(runMainnetShadow(shadowEnv())).rejects.toMatchObject({
-      code: 'RECEIPT_PROGRAM_VERIFICATION_FAILED',
+      code: 'RECEIPT_IDL_MISMATCH',
     });
-    expect(verifyReceiptProgramOnChainMock).toHaveBeenCalledTimes(1);
-    expect(loadPositionSnapshotMock).not.toHaveBeenCalled();
-    expect(executeOnceMock).not.toHaveBeenCalled();
+    expect(verifyReceiptProgramOnChainMock).not.toHaveBeenCalled();
+    expect(loadPositionSnapshotMock).toHaveBeenCalledTimes(1);
+    expect(executeOnceMock).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces startup-class executeOnce errors instead of silently continuing', async () => {
@@ -216,7 +229,7 @@ describe('runMainnetShadow', () => {
     await expect(runMainnetShadow(shadowEnv())).rejects.toMatchObject({
       code: 'RECEIPT_IDL_MISMATCH',
     });
-    expect(verifyReceiptProgramOnChainMock).toHaveBeenCalledTimes(1);
+    expect(verifyReceiptProgramOnChainMock).not.toHaveBeenCalled();
     expect(loadPositionSnapshotMock).toHaveBeenCalledTimes(1);
     expect(executeOnceMock).toHaveBeenCalledTimes(1);
   });

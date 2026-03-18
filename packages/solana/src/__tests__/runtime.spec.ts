@@ -17,7 +17,14 @@ describe('runtime guardrails', () => {
   it('requires wallet signing support for execute mode', () => {
     expect(() =>
       enforceExecutionGate({
-        config: { ...DEFAULT_CONFIG, operator: { ...DEFAULT_CONFIG.operator, runtimeMode: 'execute' } },
+        config: {
+          ...DEFAULT_CONFIG,
+          execution: {
+            ...DEFAULT_CONFIG.execution,
+            localReceiptDbPath: ':memory:',
+          },
+          operator: { ...DEFAULT_CONFIG.operator, runtimeMode: 'execute' },
+        },
         runtimeEnvironment: {
           rpcUrl: 'https://api.devnet.solana.com',
           walletConnected: false,

@@ -139,11 +139,13 @@ describe('validateConfig', () => {
     expect(mainnet.operator.runtimeMode).toBe('simulate-only');
     expect(mainnet.executionMode).toBe('mainnet-shadow');
     expect(mainnet.receiptProgramId).toBeUndefined();
+    expect(mainnet.execution.onChainReceiptEnabled).toBe(false);
 
     const devnet = getDefaultConfig('devnet');
     expect(devnet.operator.runtimeMode).toBe('simulate-only');
     expect(devnet.executionMode).toBe('devnet-live');
     expect(devnet.receiptProgramId).toBeDefined();
+    expect(devnet.execution.onChainReceiptEnabled).toBe(true);
   });
 
   it('normalizes mainnet-beta alias to mainnet', () => {
@@ -186,6 +188,9 @@ describe('validateConfig', () => {
 
     const devnetNoFallback = validateConfig({
       cluster: 'devnet',
+      execution: {
+        onChainReceiptEnabled: false,
+      },
       receiptProgramId: undefined,
       receiptIdlHashMode: undefined,
       receiptIdlHash: undefined,
@@ -195,6 +200,9 @@ describe('validateConfig', () => {
 
     const partialFallback = validateConfig({
       cluster: 'devnet',
+      execution: {
+        onChainReceiptEnabled: false,
+      },
       receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
       receiptIdlHashMode: undefined,
       receiptIdlHash: undefined,
@@ -237,12 +245,8 @@ describe('validateConfig', () => {
   it('rejects noop router on mainnet', () => {
     const res = validateConfig({
       cluster: 'mainnet',
-      execution: { swapRouter: 'noop' },
+      execution: { swapRouter: 'noop', localReceiptDbPath: '/tmp/receipts.db' },
       operator: { runtimeMode: 'execute', executionPausedDefault: false },
-      receiptProgramId: 'A81Xsuwg5zrT1sgvkncemfWqQ8nymwHS3e7ExM4YnXMm',
-      receiptIdlHashMode: 'full-v1',
-      receiptIdlHash: 'a'.repeat(64),
-      receiptIdlPath: 'deployments/mainnet/receipt.idl.json',
     });
     expect(res.ok).toBe(false);
     if (!res.ok) {
@@ -250,7 +254,7 @@ describe('validateConfig', () => {
     }
   });
 
-  it('requires receipt identity for execute mode outside devnet', () => {
+  it('requires local receipt db path for execute mode', () => {
     const res = validateConfig({
       cluster: 'mainnet',
       operator: { runtimeMode: 'execute', executionPausedDefault: false },
@@ -258,7 +262,50 @@ describe('validateConfig', () => {
     });
     expect(res.ok).toBe(false);
     if (!res.ok) {
+      expect(res.errors.some((e) => e.path === 'execution.localReceiptDbPath')).toBe(true);
+    }
+  });
+
+  it('does not require receipt identity when on-chain receipts are disabled', () => {
+    const res = validateConfig({
+      cluster: 'mainnet',
+      operator: { runtimeMode: 'execute', executionPausedDefault: false },
+      execution: {
+        swapRouter: 'jupiter',
+        localReceiptDbPath: '/tmp/receipts.db',
+        onChainReceiptEnabled: false,
+      },
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it('requires receipt identity when on-chain receipts are enabled', () => {
+    const res = validateConfig({
+      cluster: 'mainnet',
+      operator: { runtimeMode: 'execute', executionPausedDefault: false },
+      execution: {
+        swapRouter: 'jupiter',
+        localReceiptDbPath: '/tmp/receipts.db',
+        onChainReceiptEnabled: true,
+      },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
       expect(res.errors.some((e) => e.path === 'receiptProgramId')).toBe(true);
+    }
+  });
+
+  it('rejects on-chain receipts in mainnet-shadow', () => {
+    const res = validateConfig({
+      cluster: 'mainnet',
+      executionMode: 'mainnet-shadow',
+      execution: {
+        onChainReceiptEnabled: true,
+      },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.errors.some((e) => e.path === 'execution.onChainReceiptEnabled')).toBe(true);
     }
   });
 });

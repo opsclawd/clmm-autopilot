@@ -144,6 +144,13 @@ function mergeManifestReceiptIdentity(
   };
 }
 
+function shouldMergeManifestReceiptIdentity(input: unknown): boolean {
+  if (!isRecord(input)) return false;
+  const execution = input.execution;
+  if (!execution || !isRecord(execution)) return false;
+  return execution.onChainReceiptEnabled === true;
+}
+
 export function isFatalShadowStartupCode(code: CanonicalErrorCode | undefined): boolean {
   return (
     code === 'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW' ||
@@ -169,7 +176,24 @@ export function loadShadowConfig(env: Record<string, string | undefined>): Autop
     },
   };
 
-  const parsed = mergeManifestReceiptIdentity(raw ? JSON.parse(raw) : fallbackInput, env);
+  const parsedRaw = raw ? JSON.parse(raw) : {};
+  const parsedInput = isRecord(parsedRaw)
+    ? {
+        ...fallbackInput,
+        ...parsedRaw,
+        execution: {
+          ...fallbackInput.execution,
+          ...(isRecord(parsedRaw.execution) ? parsedRaw.execution : {}),
+        },
+        operator: {
+          ...fallbackInput.operator,
+          ...(isRecord(parsedRaw.operator) ? parsedRaw.operator : {}),
+        },
+      }
+    : fallbackInput;
+  const parsed = shouldMergeManifestReceiptIdentity(parsedInput)
+    ? mergeManifestReceiptIdentity(parsedInput, env)
+    : parsedInput;
   const validated = validateConfig(parsed);
   if (!validated.ok) {
     const summary = validated.errors.map((e) => `${e.path}:${e.code}`).join(', ');
@@ -186,13 +210,6 @@ export function loadShadowConfig(env: Record<string, string | undefined>): Autop
   }
   if (config.execution.sendEnabled) {
     throw new Error('CONFIG_INVALID: mainnet-shadow requires execution.sendEnabled=false');
-  }
-  const receiptIdentity = resolveReceiptRuntimeIdentity(config, env);
-  if (!receiptIdentity) {
-    fail(
-      'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW',
-      'Shadow mode receipt identity must be configured via manifest or config before startup',
-    );
   }
   return config;
 }
@@ -343,14 +360,18 @@ export async function runMainnetShadow(env: Record<string, string | undefined> =
   const discoveryEnabled = parseBoolean(env.SHADOW_DISCOVER_POSITIONS, false);
 
   const connection = new Connection(rpcUrl, 'confirmed');
-  const receiptIdentity = resolveReceiptRuntimeIdentity(config, env);
-  if (!receiptIdentity) {
-    fail(
-      'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW',
-      'Shadow mode receipt identity must be configured via manifest or config before startup',
-    );
+  const receiptIdentity = config.execution.onChainReceiptEnabled
+    ? resolveReceiptRuntimeIdentity(config, env)
+    : null;
+  if (config.execution.onChainReceiptEnabled) {
+    if (!receiptIdentity) {
+      fail(
+        'RECEIPT_CONFIG_INCOMPLETE_FOR_SHADOW',
+        'Shadow mode receipt identity must be configured via manifest or config before startup',
+      );
+    }
+    await verifyReceiptProgramOnChain(connection, receiptIdentity);
   }
-  await verifyReceiptProgramOnChain(connection, receiptIdentity);
   let positions = configuredPositions;
   let positionSourceMode: PositionSourceMode = 'configured';
   if (positions.length === 0) {
@@ -404,6 +425,8 @@ export async function runMainnetShadow(env: Record<string, string | undefined> =
       positionCount: positions.length,
       positionSourceMode,
       dbPath,
+      localReceiptDbPath: config.execution.localReceiptDbPath ?? null,
+      onChainReceiptEnabled: config.execution.onChainReceiptEnabled,
       executionMode: config.executionMode,
       cluster: config.cluster,
     }),

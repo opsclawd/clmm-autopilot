@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
-import { deriveReceiptPda } from '../receipt';
+import { deriveReceiptPda, fetchReceiptByPda } from '../receipt';
 import { TOKEN_PROGRAM_ID } from '../token/constants';
+import { createSqliteLocalReceiptLedger } from '../localReceiptLedger';
 
 const DEVNET_USDC_MINT = 'BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k';
 const RECEIPT_PROGRAM_ID = new PublicKey(DEFAULT_CONFIG.receiptProgramId!);
@@ -79,10 +80,7 @@ vi.mock('../receipt', async (importOriginal) => {
   const original = await importOriginal<typeof import('../receipt')>();
   return {
     ...original,
-    fetchReceiptByPda: vi
-      .fn()
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ authority: new PublicKey(new Uint8Array(32).fill(1)) } as any),
+    fetchReceiptByPda: vi.fn(),
   };
 });
 
@@ -92,11 +90,30 @@ import { createRuntimeCounterRegistry } from '../telemetry';
 
 const EXECUTE_CONFIG = {
   ...DEFAULT_CONFIG,
+  execution: {
+    ...DEFAULT_CONFIG.execution,
+    localReceiptDbPath: ':memory:',
+  },
   operator: {
     ...DEFAULT_CONFIG.operator,
     runtimeMode: 'execute' as const,
   },
 };
+
+function makeReceiptAccount(overrides: Record<string, unknown> = {}) {
+  return {
+    authority: new PublicKey(new Uint8Array(32).fill(1)),
+    positionMint: new PublicKey(new Uint8Array(32).fill(3)),
+    epoch: 0,
+    direction: 0,
+    attestationHash: new Uint8Array(32).fill(7),
+    slot: 1n,
+    unixTs: 1n,
+    initialized: true,
+    bump: 255,
+    ...overrides,
+  } as any;
+}
 
 describe('executeOnce', () => {
   beforeEach(() => {
@@ -137,6 +154,8 @@ describe('executeOnce', () => {
       getQuote: getQuoteMock,
       buildSwapIxs: buildSwapIxsMock,
     });
+    vi.mocked(fetchReceiptByPda).mockReset();
+    vi.mocked(fetchReceiptByPda).mockResolvedValue(makeReceiptAccount());
   });
 
   it('blocks dry-run mode before build even when called directly', async () => {
@@ -215,6 +234,7 @@ describe('executeOnce', () => {
   });
 
   it('simulate-only mode builds and simulates without sending', async () => {
+    vi.mocked(fetchReceiptByPda).mockResolvedValue(null);
     const authority = new PublicKey(new Uint8Array(32).fill(20));
     const signAndSend = vi.fn(async () => 'sig');
     const confirmTransaction = vi.fn(async () => ({ value: { err: null } }));
@@ -268,6 +288,7 @@ describe('executeOnce', () => {
   });
 
   it('emits canonical event fields and deterministic counters', async () => {
+    vi.mocked(fetchReceiptByPda).mockResolvedValue(null);
     const authority = new PublicKey(new Uint8Array(32).fill(20));
     const counters = createRuntimeCounterRegistry();
     const observer = { emit: vi.fn() };
@@ -334,7 +355,7 @@ describe('executeOnce', () => {
     expect(triggerEvent?.status).toBe('hypothetical');
   });
 
-  it('mainnet-shadow omits receipt ix while still computing expected receipt PDA', async () => {
+  it('mainnet-shadow omits receipt ix when on-chain receipts are disabled', async () => {
     const authority = new PublicKey(new Uint8Array(32).fill(20));
     const connection = {
       getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
@@ -371,6 +392,7 @@ describe('executeOnce', () => {
         executionMode: 'mainnet-shadow',
         execution: {
           ...DEFAULT_CONFIG.execution,
+          onChainReceiptEnabled: false,
           swapRouter: 'noop',
           sendEnabled: false,
           allowMainnetNoopForDiagnostics: true,
@@ -403,7 +425,7 @@ describe('executeOnce', () => {
 
     expect(result.status).toBe('SIMULATED');
     expect(result.shadow?.receiptIxIncluded).toBe(false);
-    expect(result.shadow?.receiptPdaExpected).toBeDefined();
+    expect(result.shadow?.receiptPdaExpected).toBeUndefined();
     expect(result.metadata?.executionIntent.receiptIxIncluded).toBe(false);
     expect(buildExitTransactionMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -457,6 +479,7 @@ describe('executeOnce', () => {
         executionMode: 'mainnet-shadow',
         execution: {
           ...DEFAULT_CONFIG.execution,
+          onChainReceiptEnabled: false,
           swapRouter: 'noop',
           sendEnabled: false,
           allowMainnetNoopForDiagnostics: true,
@@ -538,6 +561,7 @@ describe('executeOnce', () => {
         executionMode: 'mainnet-shadow',
         execution: {
           ...DEFAULT_CONFIG.execution,
+          onChainReceiptEnabled: false,
           swapRouter: 'noop',
           sendEnabled: false,
           allowMainnetNoopForDiagnostics: true,
@@ -614,7 +638,7 @@ describe('executeOnce', () => {
         execution: {
           ...EXECUTE_CONFIG.execution,
           swapRouter: 'noop',
-          receiptPollMaxAttempts: 0,
+          receiptPollMaxAttempts: 1,
         },
       },
       policyState: {},
@@ -1195,7 +1219,7 @@ describe('executeOnce', () => {
         execution: {
           ...EXECUTE_CONFIG.execution,
           swapRouter: 'noop',
-          receiptPollMaxAttempts: 0,
+          receiptPollMaxAttempts: 1,
         },
       },
       policyState: {},
@@ -1500,6 +1524,140 @@ describe('executeOnce', () => {
     expect(buildExitTransactionMock).not.toHaveBeenCalled();
   });
 
+  it('aborts before build when the on-chain receipt PDA already exists without using the legacy seam', async () => {
+    vi.mocked(fetchReceiptByPda).mockResolvedValue(makeReceiptAccount());
+
+    buildExitTransactionMock.mockClear();
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: getAccountInfoForProgramOnly(),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: { ...EXECUTE_CONFIG, execution: { ...EXECUTE_CONFIG.execution, swapRouter: 'noop' } },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+    });
+
+    expect(res.status).toBe('ERROR');
+    expect(res.errorCode).toBe('ALREADY_EXECUTED_THIS_EPOCH');
+    expect(res.metadata?.executionIntent.onChainReceiptVerified).toBe(true);
+    expect(buildExitTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it('fails and leaves a retryable local row when tx confirms but the on-chain receipt is never observed', async () => {
+    vi.mocked(fetchReceiptByPda).mockResolvedValue(null);
+    const receiptLedger = createSqliteLocalReceiptLedger(':memory:');
+    const authority = new PublicKey(new Uint8Array(32).fill(20));
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: 'abc', lastValidBlockHeight: 123 })),
+      confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+      simulateTransaction: vi.fn(async () => ({ value: { err: null } })),
+      getAccountInfo: getAccountInfoForProgramOnly(),
+      getSlot: vi.fn(async () => 1),
+      getAddressLookupTable: vi.fn(async () => ({ value: null })),
+      getBalance: vi.fn(async () => 50_000_000),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    } as any;
+
+    const res = await executeOnce({
+      connection,
+      authority,
+      position: new PublicKey(new Uint8Array(32).fill(21)),
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
+      quote: {
+        inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
+        outputMint: new PublicKey(DEVNET_USDC_MINT),
+        inAmount: BigInt(1),
+        outAmount: BigInt(1),
+        slippageBps: 10,
+        quotedAtUnixMs: Date.now(),
+        raw: { inAmount: '1', outAmount: '1' },
+      },
+      config: {
+        ...EXECUTE_CONFIG,
+        execution: {
+          ...EXECUTE_CONFIG.execution,
+          swapRouter: 'noop',
+          receiptPollMaxAttempts: 1,
+        },
+      },
+      policyState: {},
+      expectedMinOut: '0',
+      quoteAgeMs: 0,
+      attestationHash: new Uint8Array(32),
+      attestationPayloadBytes: new Uint8Array(68),
+      signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
+      receiptLedger,
+      nowUnixMs: () => 1_700_000_000_000,
+    });
+
+    const rows = receiptLedger.list();
+
+    expect(res.status).toBe('ERROR');
+    expect(res.errorCode).toBe('RPC_TRANSIENT');
+    expect(res.errorMessage).toMatch(/receipt PDA/);
+    expect(res.metadata?.executionIntent.localReceiptConfirmed).toBe(false);
+    expect(res.metadata?.executionIntent.localReceiptStatus).toBe('failed');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe('failed');
+    expect(rows[0]?.txSignature).toBe('sig');
+    expect(rows[0]?.onChainReceiptVerified).toBe(false);
+    expect(rows[0]?.lastErrorMessage).toMatch(/receipt PDA/);
+    expect(
+      receiptLedger.claim({
+        cluster: rows[0]!.cluster,
+        executionMode: rows[0]!.executionMode,
+        authority: rows[0]!.authority,
+        positionAddress: rows[0]!.positionAddress,
+        positionMint: rows[0]!.positionMint,
+        whirlpoolAddress: rows[0]!.whirlpoolAddress,
+        epoch: rows[0]!.epoch,
+        direction: rows[0]!.direction,
+        attestationHash: new Uint8Array(32).fill(9),
+        attestationPayloadBytes: new Uint8Array([9, 9, 9]),
+        claimToken: 'retry-claim',
+        nowUnixMs: 1_700_000_001_000,
+        claimTtlMs: EXECUTE_CONFIG.execution.localReceiptClaimTtlMs,
+        onChainReceiptEnabled: true,
+        onChainReceiptPda: rows[0]!.onChainReceiptPda ?? undefined,
+      }).kind,
+    ).toBe('claimed');
+    receiptLedger.close();
+  });
+
   it('uses provided receiptEpochUnixMs for receipt precheck and tx builder', async () => {
     buildExitTransactionMock.mockClear();
     buildExitTransactionMock.mockResolvedValue({} as VersionedTransaction);
@@ -1553,7 +1711,7 @@ describe('executeOnce', () => {
         execution: {
           ...EXECUTE_CONFIG.execution,
           swapRouter: "noop",
-          receiptPollMaxAttempts: 0,
+          receiptPollMaxAttempts: 1,
         },
       },
       policyState: {},
@@ -1667,7 +1825,7 @@ describe('executeOnce', () => {
         execution: {
           ...EXECUTE_CONFIG.execution,
           swapRouter: 'noop',
-          receiptPollMaxAttempts: 0,
+          receiptPollMaxAttempts: 1,
         },
       },
       policyState: {},
@@ -1722,7 +1880,7 @@ describe('executeOnce', () => {
         execution: {
           ...EXECUTE_CONFIG.execution,
           swapRouter: 'noop',
-          receiptPollMaxAttempts: 0,
+          receiptPollMaxAttempts: 1,
         },
       },
       policyState: {},
