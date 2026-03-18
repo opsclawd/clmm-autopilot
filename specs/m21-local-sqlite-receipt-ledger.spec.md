@@ -144,7 +144,8 @@ Before a live send is attempted, the runtime must acquire a local receipt claim 
 3. If a `pending` claim is stale beyond `execution.localReceiptClaimTtlMs`, the runtime may recover it deterministically.
 4. Build/simulation failures before send must not leave an unrecoverable permanent duplicate block.
 5. Send failures or post-send confirmation failures must update the local receipt row with failure metadata so operators can diagnose and safely retry.
-6. Successful confirmation must mark the local receipt row `confirmed`.
+6. When `execution.onChainReceiptEnabled=true`, exhausting receipt polling without observing the expected receipt PDA is a post-send confirmation failure, not a success.
+7. Successful confirmation must mark the local receipt row `confirmed`.
 
 ### Recovery requirement
 The implementation must define one deterministic recovery path for abandoned `pending` rows. The exact mechanism may be:
@@ -165,9 +166,12 @@ The live execute path must continue using the same decision/build/sim/send flow,
 
 ### When `execution.onChainReceiptEnabled=true`
 - local SQLite receipt precheck remains authoritative for runtime dedupe
+- a pre-send on-chain receipt PDA lookup still runs before send; if the canonical receipt PDA already exists, execution must fail with `ALREADY_EXECUTED_THIS_EPOCH` even when the local SQLite ledger is empty or stale
 - the existing receipt identity resolution still runs
 - the receipt instruction is appended exactly as today
 - on-chain receipt verification still runs after confirmation
+- the local receipt row must not transition to `confirmed` until that on-chain receipt verification succeeds
+- if the transaction confirms but the receipt PDA is not observed within `receiptPollMaxAttempts`, the local row must remain retryable (`failed` or equivalent non-confirmed state) with tx signature + verification failure metadata recorded
 - successful execution produces:
   - a confirmed local receipt row
   - an on-chain receipt verification result tied to the same canonical key
@@ -236,8 +240,10 @@ Documentation must cover:
 ### Execute-path tests
 - local-receipt-only mode blocks same-epoch duplicate execution without any on-chain receipt config
 - local-receipt-only mode omits receipt ix from the built transaction
+- on-chain-enabled mode blocks before send when the canonical receipt PDA already exists even if the local SQLite ledger is empty
 - on-chain-enabled mode still appends receipt ix and verifies it after confirmation
 - local receipt row is confirmed only after successful send/confirmation
+- on-chain-enabled mode leaves the local row retryable when tx confirms but receipt verification exhausts
 - build/send failure leaves a diagnosable local record and a retryable path
 - `simulate-only` reads duplicate state but does not create durable claims
 

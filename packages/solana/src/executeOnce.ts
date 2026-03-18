@@ -845,75 +845,77 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       positionMint: snapshot.positionMint.toBase58(),
       epoch,
     };
-    if (receiptLedger && localReceiptKey) {
-      if (params.checkExistingReceipt && receiptPda) {
-        const existingReceipt = await params.checkExistingReceipt(receiptPda);
-        if (existingReceipt) {
-          localReceiptStatus = 'confirmed';
-          if (shadowDetails) shadowDetails.localReceiptStatus = localReceiptStatus;
-          emitRuntimeEvent(
-            params.observer,
-            counters,
-            baseEvent(params, correlationId, operatorState, {
-              event: 'execution.receipt_precheck_exists',
-              status: 'failed',
-              direction,
-              whirlpool: snapshot.whirlpool.toBase58(),
-              errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
-              details: {
-                epoch,
-                localReceiptStatus,
-                source: 'legacy-checkExistingReceipt',
-                onChainReceiptPda: receiptPda.toBase58(),
-              },
-            }),
-          );
-          return {
-            status: 'ERROR',
-            refresh: effectiveRefresh,
+    if (receiptPda) {
+      const existingReceipt = params.checkExistingReceipt
+        ? await params.checkExistingReceipt(receiptPda)
+        : Boolean(await fetchReceiptByPda(params.connection, receiptPda));
+      if (existingReceipt) {
+        onChainReceiptVerified = true;
+        if (shadowDetails) shadowDetails.onChainReceiptVerified = onChainReceiptVerified;
+        emitRuntimeEvent(
+          params.observer,
+          counters,
+          baseEvent(params, correlationId, operatorState, {
+            event: 'execution.receipt_precheck_exists',
+            status: 'failed',
+            direction,
+            whirlpool: snapshot.whirlpool.toBase58(),
             errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
-            errorMessage: 'Execution receipt already exists for canonical epoch',
-            shadow: shadowDetails,
-            metadata: buildMetadata({
+            details: {
+              epoch,
+              localReceiptStatus,
+              source: params.checkExistingReceipt ? 'legacy-checkExistingReceipt' : 'on-chain',
+              onChainReceiptPda: receiptPda.toBase58(),
+            },
+          }),
+        );
+        return {
+          status: 'ERROR',
+          refresh: effectiveRefresh,
+          errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+          errorMessage: 'Execution receipt already exists for canonical epoch',
+          shadow: shadowDetails,
+          metadata: buildMetadata({
+            config: params.config,
+            operatorState,
+            counters,
+            decision: {
+              decision: effectiveRefresh.decision.decision,
+              reasonCode: effectiveRefresh.decision.reasonCode,
+            },
+            swap: {
+              swapPlanned: assembled.plan.swapPlanned,
+              swapSkipped: !assembled.plan.swapPlanned,
+              swapSkipReason: assembled.plan.swapSkipReason,
+              swapRouter: assembled.plan.swapRouter,
+              swapInstructionCount: assembled.swapIxs.length,
+            },
+            reliability: {
+              quoteRebuilt,
+              ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
+              blockhashRefreshed,
+              retryAttempts,
+            },
+            executionIntent: buildExecutionIntent({
               config: params.config,
-              operatorState,
-              counters,
-              decision: {
-                decision: effectiveRefresh.decision.decision,
-                reasonCode: effectiveRefresh.decision.reasonCode,
-              },
-              swap: {
-                swapPlanned: assembled.plan.swapPlanned,
-                swapSkipped: !assembled.plan.swapPlanned,
-                swapSkipReason: assembled.plan.swapSkipReason,
-                swapRouter: assembled.plan.swapRouter,
-                swapInstructionCount: assembled.swapIxs.length,
-              },
-              reliability: {
-                quoteRebuilt,
-                ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
-                blockhashRefreshed,
-                retryAttempts,
-              },
-              executionIntent: buildExecutionIntent({
-                config: params.config,
-                removeLiquidityPlanned: true,
-                collectFeesPlanned: true,
-                localReceiptReadPlanned,
-                localReceiptClaimed,
-                localReceiptConfirmed,
-                localReceiptStatus,
-                onChainReceiptEnabled,
-                onChainReceiptWritePlanned: Boolean(receiptPda),
-                onChainReceiptConfigValid: receiptConfigValid,
-                onChainReceiptStepStructurallyBuildable: receiptStepStructurallyBuildable,
-                onChainReceiptIxIncluded: receiptIxIncluded,
-                onChainReceiptVerified,
-              }),
+              removeLiquidityPlanned: true,
+              collectFeesPlanned: true,
+              localReceiptReadPlanned,
+              localReceiptClaimed,
+              localReceiptConfirmed,
+              localReceiptStatus,
+              onChainReceiptEnabled,
+              onChainReceiptWritePlanned: Boolean(receiptPda),
+              onChainReceiptConfigValid: receiptConfigValid,
+              onChainReceiptStepStructurallyBuildable: receiptStepStructurallyBuildable,
+              onChainReceiptIxIncluded: receiptIxIncluded,
+              onChainReceiptVerified,
             }),
-          };
-        }
+          }),
+        };
       }
+    }
+    if (receiptLedger && localReceiptKey) {
       const precheck = receiptLedger.inspect(
         localReceiptKey,
         nowUnixMs(),
@@ -1376,6 +1378,21 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         }),
       );
     }
+    if (receiptPda && !receipt) {
+      if (shadowDetails) shadowDetails.onChainReceiptVerified = false;
+      throw {
+        code: 'RPC_TRANSIENT',
+        retryable: true,
+        message: `Transaction confirmed but receipt PDA ${receiptPda.toBase58()} was not observed after ${params.config.execution.receiptPollMaxAttempts} attempts`,
+        debug: {
+          txBuilt: true,
+          txSignature: sig,
+          receiptPda: receiptPda.toBase58(),
+          receiptPollMaxAttempts: params.config.execution.receiptPollMaxAttempts,
+          receiptPollIntervalMs: params.config.execution.receiptPollIntervalMs,
+        },
+      } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
+    }
     if (receiptLedger && localReceiptKey && localReceiptClaimToken) {
       receiptLedger.confirm({
         ...localReceiptKey,
@@ -1534,7 +1551,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           localReceiptConfirmed,
           localReceiptStatus,
           onChainReceiptEnabled: params.config.execution.onChainReceiptEnabled,
-          onChainReceiptWritePlanned: false,
+          onChainReceiptWritePlanned: Boolean(shadowDetails?.receiptPdaExpected),
           onChainReceiptConfigValid: shadowDetails?.receiptConfigValid ?? false,
           onChainReceiptStepStructurallyBuildable: shadowDetails?.receiptStepStructurallyBuildable ?? false,
           onChainReceiptIxIncluded: shadowDetails?.receiptIxIncluded ?? false,
