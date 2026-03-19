@@ -1,10 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '@clmm-autopilot/core';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { Connection, PublicKey } from '@solana/web3.js';
 
 const MAINNET_MANIFEST_FIXTURE = 'packages/solana/src/__tests__/fixtures/mainnet-receipt-manifest.json';
 const AUTHORITY = new PublicKey(new Uint8Array(32).fill(6)).toBase58();
 const POSITION = new PublicKey(new Uint8Array(32).fill(7)).toBase58();
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(MODULE_DIR, '../../../..');
+const tempDirs: string[] = [];
 
 const { executeOnceMock, loadPositionSnapshotMock, verifyReceiptProgramOnChainMock } = vi.hoisted(() => ({
   executeOnceMock: vi.fn(),
@@ -69,6 +76,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe('buildShadowTriggerRecord', () => {
@@ -188,6 +196,56 @@ describe('loadShadowConfig', () => {
       }),
     ).toThrow(/onChainReceiptEnabled/);
   });
+
+  it('loads shadow config from a JSON file path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mainnet-shadow-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'shadow.json');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        cluster: 'mainnet',
+        executionMode: 'mainnet-shadow',
+        policy: { cadenceMs: 15_000 },
+        execution: { swapRouter: 'jupiter', sendEnabled: false, maxRetries: 1, retryBackoffMs: [2_000] },
+      }),
+      'utf8',
+    );
+
+    const config = loadShadowConfig({
+      SHADOW_AUTOPILOT_CONFIG_PATH: configPath,
+    });
+
+    expect(config.policy.cadenceMs).toBe(15_000);
+    expect(config.execution.maxRetries).toBe(1);
+    expect(config.execution.retryBackoffMs).toEqual([2_000]);
+  });
+
+  it('prefers inline shadow config over the JSON file path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mainnet-shadow-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'shadow.json');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        cluster: 'mainnet',
+        executionMode: 'mainnet-shadow',
+        policy: { cadenceMs: 15_000 },
+      }),
+      'utf8',
+    );
+
+    const config = loadShadowConfig({
+      SHADOW_AUTOPILOT_CONFIG_PATH: configPath,
+      SHADOW_AUTOPILOT_CONFIG: JSON.stringify({
+        cluster: 'mainnet',
+        executionMode: 'mainnet-shadow',
+        policy: { cadenceMs: 30_000 },
+      }),
+    });
+
+    expect(config.policy.cadenceMs).toBe(30_000);
+  });
 });
 
 describe('isFatalShadowStartupCode', () => {
@@ -232,5 +290,29 @@ describe('runMainnetShadow', () => {
     expect(verifyReceiptProgramOnChainMock).not.toHaveBeenCalled();
     expect(loadPositionSnapshotMock).toHaveBeenCalledTimes(1);
     expect(executeOnceMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves relative shadow db paths from the repo root', async () => {
+    executeOnceMock.mockResolvedValueOnce({
+      status: 'ERROR',
+      errorCode: 'RECEIPT_IDL_MISMATCH',
+      errorMessage: 'manifest idl mismatch',
+    });
+
+    await expect(
+      runMainnetShadow(
+        shadowEnv({
+          SHADOW_DB_PATH: 'artifacts/shadow/mainnet/custom-shadow.db',
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'RECEIPT_IDL_MISMATCH',
+    });
+
+    const startEvent = (console.log as unknown as { mock: { calls: string[][] } }).mock.calls
+      .map(([entry]) => JSON.parse(entry) as { event?: string; dbPath?: string })
+      .find((entry) => entry.event === 'shadow.start');
+
+    expect(startEvent?.dbPath).toBe(resolve(REPO_ROOT, 'artifacts/shadow/mainnet/custom-shadow.db'));
   });
 });

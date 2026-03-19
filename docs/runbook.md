@@ -120,10 +120,12 @@ Required env/config:
 - `SHADOW_AUTHORITY` (or `AUTHORITY_PUBKEY`)
 - `SHADOW_POSITION_ADDRESSES` (default source mode: configured list)
 - `SHADOW_DISCOVER_POSITIONS=true` to opt into discovery when no configured list is provided
-- local receipt storage is configured through `SHADOW_AUTOPILOT_CONFIG` / `AUTOPILOT_CONFIG`:
+- local receipt storage is configured through `SHADOW_AUTOPILOT_CONFIG` / `AUTOPILOT_CONFIG` or `SHADOW_AUTOPILOT_CONFIG_PATH` / `AUTOPILOT_CONFIG_PATH`:
+  - inline JSON env takes precedence when both inline JSON and config path are set
+  - relative config paths resolve from the repo root
   - set `execution.localReceiptDbPath` explicitly for any live send path
   - on mainnet shadow, local receipt reads are optional and on-chain receipts remain disabled
-- optional `SHADOW_DB_PATH` (default: `artifacts/shadow/mainnet/shadow.db`)
+- optional `SHADOW_DB_PATH` (default: `artifacts/shadow/mainnet/shadow.db`; relative paths resolve from the repo root)
 - optional `SHADOW_ROLLUP_EVERY_EVALS` (default: `50`)
 
 Startup behavior:

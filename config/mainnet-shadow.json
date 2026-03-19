@@ -1,0 +1,17 @@
+{
+  "cluster": "mainnet",
+  "executionMode": "mainnet-shadow",
+  "policy": {
+    "cadenceMs": 15000
+  },
+  "execution": {
+    "swapRouter": "jupiter",
+    "sendEnabled": false,
+    "maxRetries": 1,
+    "retryBackoffMs": [2000]
+  },
+  "operator": {
+    "runtimeMode": "simulate-only",
+    "executionPausedDefault": false
+  }
+}
