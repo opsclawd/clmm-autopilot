@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { dirname, isAbsolute, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createRuntimeCounterRegistry,
   executeOnce,
@@ -29,6 +30,8 @@ import { getReceiptManifestForCluster, resolveReceiptRuntimeIdentity } from './r
 import { verifyReceiptProgramOnChain } from './receiptProgramVerification';
 
 const ORCA_WHIRLPOOL_PROGRAM_ID = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(MODULE_DIR, '../../..');
 
 type PositionRuntimeState = {
   samples: Sample[];
@@ -81,6 +84,10 @@ function parseInteger(raw: string | undefined, fallback: number): number {
   const value = Number(raw);
   if (!Number.isFinite(value)) return fallback;
   return Math.max(1, Math.trunc(value));
+}
+
+function resolveRepoPath(pathRaw: string): string {
+  return isAbsolute(pathRaw) ? pathRaw : resolve(REPO_ROOT, pathRaw);
 }
 
 function parsePositionList(raw: string | undefined): PublicKey[] {
@@ -160,8 +167,31 @@ export function isFatalShadowStartupCode(code: CanonicalErrorCode | undefined): 
   );
 }
 
+function loadShadowConfigInput(env: Record<string, string | undefined>): unknown {
+  const inlineRaw = env.SHADOW_AUTOPILOT_CONFIG ?? env.AUTOPILOT_CONFIG;
+  if (inlineRaw) return JSON.parse(inlineRaw);
+
+  const configPathRaw = env.SHADOW_AUTOPILOT_CONFIG_PATH ?? env.AUTOPILOT_CONFIG_PATH;
+  if (!configPathRaw) return {};
+
+  const configPath = resolveRepoPath(configPathRaw);
+  let fileRaw: string;
+  try {
+    fileRaw = readFileSync(configPath, 'utf8');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`CONFIG_INVALID: unable to read shadow config file at ${configPath}: ${message}`);
+  }
+
+  try {
+    return JSON.parse(fileRaw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`CONFIG_INVALID: unable to parse shadow config file at ${configPath}: ${message}`);
+  }
+}
+
 export function loadShadowConfig(env: Record<string, string | undefined>): AutopilotConfig {
-  const raw = env.SHADOW_AUTOPILOT_CONFIG ?? env.AUTOPILOT_CONFIG;
   const fallbackCluster = env.SOLANA_CLUSTER ?? 'mainnet';
   const fallbackInput = {
     cluster: fallbackCluster,
@@ -176,7 +206,7 @@ export function loadShadowConfig(env: Record<string, string | undefined>): Autop
     },
   };
 
-  const parsedRaw = raw ? JSON.parse(raw) : {};
+  const parsedRaw = loadShadowConfigInput(env);
   const parsedInput = isRecord(parsedRaw)
     ? {
         ...fallbackInput,
@@ -385,7 +415,7 @@ export async function runMainnetShadow(env: Record<string, string | undefined> =
     throw new Error('CONFIG_INVALID: no monitorable positions found');
   }
 
-  const dbPath = resolve(env.SHADOW_DB_PATH ?? 'artifacts/shadow/mainnet/shadow.db');
+  const dbPath = resolveRepoPath(env.SHADOW_DB_PATH ?? 'artifacts/shadow/mainnet/shadow.db');
   mkdirSync(resolve(dbPath, '..'), { recursive: true });
   const store = new ShadowArtifactStore(dbPath);
   const counters = createRuntimeCounterRegistry();
