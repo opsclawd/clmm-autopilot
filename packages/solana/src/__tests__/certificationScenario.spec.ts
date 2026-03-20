@@ -84,6 +84,24 @@ function deps(overrides: Record<string, unknown> = {}): Parameters<typeof runCer
 }
 
 describe('certification scenarios', () => {
+  it('resolves the direction-aware scenario matrix with retry coverage', () => {
+    const downScenarios = resolveCertificationScenarios({ direction: 'DOWN' });
+    expect(downScenarios.some((scenario) => scenario.id === 'local-receipt-failed-retry')).toBe(true);
+
+    const staleQuote = resolveCertificationScenarios({
+      scenarioId: 'stale-quote-rebuild',
+      direction: 'DOWN',
+    })[0];
+    expect(staleQuote.expectedStatus).toBe('PASS');
+    expect(staleQuote.requireQuoteRebuilt).toBe(true);
+
+    const retryExhaustion = resolveCertificationScenarios({
+      scenarioId: 'rpc-retry-exhaustion',
+      direction: 'DOWN',
+    })[0];
+    expect(retryExhaustion.requireRetryExhaustionKey).toBe('buildPlan.initial');
+  });
+
   it('forces hold-path into HOLD without executing the tx path', async () => {
     const env = await makeEnv();
     const executeOnce = vi.fn();
@@ -259,5 +277,42 @@ describe('certification scenarios', () => {
 
     expect(artifact.status).toBe('FAIL');
     expect(artifact.errors.some((entry) => entry.code === 'CERT_EXPECTED_FAILURE_NOT_OBSERVED')).toBe(true);
+  });
+
+  it('fails expected-failure scenarios when retry proof metadata does not match', async () => {
+    const env = await makeEnv();
+    const artifact = await runCertificationScenario(resolveCertificationScenarios({
+      scenarioId: 'rpc-retry-exhaustion',
+      direction: 'DOWN',
+    })[0], env, () => {}, deps({
+      executeOnce: vi.fn(async () => ({
+        status: 'ERROR',
+        failurePhase: 'quote',
+        errorCode: 'RETRY_EXHAUSTED',
+        errorMessage: 'retry ceiling hit',
+        metadata: {
+          prompt: { state: 'prompt_not_reached', walletPromptCount: 0 },
+          reliability: {
+            quoteRebuilt: false,
+            quoteAgeMs: 0,
+            quoteFreshnessMs: 1000,
+            quoteFreshnessSlots: 2,
+            blockhashRefreshed: false,
+            sendAttempts: 0,
+            retryAttempts: { wrongKey: 3 },
+            retryExhaustedKey: 'wrongKey',
+          },
+          executionIntent: {
+            collectFeesPlanned: false,
+            localReceiptStatus: 'clear',
+            localReceiptClaimed: false,
+            localReceiptConfirmed: false,
+          },
+        },
+      })) as any,
+    }));
+
+    expect(artifact.status).toBe('FAIL');
+    expect(artifact.assertions.some((entry) => entry.name === 'scenario.retryExhausted' && entry.pass === false)).toBe(true);
   });
 });

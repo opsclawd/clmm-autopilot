@@ -14,7 +14,8 @@ export type CertificationScenarioId =
   | 'insufficient-fee-buffer'
   | 'slippage-cap-breach'
   | 'duplicate-execution-same-epoch'
-  | 'local-receipt-pending-blocker';
+  | 'local-receipt-pending-blocker'
+  | 'local-receipt-failed-retry';
 
 export type CertificationExecutionClass = 'pre_send_failure' | 'live_send_success' | 'live_send_failure';
 export type CertificationFixtureShape = 'trigger_down' | 'trigger_up' | 'hold_in_range';
@@ -60,12 +61,12 @@ const BASE_SCENARIOS: BaseScenario[] = [
   },
   {
     id: 'stale-quote-rebuild',
-    executionClass: 'pre_send_failure',
-    walletPromptExpected: false,
+    executionClass: 'live_send_success',
+    walletPromptExpected: true,
     freshFixtureRequired: true,
-    expectedStatus: 'EXPECTED_FAILURE',
-    expectedErrorCodes: ['QUOTE_STALE'],
-    expectedFailurePhase: 'quote',
+    expectedStatus: 'PASS',
+    expectedErrorCodes: [],
+    requireQuoteRebuilt: true,
   },
   {
     id: 'signing-delay-blockhash-drift',
@@ -84,7 +85,7 @@ const BASE_SCENARIOS: BaseScenario[] = [
     expectedStatus: 'EXPECTED_FAILURE',
     expectedErrorCodes: ['RETRY_EXHAUSTED'],
     expectedFailurePhase: 'quote',
-    requireRetryExhaustionKey: 'refreshPositionDecision',
+    requireRetryExhaustionKey: 'buildPlan.initial',
   },
   {
     id: 'unsupported-router-cluster',
@@ -138,6 +139,14 @@ const BASE_SCENARIOS: BaseScenario[] = [
     expectedStatus: 'EXPECTED_FAILURE',
     expectedErrorCodes: ['LOCAL_RECEIPT_PENDING'],
     expectedFailurePhase: 'precheck',
+  },
+  {
+    id: 'local-receipt-failed-retry',
+    executionClass: 'live_send_success',
+    walletPromptExpected: true,
+    freshFixtureRequired: false,
+    expectedStatus: 'PASS',
+    expectedErrorCodes: [],
   },
 ];
 

@@ -713,6 +713,7 @@ export async function runDevnetE2EWithArtifact(
   let sendAttempts = 0;
   let retryAttempts: Record<string, number> = {};
   let retryExhaustedKey: string | undefined;
+  let localReceiptPrecheckStatus: ResultArtifact['localReceipt']['precheckStatus'] = 'not_configured';
   let localReceiptStatus: ResultArtifact['localReceipt']['terminalStatus'] = 'not_configured';
   let localReceiptClaimed = false;
   let localReceiptConfirmed = false;
@@ -742,6 +743,8 @@ export async function runDevnetE2EWithArtifact(
     const authorityKp = await loadAuthorityFromPath(authorityPath);
     authority = authorityKp.publicKey.toBase58();
     localReceiptLedger = createSqliteLocalReceiptLedger(localReceiptDbPath);
+    localReceiptPrecheckStatus = 'clear';
+    localReceiptStatus = 'clear';
     assertPositionSourceConfigured(env, scenario.direction);
     const connection = new Connection(rpcUrlRaw, 'confirmed');
 
@@ -789,7 +792,9 @@ export async function runDevnetE2EWithArtifact(
     } else {
       log(logger, 'receipt.program.skip', { reason: 'ONCHAIN_RECEIPT_DISABLED', localReceiptDbPath });
     }
+    failurePhase = 'quote';
     const configuredAdapter = getSwapAdapter(config.execution.swapRouter, config.cluster);
+    failurePhase = undefined;
 
     const unixTs = Math.floor(runStartedMs / 1000);
     const epoch = unixDaysFromUnixTs(unixTs);
@@ -849,6 +854,7 @@ export async function runDevnetE2EWithArtifact(
     log(logger, 'policy.evaluate.ok', { decision, reasonCode: decisionReasonCode });
 
     if (decision === 'HOLD') {
+      await runOptionalToken2022Scenario({ env, connection, deps, logger });
       if (requireReceiptProof) {
         throw codedError(
           'RECEIPT_PROGRAM_VERIFICATION_FAILED',
@@ -889,6 +895,8 @@ export async function runDevnetE2EWithArtifact(
         runStartedMs,
         config.execution.localReceiptClaimTtlMs,
       );
+      let localBlockedStatus = localPrecheck.kind === 'blocked' ? localPrecheck.status : null;
+      localReceiptPrecheckStatus = localBlockedStatus ?? 'clear';
       const [receiptPda] = receiptIdentity
         ? deriveReceiptPda({
             authority: authorityKp.publicKey,
@@ -899,20 +907,65 @@ export async function runDevnetE2EWithArtifact(
         : [undefined];
       receiptPdaBase58 = receiptPda?.toBase58() ?? '';
 
-      receiptFoundBefore = localPrecheck.kind === 'blocked';
+      if (scenario.id === 'local-receipt-pending-blocker' || scenario.id === 'local-receipt-failed-retry') {
+        const seedClaim = localReceiptLedger.claim({
+          ...localReceiptKey,
+          executionMode: config.executionMode,
+          positionAddress: snapshot.position.toBase58(),
+          whirlpoolAddress: snapshot.whirlpool.toBase58(),
+          direction: decision === 'TRIGGER_UP' ? 'UP' : 'DOWN',
+          attestationHash: new Uint8Array(32).fill(9),
+          attestationPayloadBytes: new Uint8Array([9]),
+          claimToken: `seed-${scenario.id}`,
+          nowUnixMs: runStartedMs,
+          claimTtlMs: config.execution.localReceiptClaimTtlMs,
+          onChainReceiptEnabled,
+          ...(receiptPda ? { onChainReceiptPda: receiptPda.toBase58() } : {}),
+        });
+        if (seedClaim.kind !== 'claimed') {
+          failurePhase = 'precheck';
+          throw codedError(
+            seedClaim.status === 'pending' ? 'LOCAL_RECEIPT_PENDING' : 'ALREADY_EXECUTED_THIS_EPOCH',
+            'Unable to seed local receipt certification scenario',
+          );
+        }
+        if (scenario.id === 'local-receipt-pending-blocker') {
+          localBlockedStatus = 'pending';
+          localReceiptPrecheckStatus = 'pending';
+        } else {
+          localReceiptLedger.fail({
+            ...localReceiptKey,
+            claimToken: `seed-${scenario.id}`,
+            nowUnixMs: runStartedMs,
+            errorCode: 'RPC_TRANSIENT',
+            errorMessage: 'seeded failed local receipt row for retry certification',
+            ...(receiptPda ? { onChainReceiptPda: receiptPda.toBase58() } : {}),
+          });
+          localBlockedStatus = null;
+          localReceiptPrecheckStatus = 'clear';
+        }
+      }
+      receiptFoundBefore = localBlockedStatus !== null;
       assertions.push(makeAssertion({
         name: 'precheck.receiptAbsent',
-        pass: !receiptFoundBefore,
+        pass: scenario.id === 'local-receipt-pending-blocker' ? receiptFoundBefore : !receiptFoundBefore,
         actual: receiptFoundBefore ? 1 : 0,
-        expected: 0,
+        expected: scenario.id === 'local-receipt-pending-blocker' ? 1 : 0,
       }));
-      if (localPrecheck.kind === 'blocked') {
-        throw codedError('ALREADY_EXECUTED_THIS_EPOCH', 'Local receipt ledger already contains a receipt for this epoch');
+      if (localBlockedStatus !== null) {
+        failurePhase = 'precheck';
+        throw codedError(
+          localBlockedStatus === 'pending' ? 'LOCAL_RECEIPT_PENDING' : 'ALREADY_EXECUTED_THIS_EPOCH',
+          localBlockedStatus === 'pending'
+            ? 'Local receipt ledger contains a fresh pending execution claim for this epoch'
+            : 'Local receipt ledger already contains a confirmed receipt for this epoch',
+        );
       }
       if (receiptPda) {
         const existing = await deps.fetchReceiptByPda(connection, receiptPda);
         if (existing) {
           receiptFoundBefore = true;
+          failurePhase = 'precheck';
           throw codedError('ALREADY_EXECUTED_THIS_EPOCH', 'Execution receipt already exists for this epoch');
         }
         log(logger, 'receipt.precheck.ok', { receiptPda: receiptPda.toBase58(), epoch, count: 0, source: 'on-chain' });
@@ -1397,6 +1450,9 @@ export async function runDevnetE2EWithArtifact(
       status = 'FAIL';
     }
   }
+  if (status !== 'SKIPPED' && !allAssertionsPass(assertions)) {
+    status = 'FAIL';
+  }
   if (status === 'FAIL' && errors.length === 0) {
     errors.push({
       code: txSent ? 'POSTCONDITION_FAILED' : 'CERT_ASSERTION_FAILED',
@@ -1483,7 +1539,7 @@ export async function runDevnetE2EWithArtifact(
       sendAttempts,
     },
     localReceipt: {
-      precheckStatus: receiptFoundBefore ? 'confirmed' : localReceiptStatus === 'pending' ? 'pending' : 'clear',
+      precheckStatus: localReceiptPrecheckStatus,
       claimed: localReceiptClaimed,
       confirmed: localReceiptConfirmed,
       terminalStatus: localReceiptStatus,
@@ -1598,22 +1654,9 @@ export async function runCertificationScenario(
       },
     };
   }
-  if (scenario.id === 'local-receipt-pending-blocker') {
-    scenarioOptions.executeOnceHooks = {
-      forceFailure: {
-        phase: 'precheck',
-        code: 'LOCAL_RECEIPT_PENDING',
-        message: 'forced certification pending local receipt',
-      },
-    };
-  }
   if (scenario.id === 'stale-quote-rebuild') {
     scenarioOptions.executeOnceHooks = {
-      forceFailure: {
-        phase: 'quote',
-        code: 'QUOTE_STALE',
-        message: 'forced certification stale quote',
-      },
+      forceQuoteRebuildReason: 'QUOTE_STALE',
     };
   }
   if (scenario.id === 'signing-delay-blockhash-drift') {

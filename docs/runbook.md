@@ -311,6 +311,7 @@ Supported scenario names are:
 - `slippage-cap-breach`
 - `duplicate-execution-same-epoch`
 - `local-receipt-pending-blocker`
+- `local-receipt-failed-retry`
 
 Direction filters:
 
