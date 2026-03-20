@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getMintRegistry } from '@clmm-autopilot/core';
 import { runDevnetE2E } from '../e2eDevnet';
+import { createSqliteLocalReceiptLedger } from '../localReceiptLedger';
 import { deriveReceiptPda } from '../receipt';
 import { getDefaultDevnetReceiptManifest } from '../receiptIdentity';
 
@@ -446,6 +447,41 @@ describe('runDevnetE2E refusals', () => {
         nowMs: () => 1_700_000_000_000,
       })),
     ).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE' });
+
+    await cleanup();
+  });
+
+  it('returns LOCAL_RECEIPT_PENDING when a fresh local receipt claim already exists', async () => {
+    const { env, cleanup } = await makeEnv();
+    const authority = Keypair.fromSecretKey(
+      Uint8Array.from(JSON.parse(await (await import('node:fs/promises')).readFile(env.AUTHORITY_KEYPAIR, 'utf8'))),
+    ).publicKey;
+    const snapshot = mockSnapshot(env.POSITION_ADDRESS);
+    const epoch = Math.floor((1_700_000_000_000 / 1000) / 86400);
+    const ledger = createSqliteLocalReceiptLedger(env.LOCAL_RECEIPT_DB_PATH);
+    ledger.claim({
+      cluster: 'devnet',
+      authority: authority.toBase58(),
+      positionMint: snapshot.positionMint.toBase58(),
+      epoch,
+      executionMode: 'devnet-live',
+      positionAddress: snapshot.position.toBase58(),
+      whirlpoolAddress: snapshot.whirlpool.toBase58(),
+      direction: 'DOWN',
+      attestationHash: new Uint8Array(32).fill(7),
+      attestationPayloadBytes: new Uint8Array([7]),
+      claimToken: 'pending-claim',
+      nowUnixMs: 1_700_000_000_000,
+      claimTtlMs: 60_000,
+      onChainReceiptEnabled: true,
+    });
+    ledger.close();
+
+    await expect(
+      runDevnetE2E(env, () => {}, harnessDeps({
+        loadPositionSnapshot: vi.fn(async () => snapshot) as any,
+      })),
+    ).rejects.toMatchObject({ code: 'LOCAL_RECEIPT_PENDING' });
 
     await cleanup();
   });

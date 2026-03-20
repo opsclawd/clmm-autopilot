@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { getMintRegistry } from '@clmm-autopilot/core';
 import { runCertificationScenario } from '../e2eDevnet';
+import { resolveCertificationScenarios } from '../e2e/scenarios';
 import { deriveReceiptPda } from '../receipt';
 import { getDefaultDevnetReceiptManifest } from '../receiptIdentity';
 
@@ -42,11 +43,11 @@ function deps(overrides: Record<string, unknown> = {}): Parameters<typeof runCer
       whirlpool: new PublicKey(new Uint8Array(32).fill(1)),
       position: new PublicKey(new Uint8Array(32).fill(7)),
       positionMint: new PublicKey(new Uint8Array(32).fill(2)),
-      currentTickIndex: 0,
+      currentTickIndex: -50,
       lowerTickIndex: -10,
       upperTickIndex: 10,
       tickSpacing: 1,
-      inRange: true,
+      inRange: false,
       liquidity: 1n,
       tokenMintA: SOL,
       tokenMintB: USDC,
@@ -83,10 +84,31 @@ function deps(overrides: Record<string, unknown> = {}): Parameters<typeof runCer
 }
 
 describe('certification scenarios', () => {
+  it('resolves the direction-aware scenario matrix with retry coverage', () => {
+    const downScenarios = resolveCertificationScenarios({ direction: 'DOWN' });
+    expect(downScenarios.some((scenario) => scenario.id === 'local-receipt-failed-retry')).toBe(true);
+
+    const staleQuote = resolveCertificationScenarios({
+      scenarioId: 'stale-quote-rebuild',
+      direction: 'DOWN',
+    })[0];
+    expect(staleQuote.expectedStatus).toBe('PASS');
+    expect(staleQuote.requireQuoteRebuilt).toBe(true);
+
+    const retryExhaustion = resolveCertificationScenarios({
+      scenarioId: 'rpc-retry-exhaustion',
+      direction: 'DOWN',
+    })[0];
+    expect(retryExhaustion.requireRetryExhaustionKey).toBe('buildPlan.initial');
+  });
+
   it('forces hold-path into HOLD without executing the tx path', async () => {
     const env = await makeEnv();
     const executeOnce = vi.fn();
-    const artifact = await runCertificationScenario('hold-path', env, () => {}, deps({
+    const artifact = await runCertificationScenario(resolveCertificationScenarios({
+      scenarioId: 'hold-path-debounce',
+      direction: 'DOWN',
+    })[0], env, () => {}, deps({
       loadPositionSnapshot: vi.fn(async () => ({
         cluster: 'devnet',
         pairLabel: 'SOL/USDC',
@@ -94,11 +116,11 @@ describe('certification scenarios', () => {
         whirlpool: new PublicKey(new Uint8Array(32).fill(1)),
         position: new PublicKey(new Uint8Array(32).fill(7)),
         positionMint: new PublicKey(new Uint8Array(32).fill(2)),
-        currentTickIndex: -50,
+        currentTickIndex: 0,
         lowerTickIndex: -10,
         upperTickIndex: 10,
         tickSpacing: 1,
-        inRange: false,
+        inRange: true,
         liquidity: 1n,
         tokenMintA: SOL,
         tokenMintB: USDC,
@@ -125,9 +147,12 @@ describe('certification scenarios', () => {
 
   it('classifies unsupported-router-cluster as EXPECTED_FAILURE', async () => {
     const env = await makeEnv();
-    const artifact = await runCertificationScenario('unsupported-router-cluster', env, () => {}, deps());
+    const artifact = await runCertificationScenario(resolveCertificationScenarios({
+      scenarioId: 'unsupported-router-cluster',
+      direction: 'DOWN',
+    })[0], env, () => {}, deps());
     expect(artifact.status).toBe('EXPECTED_FAILURE');
-    expect(artifact.scenarioName).toBe('unsupported-router-cluster');
+    expect(artifact.scenarioName).toBe('down-unsupported-router-cluster');
   });
 
   it('fails rpc-retry-exhaustion when the expected failure is not observed', async () => {
@@ -144,7 +169,10 @@ describe('certification scenarios', () => {
       epoch,
       programId: new PublicKey(getDefaultDevnetReceiptManifest().programId),
     });
-    const artifact = await runCertificationScenario('rpc-retry-exhaustion', env, () => {}, deps({
+    const artifact = await runCertificationScenario(resolveCertificationScenarios({
+      scenarioId: 'rpc-retry-exhaustion',
+      direction: 'DOWN',
+    })[0], env, () => {}, deps({
       executeOnce: vi.fn()
         .mockImplementationOnce(async (input: { attestationHash?: Uint8Array }) => {
           attestationHash = new Uint8Array(input.attestationHash ?? attestationHash);
@@ -154,9 +182,18 @@ describe('certification scenarios', () => {
             receiptPda: receiptPda.toBase58(),
             execution: { unsignedTxBuilt: true, simulated: true },
             metadata: {
+              prompt: { state: 'signed', walletPromptCount: 1 },
               swap: { swapInstructionCount: 1 },
-              executionIntent: { collectFeesPlanned: true },
-              reliability: { quoteRebuilt: false, blockhashRefreshed: false, retryAttempts: {} },
+              executionIntent: { collectFeesPlanned: true, localReceiptStatus: 'confirmed', localReceiptClaimed: true, localReceiptConfirmed: true },
+              reliability: {
+                quoteRebuilt: false,
+                quoteAgeMs: 0,
+                quoteFreshnessMs: 1000,
+                quoteFreshnessSlots: 2,
+                blockhashRefreshed: false,
+                sendAttempts: 1,
+                retryAttempts: {},
+              },
             },
           };
         })
@@ -187,11 +224,11 @@ describe('certification scenarios', () => {
           whirlpool: new PublicKey(new Uint8Array(32).fill(1)),
           position: new PublicKey(new Uint8Array(32).fill(7)),
           positionMint,
-          currentTickIndex: 0,
+          currentTickIndex: -50,
           lowerTickIndex: -10,
           upperTickIndex: 10,
           tickSpacing: 1,
-          inRange: true,
+          inRange: false,
           liquidity: 1n,
           tokenMintA: SOL,
           tokenMintB: USDC,
@@ -215,11 +252,11 @@ describe('certification scenarios', () => {
           whirlpool: new PublicKey(new Uint8Array(32).fill(1)),
           position: new PublicKey(new Uint8Array(32).fill(7)),
           positionMint,
-          currentTickIndex: 0,
+          currentTickIndex: -50,
           lowerTickIndex: -10,
           upperTickIndex: 10,
           tickSpacing: 1,
-          inRange: true,
+          inRange: false,
           liquidity: 0n,
           tokenMintA: SOL,
           tokenMintB: USDC,
@@ -242,12 +279,40 @@ describe('certification scenarios', () => {
     expect(artifact.errors.some((entry) => entry.code === 'CERT_EXPECTED_FAILURE_NOT_OBSERVED')).toBe(true);
   });
 
-  it('marks token2022-certification as SKIPPED when token2022 position is not configured', async () => {
+  it('fails expected-failure scenarios when retry proof metadata does not match', async () => {
     const env = await makeEnv();
-    const artifact = await runCertificationScenario('token2022-certification', env, () => {}, deps());
-    expect(artifact.status).toBe('SKIPPED');
-    expect(artifact.skipReason).toBe('SCENARIO_SKIPPED_NOT_CONFIGURED');
-    expect(artifact.scenarioName).toBe('token2022-certification');
-    expect(artifact.assertions.some((entry) => entry.reasonCode === 'SCENARIO_SKIPPED_NOT_CONFIGURED')).toBe(true);
+    const artifact = await runCertificationScenario(resolveCertificationScenarios({
+      scenarioId: 'rpc-retry-exhaustion',
+      direction: 'DOWN',
+    })[0], env, () => {}, deps({
+      executeOnce: vi.fn(async () => ({
+        status: 'ERROR',
+        failurePhase: 'quote',
+        errorCode: 'RETRY_EXHAUSTED',
+        errorMessage: 'retry ceiling hit',
+        metadata: {
+          prompt: { state: 'prompt_not_reached', walletPromptCount: 0 },
+          reliability: {
+            quoteRebuilt: false,
+            quoteAgeMs: 0,
+            quoteFreshnessMs: 1000,
+            quoteFreshnessSlots: 2,
+            blockhashRefreshed: false,
+            sendAttempts: 0,
+            retryAttempts: { wrongKey: 3 },
+            retryExhaustedKey: 'wrongKey',
+          },
+          executionIntent: {
+            collectFeesPlanned: false,
+            localReceiptStatus: 'clear',
+            localReceiptClaimed: false,
+            localReceiptConfirmed: false,
+          },
+        },
+      })) as any,
+    }));
+
+    expect(artifact.status).toBe('FAIL');
+    expect(artifact.assertions.some((entry) => entry.name === 'scenario.retryExhausted' && entry.pass === false)).toBe(true);
   });
 });
