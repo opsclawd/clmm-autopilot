@@ -38,8 +38,10 @@ Harness env vars:
 - `AUTHORITY_KEYPAIR` (required, dev-only local keypair JSON path)
 - `LOCAL_RECEIPT_DB_PATH` (required; SQLite path used for local duplicate protection)
 - `ONCHAIN_RECEIPT_ENABLED` (optional: `1|0|true|false`, default `1` on devnet harness)
-- `POSITION_ADDRESS` (optional when `POSITION_ADDRESS_CANDIDATES` is set; exact devnet position account)
-- `POSITION_ADDRESS_CANDIDATES` (optional comma-separated fallback list; harness picks the first SOL/USDC candidate without a receipt for the current UTC-day epoch)
+- `POSITION_ADDRESS` (optional when direction-specific candidate inventories are set; exact devnet position account)
+- `POSITION_ADDRESS_CANDIDATES_DOWN` (preferred for certification; comma-separated devnet candidates for `DOWN` trigger fixtures)
+- `POSITION_ADDRESS_CANDIDATES_UP` (preferred for certification; comma-separated devnet candidates for `UP` trigger fixtures)
+- `POSITION_ADDRESS_CANDIDATES` (legacy fallback list; retained for ad hoc harness runs)
 - `SWAP_ROUTER` (optional: `noop` | `orca` | `jupiter`, default `noop` for deterministic harness runs)
 - `FORCE_DECISION` (optional: `TRIGGER_DOWN` | `TRIGGER_UP`; overrides live policy decision to force receipt proof path)
 - `REQUIRE_RECEIPT_PROOF` (optional: `1|0|true|false`, default `0`; when enabled, `HOLD` is treated as failure)
@@ -199,7 +201,7 @@ node scripts/find-devnet-whirlpool-positions.mjs --wallet "$WALLET_ADDRESS"
    - exits `0` when `REQUIRE_RECEIPT_PROOF` is unset/false
    - fails fast when `REQUIRE_RECEIPT_PROOF=1`
 8. If TRIGGER: checks the local receipt ledger pre-state (must be clear)
-   - when `POSITION_ADDRESS_CANDIDATES` is set, the harness first skips candidates that already have a local confirmed/fresh pending receipt for the current epoch
+   - when candidate inventories are set, the harness first records deterministic exclusion reasons and then selects the first matching fixture for the requested direction/scenario
 9. If swap is planned and router is not `noop`, fetches swap quote via configured adapter (`execution.swapRouter`) and computes canonical attestation payload/hash
 10. Builds tx + simulates (simulation gate)
 11. Claims the local receipt ledger and sends + confirms
@@ -293,20 +295,27 @@ Any threshold breach resets the promotion window after remediation.
 Run one named scenario by setting `E2E_CERT_SCENARIO`, for example:
 
 ```bash
-E2E_CERT_SCENARIO=hold-path pnpm e2e:certify:devnet
+E2E_CERT_SCENARIO=hold-path-debounce E2E_CERT_DIRECTION=DOWN pnpm e2e:certify:devnet
 ```
 
 Supported scenario names are:
 
-- `happy-path-trigger`
-- `hold-path`
+- `happy-path-execute`
+- `hold-path-debounce`
 - `stale-quote-rebuild`
 - `signing-delay-blockhash-drift`
 - `rpc-retry-exhaustion`
 - `unsupported-router-cluster`
-- `receipt-misconfiguration`
-- `token2022-certification`
+- `unsupported-swap-route`
+- `insufficient-fee-buffer`
+- `slippage-cap-breach`
 - `duplicate-execution-same-epoch`
+- `local-receipt-pending-blocker`
+
+Direction filters:
+
+- `E2E_CERT_DIRECTION=DOWN|UP`
+- if no direction is provided, the full direction x scenario matrix runs
 
 Artifact status values:
 
@@ -316,7 +325,7 @@ Artifact status values:
 - `SKIPPED`
 - `FAIL`
 
-Artifacts include `schemaVersion: 1` and should be used as the primary certification record (logs remain supplementary).
+Artifacts include `schemaVersion: 2` and should be used as the primary certification record (logs remain supplementary).
 When `status=SKIPPED`, the artifact also includes a stable top-level `skipReason`.
 
 ## Consistency guard

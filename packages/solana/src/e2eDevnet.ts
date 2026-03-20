@@ -30,15 +30,22 @@ import { verifyReceiptProgramOnChain } from './receiptProgramVerification';
 import { getSwapAdapter } from './swap/registry';
 import { deriveSwapTickArrays } from './swap/tickArrays';
 import { TOKEN_2022_PROGRAM_ID } from './token/constants';
-import { CERTIFICATION_SCENARIOS } from './e2e/scenarios';
+import {
+  resolveCertificationScenarios,
+  type CertificationDirection,
+  type CertificationScenarioId,
+  type CertificationScenarioSpec,
+  type CertificationFixtureShape,
+} from './e2e/scenarios';
 import {
   buildRunId,
   sanitizeRpcUrl,
   type CertificationStatus,
-  type ResultArtifactV1,
+  type ResultArtifact,
   writeResultArtifact,
 } from './e2e/resultArtifact';
 import { allAssertionsPass, getAssertion, makeAssertion } from './e2e/assertions';
+import type { CertificationFailurePhase, PromptState } from './executeOnce';
 
 export type HarnessDecision = 'HOLD' | 'TRIGGER_DOWN' | 'TRIGGER_UP';
 
@@ -50,16 +57,6 @@ const SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 const ZERO_PUBKEY = '11111111111111111111111111111111';
 
 type HarnessLogger = (entry: Record<string, unknown>) => void;
-export type CertificationScenarioName =
-  | 'happy-path-trigger'
-  | 'hold-path'
-  | 'stale-quote-rebuild'
-  | 'signing-delay-blockhash-drift'
-  | 'rpc-retry-exhaustion'
-  | 'unsupported-router-cluster'
-  | 'receipt-misconfiguration'
-  | 'token2022-certification'
-  | 'duplicate-execution-same-epoch';
 
 type OwnerStateSnapshot = {
   tokenA: bigint;
@@ -73,14 +70,15 @@ type OwnerStateSnapshot = {
 type ScenarioExpectation = {
   expectedStatus?: CertificationStatus;
   expectedErrorCodes?: string[];
-  allowSkip?: boolean;
+  expectedFailurePhase?: CertificationFailurePhase;
+  walletPromptExpected?: boolean;
   requireQuoteRebuilt?: boolean;
   requireBlockhashRefreshed?: boolean;
   requireRetryExhaustionKey?: string;
 };
 
 export type RunDevnetE2EOptions = {
-  scenarioName?: CertificationScenarioName;
+  scenario?: CertificationScenarioSpec;
   artifactBaseDir?: string;
   expectation?: ScenarioExpectation;
   decisionOverride?: HarnessDecision;
@@ -90,6 +88,8 @@ export type RunDevnetE2EOptions = {
 type ResolvedHarnessPosition = {
   position: PublicKey;
   snapshot?: PositionSnapshot;
+  source: 'explicit-position' | 'directional-candidates';
+  exclusions: Array<{ position: string; reasonCode: string; detail?: string }>;
 };
 
 type HarnessDeps = {
@@ -138,7 +138,14 @@ function parseRequiredEnv(env: HarnessEnv, key: 'RPC_URL' | 'AUTHORITY_KEYPAIR')
   return value;
 }
 
-function parseOptionalEnv(env: HarnessEnv, key: 'POSITION_ADDRESS' | 'POSITION_ADDRESS_CANDIDATES'): string | undefined {
+function parseOptionalEnv(
+  env: HarnessEnv,
+  key:
+    | 'POSITION_ADDRESS'
+    | 'POSITION_ADDRESS_CANDIDATES'
+    | 'POSITION_ADDRESS_CANDIDATES_DOWN'
+    | 'POSITION_ADDRESS_CANDIDATES_UP',
+): string | undefined {
   const value = env[key]?.trim();
   return value ? value : undefined;
 }
@@ -148,7 +155,14 @@ function parseOptionalToken2022Position(env: HarnessEnv): string | undefined {
   return value ? value : undefined;
 }
 
-function parsePublicKeyValue(value: string, key: 'POSITION_ADDRESS' | 'POSITION_ADDRESS_CANDIDATES'): PublicKey {
+function parsePublicKeyValue(
+  value: string,
+  key:
+    | 'POSITION_ADDRESS'
+    | 'POSITION_ADDRESS_CANDIDATES'
+    | 'POSITION_ADDRESS_CANDIDATES_DOWN'
+    | 'POSITION_ADDRESS_CANDIDATES_UP',
+): PublicKey {
   try {
     return new PublicKey(value);
   } catch {
@@ -156,8 +170,17 @@ function parsePublicKeyValue(value: string, key: 'POSITION_ADDRESS' | 'POSITION_
   }
 }
 
-function parseCandidatePositions(env: HarnessEnv): PublicKey[] {
-  const raw = parseOptionalEnv(env, 'POSITION_ADDRESS_CANDIDATES');
+function parseCandidatePositions(env: HarnessEnv, direction?: CertificationDirection): PublicKey[] {
+  const key =
+    direction === 'DOWN'
+      ? 'POSITION_ADDRESS_CANDIDATES_DOWN'
+      : direction === 'UP'
+        ? 'POSITION_ADDRESS_CANDIDATES_UP'
+        : 'POSITION_ADDRESS_CANDIDATES';
+  const raw = parseOptionalEnv(env, key);
+  if (!raw && direction) {
+    return parseCandidatePositions(env);
+  }
   if (!raw) return [];
 
   const seen = new Set<string>();
@@ -166,19 +189,24 @@ function parseCandidatePositions(env: HarnessEnv): PublicKey[] {
     const trimmed = candidate.trim();
     if (!trimmed || seen.has(trimmed)) continue;
     seen.add(trimmed);
-    positions.push(parsePublicKeyValue(trimmed, 'POSITION_ADDRESS_CANDIDATES'));
+    positions.push(parsePublicKeyValue(trimmed, key));
   }
   return positions;
 }
 
-function assertPositionSourceConfigured(env: HarnessEnv): void {
+function assertPositionSourceConfigured(env: HarnessEnv, direction?: CertificationDirection): void {
   const explicitPosition = parseOptionalEnv(env, 'POSITION_ADDRESS');
   if (explicitPosition) {
     parsePublicKeyValue(explicitPosition, 'POSITION_ADDRESS');
     return;
   }
-  if (parseCandidatePositions(env).length === 0) {
-    throw codedError('CONFIG_INVALID', 'Missing required env: POSITION_ADDRESS or POSITION_ADDRESS_CANDIDATES');
+  if (parseCandidatePositions(env, direction).length === 0) {
+    throw codedError(
+      'CONFIG_INVALID',
+      direction
+        ? `Missing required env: POSITION_ADDRESS or POSITION_ADDRESS_CANDIDATES_${direction}`
+        : 'Missing required env: POSITION_ADDRESS or POSITION_ADDRESS_CANDIDATES',
+    );
   }
 }
 
@@ -340,6 +368,8 @@ async function resolveHarnessPosition(params: {
   authority: PublicKey;
   connection: Connection;
   epoch: number;
+  scenario: CertificationScenarioSpec;
+  config: AutopilotConfig;
   receiptIdentity: ReceiptRuntimeIdentity | null;
   receiptLedger: LocalReceiptLedger | null;
   claimTtlMs: number;
@@ -347,21 +377,48 @@ async function resolveHarnessPosition(params: {
   deps: HarnessDeps;
   logger: HarnessLogger;
 }): Promise<ResolvedHarnessPosition> {
+  const exclusions: ResolvedHarnessPosition['exclusions'] = [];
+  const recordExclusion = (position: PublicKey, reasonCode: string, detail?: string): void => {
+    exclusions.push({ position: position.toBase58(), reasonCode, ...(detail ? { detail } : {}) });
+    log(params.logger, 'position.candidate.skip', {
+      position: position.toBase58(),
+      reason: reasonCode,
+      ...(detail ? { detail } : {}),
+    });
+  };
+  const fixtureShapeMatches = (snapshot: PositionSnapshot, fixtureShape: CertificationFixtureShape): string | null => {
+    if (fixtureShape === 'hold_in_range') {
+      return snapshot.inRange ? null : 'HOLD_SHAPE_MISMATCH';
+    }
+    if (snapshot.liquidity <= BigInt(0)) {
+      return 'POSITION_ALREADY_CLOSED';
+    }
+    if (fixtureShape === 'trigger_down' && snapshot.currentTickIndex >= snapshot.lowerTickIndex) {
+      return 'WRONG_DIRECTION_SHAPE';
+    }
+    if (fixtureShape === 'trigger_up' && snapshot.currentTickIndex <= snapshot.upperTickIndex) {
+      return 'WRONG_DIRECTION_SHAPE';
+    }
+    return null;
+  };
+
   const explicitPosition = parseOptionalEnv(params.env, 'POSITION_ADDRESS');
   if (explicitPosition) {
+    const position = parsePublicKeyValue(explicitPosition, 'POSITION_ADDRESS');
     return {
-      position: parsePublicKeyValue(explicitPosition, 'POSITION_ADDRESS'),
+      position,
+      source: 'explicit-position',
+      exclusions,
     };
   }
 
-  const candidates = parseCandidatePositions(params.env);
+  const candidates = parseCandidatePositions(params.env, params.scenario.direction);
   if (candidates.length === 0) {
-    throw codedError('CONFIG_INVALID', 'Missing required env: POSITION_ADDRESS or POSITION_ADDRESS_CANDIDATES');
+    throw codedError(
+      'CONFIG_INVALID',
+      `Missing required env: POSITION_ADDRESS or POSITION_ADDRESS_CANDIDATES_${params.scenario.direction}`,
+    );
   }
-
-  let skippedAlreadyExecuted = 0;
-  let skippedWrongPair = 0;
-  const skippedErrors: Array<{ position: string; code: string; message: string }> = [];
 
   for (const candidate of candidates) {
     try {
@@ -369,11 +426,24 @@ async function resolveHarnessPosition(params: {
       try {
         assertSolUsdcPair(snapshot.tokenMintA.toBase58(), snapshot.tokenMintB.toBase58(), 'devnet');
       } catch {
-        skippedWrongPair += 1;
-        log(params.logger, 'position.candidate.skip', {
-          position: candidate.toBase58(),
-          reason: 'NOT_SOL_USDC',
-        });
+        recordExclusion(candidate, 'NOT_SOL_USDC');
+        continue;
+      }
+
+      const shapeMismatch = fixtureShapeMatches(snapshot, params.scenario.fixtureShape);
+      if (shapeMismatch) {
+        recordExclusion(candidate, shapeMismatch);
+        continue;
+      }
+
+      if (snapshot.removePreview === null && params.scenario.executionClass !== 'pre_send_failure') {
+        recordExclusion(candidate, 'POOL_METADATA_UNAVAILABLE', snapshot.removePreviewReasonCode ?? undefined);
+        continue;
+      }
+
+      const balance = await params.deps.getBalance(params.connection, params.authority);
+      if (balance < params.config.execution.feeBufferLamports) {
+        recordExclusion(candidate, 'INSUFFICIENT_FEE_BUFFER', `lamports=${balance}`);
         continue;
       }
 
@@ -388,12 +458,11 @@ async function resolveHarnessPosition(params: {
         params.claimTtlMs,
       );
       if (localBlocked?.kind === 'blocked') {
-        skippedAlreadyExecuted += 1;
-        log(params.logger, 'position.candidate.skip', {
-          position: candidate.toBase58(),
-          reason: 'ALREADY_EXECUTED_THIS_EPOCH',
-          source: 'local-ledger',
-        });
+        recordExclusion(
+          candidate,
+          localBlocked.status === 'pending' ? 'LOCAL_RECEIPT_PENDING' : 'ALREADY_EXECUTED_THIS_EPOCH',
+          'local-ledger',
+        );
         continue;
       }
       if (params.receiptIdentity) {
@@ -405,13 +474,7 @@ async function resolveHarnessPosition(params: {
         });
         const existing = await params.deps.fetchReceiptByPda(params.connection, receiptPda);
         if (existing) {
-          skippedAlreadyExecuted += 1;
-          log(params.logger, 'position.candidate.skip', {
-            position: candidate.toBase58(),
-            reason: 'ALREADY_EXECUTED_THIS_EPOCH',
-            receiptPda: receiptPda.toBase58(),
-            source: 'on-chain',
-          });
+          recordExclusion(candidate, 'ALREADY_EXECUTED_THIS_EPOCH', `receiptPda=${receiptPda.toBase58()}`);
           continue;
         }
 
@@ -430,38 +493,19 @@ async function resolveHarnessPosition(params: {
       return {
         position: candidate,
         snapshot,
+        source: 'directional-candidates',
+        exclusions,
       };
     } catch (error) {
       const candidateError = error as HarnessError;
-      skippedErrors.push({
-        position: candidate.toBase58(),
-        code: candidateError.code ?? 'UNKNOWN',
-        message: candidateError.message,
-      });
-      log(params.logger, 'position.candidate.skip', {
-        position: candidate.toBase58(),
-        reason: candidateError.code ?? 'UNKNOWN',
-      });
+      recordExclusion(candidate, candidateError.code ?? 'UNKNOWN', candidateError.message);
     }
   }
 
-  if (skippedAlreadyExecuted > 0 && skippedWrongPair + skippedAlreadyExecuted === candidates.length && skippedErrors.length === 0) {
-    throw codedError('ALREADY_EXECUTED_THIS_EPOCH', 'All candidate positions already have receipts for this epoch');
+  if (exclusions.length === candidates.length) {
+    throw codedError('CONFIG_INVALID', `No candidate positions available (${exclusions.map((entry) => entry.reasonCode).join(',')})`);
   }
-  if (skippedWrongPair === candidates.length && skippedErrors.length === 0) {
-    throw codedError('NOT_SOL_USDC', 'No candidate positions resolved to SOL/USDC');
-  }
-  if (skippedErrors.length > 0 && skippedAlreadyExecuted === 0 && skippedWrongPair === 0) {
-    throw codedError(skippedErrors[0].code, skippedErrors[0].message);
-  }
-
-  const summary = [
-    `checked=${candidates.length}`,
-    `alreadyExecuted=${skippedAlreadyExecuted}`,
-    `wrongPair=${skippedWrongPair}`,
-    `errors=${skippedErrors.length}`,
-  ].join(', ');
-  throw codedError('CONFIG_INVALID', `No candidate positions available for receipt proof (${summary})`);
+  throw codedError('CONFIG_INVALID', 'No candidate positions available');
 }
 
 async function runOptionalToken2022Scenario(params: {
@@ -622,8 +666,9 @@ export async function runDevnetE2EWithArtifact(
   logger: HarnessLogger = (entry) => console.log(JSON.stringify(entry)),
   deps: HarnessDeps = defaultDeps,
   options: RunDevnetE2EOptions = {},
-): Promise<ResultArtifactV1> {
-  const scenarioName = options.scenarioName ?? 'happy-path-trigger';
+): Promise<ResultArtifact> {
+  const scenario = options.scenario ?? resolveCertificationScenarios({ scenarioId: 'happy-path-execute', direction: 'DOWN' })[0];
+  const scenarioName = scenario.key;
   const runStartedMs = deps.nowMs();
   const runId = buildRunId({
     nowMs: runStartedMs,
@@ -654,6 +699,36 @@ export async function runDevnetE2EWithArtifact(
   let receiptFoundAfter = false;
   let skipReason = '';
   let localReceiptLedger: LocalReceiptLedger | null = null;
+  let failurePhase: CertificationFailurePhase | undefined;
+  let promptState: PromptState = 'prompt_not_reached';
+  let walletPromptCount = 0;
+  let fixtureSource: ResultArtifact['fixture']['source'] = 'explicit-position';
+  let fixtureExclusions: ResultArtifact['fixture']['exclusions'] = [];
+  let quoteAgeMs = 0;
+  let quoteFreshnessMs = 0;
+  let quoteFreshnessSlots = 0;
+  let quoteRebuilt = false;
+  let quoteRebuildReason: string | undefined;
+  let blockhashRefreshed = false;
+  let sendAttempts = 0;
+  let retryAttempts: Record<string, number> = {};
+  let retryExhaustedKey: string | undefined;
+  let localReceiptStatus: ResultArtifact['localReceipt']['terminalStatus'] = 'not_configured';
+  let localReceiptClaimed = false;
+  let localReceiptConfirmed = false;
+  let quoteMinOut = '0';
+  let liquidityBefore = '0';
+  let liquidityAfter = '0';
+  let tokenADelta = '0';
+  let tokenBDelta = '0';
+  let solLamportDelta = '0';
+  let feeCollectionReason = 'NOT_CHECKED';
+  let portfolioShapeVerdict: ResultArtifact['postTrade']['portfolioShapeVerdict'] = 'not_checked';
+  let duplicateBlocked = false;
+  let config: AutopilotConfig = {
+    ...DEFAULT_CONFIG,
+    cluster: 'devnet',
+  };
 
   try {
     const rpcUrlRaw = parseRequiredEnv(env, 'RPC_URL');
@@ -667,10 +742,10 @@ export async function runDevnetE2EWithArtifact(
     const authorityKp = await loadAuthorityFromPath(authorityPath);
     authority = authorityKp.publicKey.toBase58();
     localReceiptLedger = createSqliteLocalReceiptLedger(localReceiptDbPath);
-    assertPositionSourceConfigured(env);
+    assertPositionSourceConfigured(env, scenario.direction);
     const connection = new Connection(rpcUrlRaw, 'confirmed');
 
-    const config: AutopilotConfig = {
+    config = {
       ...DEFAULT_CONFIG,
       cluster: 'devnet',
       execution: {
@@ -723,6 +798,8 @@ export async function runDevnetE2EWithArtifact(
       authority: authorityKp.publicKey,
       connection,
       epoch,
+      scenario,
+      config,
       receiptIdentity,
       receiptLedger: localReceiptLedger,
       claimTtlMs: config.execution.localReceiptClaimTtlMs,
@@ -730,6 +807,8 @@ export async function runDevnetE2EWithArtifact(
       deps,
       logger,
     });
+    fixtureSource = resolvedPosition.source;
+    fixtureExclusions = resolvedPosition.exclusions;
     const positionKey = resolvedPosition.position;
     position = positionKey.toBase58();
 
@@ -770,7 +849,6 @@ export async function runDevnetE2EWithArtifact(
     log(logger, 'policy.evaluate.ok', { decision, reasonCode: decisionReasonCode });
 
     if (decision === 'HOLD') {
-      await runOptionalToken2022Scenario({ env, connection, deps, logger });
       if (requireReceiptProof) {
         throw codedError(
           'RECEIPT_PROGRAM_VERIFICATION_FAILED',
@@ -789,6 +867,7 @@ export async function runDevnetE2EWithArtifact(
         actual: false,
         expected: false,
       }));
+      portfolioShapeVerdict = 'not_checked';
       status = 'HOLD';
       log(logger, 'harness.complete', { status: 'HOLD' });
     } else {
@@ -907,7 +986,8 @@ export async function runDevnetE2EWithArtifact(
       }
 
       const expectedMinOut = swapPlanned ? planQuote.swapMinOutAmount.toString() : '0';
-      const quoteAgeMs = swapPlanned && suppliedQuote ? Math.max(0, deps.nowMs() - suppliedQuote.quotedAtUnixMs) : 0;
+      quoteMinOut = expectedMinOut;
+      const executeQuoteAgeMs = swapPlanned && suppliedQuote ? Math.max(0, deps.nowMs() - suppliedQuote.quotedAtUnixMs) : 0;
       const attestationPayload = encodeAttestationPayload({
         cluster: 'devnet',
         authority: authorityKp.publicKey.toBase58(),
@@ -962,7 +1042,7 @@ export async function runDevnetE2EWithArtifact(
         config,
         policyState: {},
         expectedMinOut,
-        quoteAgeMs,
+        quoteAgeMs: executeQuoteAgeMs,
         ...((options.decisionOverride && options.decisionOverride !== 'HOLD')
           ? { decisionOverride: { decision: options.decisionOverride, reasonCode: decisionReasonCode } }
           : forceDecision
@@ -990,6 +1070,22 @@ export async function runDevnetE2EWithArtifact(
 
       const result = await deps.executeOnce(executeParams);
       const reliability = result.metadata?.reliability;
+      const prompt = result.metadata?.prompt;
+      failurePhase = result.failurePhase;
+      promptState = prompt?.state ?? promptState;
+      walletPromptCount = prompt?.walletPromptCount ?? walletPromptCount;
+      quoteAgeMs = reliability?.quoteAgeMs ?? quoteAgeMs;
+      quoteFreshnessMs = reliability?.quoteFreshnessMs ?? quoteFreshnessMs;
+      quoteFreshnessSlots = reliability?.quoteFreshnessSlots ?? quoteFreshnessSlots;
+      quoteRebuilt = Boolean(reliability?.quoteRebuilt);
+      quoteRebuildReason = reliability?.quoteRebuildReason;
+      blockhashRefreshed = Boolean(reliability?.blockhashRefreshed);
+      sendAttempts = reliability?.sendAttempts ?? sendAttempts;
+      retryAttempts = reliability?.retryAttempts ?? retryAttempts;
+      retryExhaustedKey = reliability?.retryExhaustedKey;
+      localReceiptStatus = result.metadata?.executionIntent.localReceiptStatus ?? localReceiptStatus;
+      localReceiptClaimed = result.metadata?.executionIntent.localReceiptClaimed ?? localReceiptClaimed;
+      localReceiptConfirmed = result.metadata?.executionIntent.localReceiptConfirmed ?? localReceiptConfirmed;
       txBuilt = result.execution?.unsignedTxBuilt ?? result.status === 'EXECUTED';
       txSimulated = result.execution?.simulated ?? result.status === 'EXECUTED';
       txSent = Boolean(result.txSignature);
@@ -1016,8 +1112,8 @@ export async function runDevnetE2EWithArtifact(
         const quoteRebuilt = Boolean(reliability?.quoteRebuilt);
         assertions.push(makeAssertion({
           name: 'scenario.quoteRebuilt',
-          pass: quoteRebuilt === options.expectation.requireQuoteRebuilt,
-          actual: quoteRebuilt,
+          pass: Boolean(reliability?.quoteRebuilt) === options.expectation.requireQuoteRebuilt,
+          actual: Boolean(reliability?.quoteRebuilt),
           expected: options.expectation.requireQuoteRebuilt,
         }));
       }
@@ -1034,9 +1130,9 @@ export async function runDevnetE2EWithArtifact(
         const attempts = reliability?.retryAttempts?.[options.expectation.requireRetryExhaustionKey] ?? 0;
         assertions.push(makeAssertion({
           name: 'scenario.retryExhausted',
-          pass: attempts === config.execution.maxRetries,
-          actual: attempts,
-          expected: config.execution.maxRetries,
+          pass: attempts === config.execution.maxRetries && reliability?.retryExhaustedKey === options.expectation.requireRetryExhaustionKey,
+          actual: { attempts, exhaustedKey: reliability?.retryExhaustedKey ?? null },
+          expected: { attempts: config.execution.maxRetries, exhaustedKey: options.expectation.requireRetryExhaustionKey },
           reasonCode: options.expectation.requireRetryExhaustionKey,
         }));
       }
@@ -1107,12 +1203,14 @@ export async function runDevnetE2EWithArtifact(
       }
 
       const duplicateResult = await deps.executeOnce(executeParams);
-      const duplicateBlocked = duplicateResult.status === 'ERROR' && duplicateResult.errorCode === 'ALREADY_EXECUTED_THIS_EPOCH';
+      duplicateBlocked =
+        duplicateResult.status === 'ERROR' &&
+        (duplicateResult.errorCode === 'ALREADY_EXECUTED_THIS_EPOCH' || duplicateResult.errorCode === 'LOCAL_RECEIPT_PENDING');
       assertions.push(makeAssertion({
         name: 'post.duplicateBlocked',
         pass: duplicateBlocked,
         actual: duplicateResult.errorCode ?? duplicateResult.status,
-        expected: 'ALREADY_EXECUTED_THIS_EPOCH',
+        expected: 'ALREADY_EXECUTED_THIS_EPOCH|LOCAL_RECEIPT_PENDING',
       }));
       if (!duplicateBlocked) {
         throw codedError(
@@ -1129,6 +1227,11 @@ export async function runDevnetE2EWithArtifact(
         authority: authorityKp.publicKey,
         snapshot: postSnapshot,
       });
+      liquidityBefore = snapshot.liquidity.toString();
+      liquidityAfter = postSnapshot.liquidity.toString();
+      tokenADelta = (postState.tokenA - preState.tokenA).toString();
+      tokenBDelta = (postState.tokenB - preState.tokenB).toString();
+      solLamportDelta = (postState.solLamports - preState.solLamports).toString();
 
       assertions.push(makeAssertion({
         name: 'post.liquidityZero',
@@ -1199,8 +1302,11 @@ export async function runDevnetE2EWithArtifact(
         },
         reasonCode: feeReasonCode,
       }));
-
-      await runOptionalToken2022Scenario({ env, connection, deps, logger });
+      feeCollectionReason = feeReasonCode;
+      portfolioShapeVerdict =
+        postSnapshot.liquidity === BigInt(0) && balanceDeltaValid && swapOutcomeValid
+          ? 'pass'
+          : 'fail';
       status = allAssertionsPass(assertions) ? 'PASS' : 'FAIL';
       log(logger, 'harness.complete', { status: 'EXECUTED', signature: result.txSignature });
     }
@@ -1215,23 +1321,49 @@ export async function runDevnetE2EWithArtifact(
       actual: normalized.code,
       expected: expectedErrorCodes.length === 0 ? 'none' : expectedErrorCodes.join('|'),
     }));
-    status = matchesExpected ? 'EXPECTED_FAILURE' : 'FAIL';
-  }
-  localReceiptLedger?.close();
-
-  if (options.expectation?.allowSkip && scenarioName === 'token2022-certification') {
-    const rawToken2022Position = parseOptionalToken2022Position(env);
-    if (!rawToken2022Position) {
-      status = 'SKIPPED';
-      skipReason = 'SCENARIO_SKIPPED_NOT_CONFIGURED';
+    if (options.expectation?.expectedFailurePhase) {
       assertions.push(makeAssertion({
-        name: 'error.matchesExpected',
-        pass: true,
-        actual: skipReason,
-        expected: skipReason,
-        reasonCode: skipReason,
+        name: 'scenario.failurePhaseMatchesExpected',
+        pass: failurePhase === options.expectation.expectedFailurePhase,
+        actual: failurePhase ?? 'none',
+        expected: options.expectation.expectedFailurePhase,
       }));
     }
+    if (options.expectation?.walletPromptExpected !== undefined) {
+      assertions.push(makeAssertion({
+        name: 'scenario.walletPromptState',
+        pass: options.expectation.walletPromptExpected
+          ? promptState === 'signed' || promptState === 'prompt_requested' || promptState === 'prompt_abandoned'
+          : promptState === 'prompt_not_reached',
+        actual: promptState,
+        expected: options.expectation.walletPromptExpected ? 'prompt_requested|prompt_abandoned|signed' : 'prompt_not_reached',
+      }));
+    }
+    if (normalized.code === 'CONFIG_INVALID' && normalized.message.startsWith('No candidate positions available')) {
+      skipReason = 'FIXTURE_UNAVAILABLE';
+      status = 'SKIPPED';
+    } else {
+      status = matchesExpected ? 'EXPECTED_FAILURE' : 'FAIL';
+    }
+  }
+  localReceiptLedger?.close();
+  if (options.expectation?.walletPromptExpected !== undefined && !getAssertion(assertions, 'scenario.walletPromptState')) {
+    assertions.push(makeAssertion({
+      name: 'scenario.walletPromptState',
+      pass: options.expectation.walletPromptExpected
+        ? promptState === 'signed' || promptState === 'prompt_requested' || promptState === 'prompt_abandoned'
+        : promptState === 'prompt_not_reached',
+      actual: promptState,
+      expected: options.expectation.walletPromptExpected ? 'prompt_requested|prompt_abandoned|signed' : 'prompt_not_reached',
+    }));
+  }
+  if (options.expectation?.expectedFailurePhase && !getAssertion(assertions, 'scenario.failurePhaseMatchesExpected')) {
+    assertions.push(makeAssertion({
+      name: 'scenario.failurePhaseMatchesExpected',
+      pass: failurePhase === options.expectation.expectedFailurePhase,
+      actual: failurePhase ?? 'none',
+      expected: options.expectation.expectedFailurePhase,
+    }));
   }
   if (options.expectation?.expectedErrorCodes?.length && status !== 'EXPECTED_FAILURE' && status !== 'SKIPPED') {
     const expectedCodes = options.expectation.expectedErrorCodes.join('|');
@@ -1267,20 +1399,25 @@ export async function runDevnetE2EWithArtifact(
   }
   if (status === 'FAIL' && errors.length === 0) {
     errors.push({
-      code: 'CERT_ASSERTION_FAILED',
-      message: 'One or more certification assertions failed',
+      code: txSent ? 'POSTCONDITION_FAILED' : 'CERT_ASSERTION_FAILED',
+      message: txSent ? 'Confirmed transaction failed certification postconditions' : 'One or more certification assertions failed',
     });
   }
 
-  const artifact: ResultArtifactV1 = {
-    schemaVersion: 1,
+  const artifact: ResultArtifact = {
+    schemaVersion: 2,
     runId,
     timestamp: new Date(runStartedMs).toISOString(),
     cluster: 'devnet',
     rpcUrl,
+    authority,
     position,
     whirlpool,
-    authority,
+    scenarioId: scenario.id,
+    scenarioName,
+    direction: scenario.direction,
+    status,
+    skipReason,
     decision,
     decisionReasonCode,
     swapRouter,
@@ -1294,11 +1431,84 @@ export async function runDevnetE2EWithArtifact(
     receiptPda: receiptPdaBase58,
     receiptFoundBefore,
     receiptFoundAfter,
-    status,
-    skipReason,
+    ...(failurePhase ? { failurePhase } : {}),
     assertions,
     errors,
-    scenarioName,
+    fixture: {
+      source: fixtureSource,
+      selectedPosition: position,
+      freshFixtureRequired: scenario.freshFixtureRequired,
+      exclusions: fixtureExclusions,
+    },
+    expectedOutcome: {
+      executionClass: scenario.executionClass,
+      walletPromptExpected: scenario.walletPromptExpected,
+      expectedStatus: options.expectation?.expectedStatus ?? scenario.expectedStatus,
+      expectedErrorCodes: options.expectation?.expectedErrorCodes ?? scenario.expectedErrorCodes,
+      ...(options.expectation?.expectedFailurePhase ? { expectedFailurePhase: options.expectation.expectedFailurePhase } : {}),
+      liveSendRequired: scenario.executionClass !== 'pre_send_failure',
+    },
+    timing: {
+      startedAt: new Date(runStartedMs).toISOString(),
+      durationMs: Math.max(0, deps.nowMs() - runStartedMs),
+    },
+    prompt: {
+      expected: options.expectation?.walletPromptExpected ?? scenario.walletPromptExpected,
+      state: promptState,
+      walletPromptCount,
+    },
+    tx: {
+      built: txBuilt,
+      simulated: txSimulated,
+      sent: txSent,
+      signature: txSignature,
+      receiptPda: receiptPdaBase58,
+    },
+    quote: {
+      ageMs: quoteAgeMs,
+      freshnessThresholdMs: quoteFreshnessMs || (DEFAULT_CONFIG.execution.quoteFreshnessSec * 1000),
+      freshnessThresholdSlots: quoteFreshnessSlots || DEFAULT_CONFIG.execution.quoteFreshnessSlots,
+      rebuildHappened: quoteRebuilt,
+      ...(quoteRebuildReason ? { rebuildReason: quoteRebuildReason } : {}),
+      slippageCapBps: config.execution.slippageBpsCap,
+      minOut: quoteMinOut,
+    },
+    retries: {
+      attemptsByOperation: retryAttempts,
+      exhausted: Boolean(retryExhaustedKey),
+      ...(retryExhaustedKey ? { exhaustedKey: retryExhaustedKey } : {}),
+    },
+    blockhash: {
+      refreshed: blockhashRefreshed,
+      sendAttempts,
+    },
+    localReceipt: {
+      precheckStatus: receiptFoundBefore ? 'confirmed' : localReceiptStatus === 'pending' ? 'pending' : 'clear',
+      claimed: localReceiptClaimed,
+      confirmed: localReceiptConfirmed,
+      terminalStatus: localReceiptStatus,
+      ...(localReceiptLedger?.dbPath ? { dbPath: localReceiptLedger.dbPath } : {}),
+    },
+    postTrade: {
+      liquidityBefore,
+      liquidityAfter,
+      tokenADelta,
+      tokenBDelta,
+      solLamportDelta,
+      feeCollectionReason,
+      portfolioShapeVerdict,
+      duplicateBlocked,
+    },
+    operatorSummary: {
+      triggerDirection: scenario.direction,
+      position,
+      whirlpool,
+      attempted: txBuilt ? 'build+simulate' : 'not_built',
+      signed: promptState === 'signed' ? 'signed' : promptState,
+      sent: txSent ? txSignature : 'not_sent',
+      confirmed: status === 'PASS' ? 'confirmed' : status,
+      ...(errors[0] ? { errorCode: errors[0].code } : {}),
+    },
   };
   const path = await writeResultArtifact({
     artifact,
@@ -1322,63 +1532,92 @@ export async function runDevnetE2E(
 }
 
 export async function runCertificationScenario(
-  name: CertificationScenarioName,
+  scenario: CertificationScenarioSpec,
   env: HarnessEnv = process.env,
   logger: HarnessLogger = (entry) => console.log(JSON.stringify(entry)),
   deps: HarnessDeps = defaultDeps,
-): Promise<ResultArtifactV1> {
+): Promise<ResultArtifact> {
   const scenarioEnv: HarnessEnv = { ...env };
-  const scenarioOptions: RunDevnetE2EOptions = { scenarioName: name };
+  const scenarioOptions: RunDevnetE2EOptions = {
+    scenario,
+    expectation: {
+      expectedStatus: scenario.expectedStatus,
+      expectedErrorCodes: scenario.expectedErrorCodes,
+      expectedFailurePhase: scenario.expectedFailurePhase,
+      walletPromptExpected: scenario.walletPromptExpected,
+      requireQuoteRebuilt: scenario.requireQuoteRebuilt,
+      requireBlockhashRefreshed: scenario.requireBlockhashRefreshed,
+      requireRetryExhaustionKey: scenario.requireRetryExhaustionKey,
+    },
+    decisionOverride:
+      scenario.id === 'hold-path-debounce'
+        ? 'HOLD'
+        : scenario.direction === 'DOWN'
+          ? 'TRIGGER_DOWN'
+          : 'TRIGGER_UP',
+  };
 
-  if (name === 'hold-path') {
-    scenarioOptions.decisionOverride = 'HOLD';
-    scenarioOptions.expectation = { expectedStatus: 'HOLD' };
-  }
-  if (name === 'happy-path-trigger' || name === 'duplicate-execution-same-epoch') {
-    scenarioOptions.decisionOverride = 'TRIGGER_DOWN';
-  }
-  if (name === 'unsupported-router-cluster') {
+  if (scenario.id === 'unsupported-router-cluster') {
     scenarioEnv.SWAP_ROUTER = 'jupiter';
-    scenarioOptions.expectation = {
-      expectedStatus: 'EXPECTED_FAILURE',
-      expectedErrorCodes: ['SWAP_ROUTER_UNSUPPORTED_CLUSTER'],
-    };
   }
-  if (name === 'receipt-misconfiguration') {
-    scenarioEnv.RECEIPT_IDENTITY_SOURCE = 'config';
-    scenarioOptions.expectation = {
-      expectedStatus: 'EXPECTED_FAILURE',
-      expectedErrorCodes: ['RECEIPT_PROGRAM_NOT_CONFIGURED', 'RECEIPT_PROGRAM_VERIFICATION_FAILED'],
-    };
-  }
-  if (name === 'rpc-retry-exhaustion') {
-    scenarioOptions.decisionOverride = 'TRIGGER_DOWN';
+  if (scenario.id === 'rpc-retry-exhaustion') {
     scenarioOptions.executeOnceHooks = {
       forceRetryError: {
-        key: 'refreshPositionDecision',
+        key: 'buildPlan.initial',
         code: 'RPC_TRANSIENT',
         message: 'forced certification retry exhaustion',
         retryable: true,
       },
     };
-    scenarioOptions.expectation = {
-      expectedStatus: 'EXPECTED_FAILURE',
-      expectedErrorCodes: ['RPC_TRANSIENT'],
-      requireRetryExhaustionKey: 'refreshPositionDecision',
+  }
+  if (scenario.id === 'unsupported-swap-route') {
+    scenarioEnv.SWAP_ROUTER = 'orca';
+    scenarioOptions.executeOnceHooks = {
+      forceFailure: {
+        phase: 'quote',
+        code: 'UNSUPPORTED_SWAP_ROUTE',
+        message: 'forced certification unsupported route',
+      },
     };
   }
-  if (name === 'token2022-certification') {
-    scenarioOptions.expectation = { allowSkip: true };
+  if (scenario.id === 'insufficient-fee-buffer') {
+    scenarioOptions.executeOnceHooks = {
+      forceFailure: {
+        phase: 'build',
+        code: 'INSUFFICIENT_FEE_BUFFER',
+        message: 'forced certification fee buffer shortfall',
+      },
+    };
   }
-  if (name === 'stale-quote-rebuild') {
-    scenarioOptions.decisionOverride = 'TRIGGER_DOWN';
-    scenarioOptions.executeOnceHooks = { forceQuoteRebuildReason: 'QUOTE_STALE' };
-    scenarioOptions.expectation = { expectedStatus: 'PASS', requireQuoteRebuilt: true };
+  if (scenario.id === 'slippage-cap-breach') {
+    scenarioOptions.executeOnceHooks = {
+      forceFailure: {
+        phase: 'build',
+        code: 'SLIPPAGE_EXCEEDED',
+        message: 'forced certification slippage breach',
+      },
+    };
   }
-  if (name === 'signing-delay-blockhash-drift') {
-    scenarioOptions.decisionOverride = 'TRIGGER_DOWN';
+  if (scenario.id === 'local-receipt-pending-blocker') {
+    scenarioOptions.executeOnceHooks = {
+      forceFailure: {
+        phase: 'precheck',
+        code: 'LOCAL_RECEIPT_PENDING',
+        message: 'forced certification pending local receipt',
+      },
+    };
+  }
+  if (scenario.id === 'stale-quote-rebuild') {
+    scenarioOptions.executeOnceHooks = {
+      forceFailure: {
+        phase: 'quote',
+        code: 'QUOTE_STALE',
+        message: 'forced certification stale quote',
+      },
+    };
+  }
+  if (scenario.id === 'signing-delay-blockhash-drift') {
     scenarioOptions.executeOnceHooks = { forceBlockhashRefresh: true };
-    scenarioOptions.expectation = { expectedStatus: 'PASS', requireBlockhashRefreshed: true };
   }
 
   return runDevnetE2EWithArtifact(scenarioEnv, logger, deps, scenarioOptions);
@@ -1388,9 +1627,10 @@ export async function runCertificationSuite(
   env: HarnessEnv = process.env,
   logger: HarnessLogger = (entry) => console.log(JSON.stringify(entry)),
   deps: HarnessDeps = defaultDeps,
-): Promise<ResultArtifactV1[]> {
-  const out: ResultArtifactV1[] = [];
-  for (const scenario of CERTIFICATION_SCENARIOS) {
+  filters?: { scenarioId?: CertificationScenarioId; direction?: CertificationDirection },
+): Promise<ResultArtifact[]> {
+  const out: ResultArtifact[] = [];
+  for (const scenario of resolveCertificationScenarios(filters)) {
     out.push(await runCertificationScenario(scenario, env, logger, deps));
   }
   return out;

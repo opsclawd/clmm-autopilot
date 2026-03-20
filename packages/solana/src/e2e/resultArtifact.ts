@@ -1,6 +1,8 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import type { PromptState, CertificationFailurePhase } from '../executeOnce';
+import type { CertificationDirection, CertificationExecutionClass, CertificationScenarioId } from './scenarios';
 
 export type CertificationStatus = 'PASS' | 'FAIL' | 'HOLD' | 'EXPECTED_FAILURE' | 'SKIPPED';
 
@@ -13,15 +15,20 @@ export type AssertionResult = {
   detail?: string;
 };
 
-export type ResultArtifactV1 = {
-  schemaVersion: 1;
+export type ResultArtifact = {
+  schemaVersion: 2;
   runId: string;
   timestamp: string;
   cluster: string;
   rpcUrl: string;
+  authority: string;
   position: string;
   whirlpool: string;
-  authority: string;
+  scenarioId: CertificationScenarioId;
+  scenarioName: string;
+  direction: CertificationDirection;
+  status: CertificationStatus;
+  skipReason: string;
   decision: string;
   decisionReasonCode: string;
   swapRouter: string;
@@ -35,11 +42,84 @@ export type ResultArtifactV1 = {
   receiptPda: string;
   receiptFoundBefore: boolean;
   receiptFoundAfter: boolean;
-  status: CertificationStatus;
-  skipReason: string;
+  failurePhase?: CertificationFailurePhase;
   assertions: AssertionResult[];
   errors: Array<{ code: string; message: string }>;
-  scenarioName: string;
+  fixture: {
+    source: 'explicit-position' | 'directional-candidates';
+    selectedPosition: string;
+    freshFixtureRequired: boolean;
+    exclusions: Array<{ position: string; reasonCode: string; detail?: string }>;
+  };
+  expectedOutcome: {
+    executionClass: CertificationExecutionClass;
+    walletPromptExpected: boolean;
+    expectedStatus: CertificationStatus;
+    expectedErrorCodes: string[];
+    expectedFailurePhase?: CertificationFailurePhase;
+    liveSendRequired: boolean;
+  };
+  timing: {
+    startedAt: string;
+    durationMs: number;
+  };
+  prompt: {
+    expected: boolean;
+    state: PromptState;
+    walletPromptCount: number;
+  };
+  tx: {
+    built: boolean;
+    simulated: boolean;
+    sent: boolean;
+    signature: string;
+    receiptPda: string;
+  };
+  quote: {
+    ageMs: number;
+    freshnessThresholdMs: number;
+    freshnessThresholdSlots: number;
+    rebuildHappened: boolean;
+    rebuildReason?: string;
+    slippageCapBps: number;
+    minOut: string;
+  };
+  retries: {
+    attemptsByOperation: Record<string, number>;
+    exhausted: boolean;
+    exhaustedKey?: string;
+  };
+  blockhash: {
+    refreshed: boolean;
+    sendAttempts: number;
+  };
+  localReceipt: {
+    precheckStatus: 'not_configured' | 'clear' | 'pending' | 'confirmed' | 'failed';
+    claimed: boolean;
+    confirmed: boolean;
+    terminalStatus: 'not_configured' | 'clear' | 'pending' | 'confirmed' | 'failed';
+    dbPath?: string;
+  };
+  postTrade: {
+    liquidityBefore: string;
+    liquidityAfter: string;
+    tokenADelta: string;
+    tokenBDelta: string;
+    solLamportDelta: string;
+    feeCollectionReason: string;
+    portfolioShapeVerdict: 'not_checked' | 'pass' | 'fail';
+    duplicateBlocked: boolean;
+  };
+  operatorSummary: {
+    triggerDirection: CertificationDirection;
+    position: string;
+    whirlpool: string;
+    attempted: string;
+    signed: string;
+    sent: string;
+    confirmed: string;
+    errorCode?: string;
+  };
 };
 
 const DEFAULT_ARTIFACT_DIR = resolve(
@@ -79,39 +159,37 @@ function sortAssertions(assertions: AssertionResult[]): AssertionResult[] {
   return [...assertions].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function normalizeArtifact(artifact: ResultArtifactV1): ResultArtifactV1 {
+function sortErrors(errors: Array<{ code: string; message: string }>): Array<{ code: string; message: string }> {
+  return [...errors].sort((a, b) => `${a.code}:${a.message}`.localeCompare(`${b.code}:${b.message}`));
+}
+
+function sortExclusions(
+  exclusions: Array<{ position: string; reasonCode: string; detail?: string }>,
+): Array<{ position: string; reasonCode: string; detail?: string }> {
+  return [...exclusions].sort((a, b) => `${a.position}:${a.reasonCode}`.localeCompare(`${b.position}:${b.reasonCode}`));
+}
+
+export function normalizeArtifact(artifact: ResultArtifact): ResultArtifact {
   return {
-    schemaVersion: 1,
-    runId: artifact.runId,
-    timestamp: artifact.timestamp,
-    cluster: artifact.cluster,
-    rpcUrl: artifact.rpcUrl,
-    position: artifact.position,
-    whirlpool: artifact.whirlpool,
-    authority: artifact.authority,
-    decision: artifact.decision,
-    decisionReasonCode: artifact.decisionReasonCode,
-    swapRouter: artifact.swapRouter,
-    swapPlanned: artifact.swapPlanned,
-    swapSkipped: artifact.swapSkipped,
-    swapSkipReason: artifact.swapSkipReason,
-    txBuilt: artifact.txBuilt,
-    txSimulated: artifact.txSimulated,
-    txSent: artifact.txSent,
-    txSignature: artifact.txSignature,
-    receiptPda: artifact.receiptPda,
-    receiptFoundBefore: artifact.receiptFoundBefore,
-    receiptFoundAfter: artifact.receiptFoundAfter,
-    status: artifact.status,
-    skipReason: artifact.skipReason,
+    ...artifact,
+    schemaVersion: 2,
     assertions: sortAssertions(artifact.assertions),
-    errors: [...artifact.errors],
-    scenarioName: artifact.scenarioName,
+    errors: sortErrors(artifact.errors),
+    fixture: {
+      ...artifact.fixture,
+      exclusions: sortExclusions(artifact.fixture.exclusions),
+    },
+    retries: {
+      ...artifact.retries,
+      attemptsByOperation: Object.fromEntries(
+        Object.entries(artifact.retries.attemptsByOperation).sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    },
   };
 }
 
 export async function writeResultArtifact(params: {
-  artifact: ResultArtifactV1;
+  artifact: ResultArtifact;
   scenarioName: string;
   baseDir?: string;
 }): Promise<string> {

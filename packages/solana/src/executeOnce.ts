@@ -44,6 +44,20 @@ import {
 } from './telemetry';
 
 const ZERO_PUBKEY = '11111111111111111111111111111111';
+export type CertificationFailurePhase =
+  | 'fixture'
+  | 'precheck'
+  | 'quote'
+  | 'build'
+  | 'simulate'
+  | 'prompt'
+  | 'send'
+  | 'confirm'
+  | 'receipt_verify'
+  | 'postcheck';
+
+export type PromptState = 'prompt_not_reached' | 'prompt_requested' | 'prompt_abandoned' | 'signed';
+
 type SuppliedQuote = {
   inputMint: PublicKey;
   outputMint: PublicKey;
@@ -61,6 +75,13 @@ export type ExecuteOnceCertificationHooks = {
     code: CanonicalErrorCode;
     message: string;
     retryable: boolean;
+  };
+  forceFailure?: {
+    phase: CertificationFailurePhase;
+    code: CanonicalErrorCode;
+    message: string;
+    retryable?: boolean;
+    debug?: Record<string, unknown>;
   };
 };
 
@@ -191,8 +212,17 @@ export type ExecuteOnceResult = {
     reliability: {
       quoteRebuilt: boolean;
       quoteRebuildReason?: 'QUOTE_STALE' | 'BOUND_CROSSED' | 'TICK_MOVED';
+      quoteAgeMs: number;
+      quoteFreshnessMs: number;
+      quoteFreshnessSlots: number;
       blockhashRefreshed: boolean;
+      sendAttempts: number;
       retryAttempts: Record<string, number>;
+      retryExhaustedKey?: string;
+    };
+    prompt: {
+      state: PromptState;
+      walletPromptCount: number;
     };
     executionIntent: {
       removeLiquidityPlanned: boolean;
@@ -226,6 +256,7 @@ export type ExecuteOnceResult = {
   };
   txSignature?: string;
   receiptPda?: string;
+  failurePhase?: CertificationFailurePhase;
   errorCode?: CanonicalErrorCode;
   errorMessage?: string;
   errorDebug?: unknown;
@@ -383,6 +414,7 @@ function buildMetadata(params: {
   decision?: NonNullable<ExecuteOnceResult['metadata']>['decision'];
   swap?: NonNullable<ExecuteOnceResult['metadata']>['swap'];
   reliability: NonNullable<ExecuteOnceResult['metadata']>['reliability'];
+  prompt: NonNullable<ExecuteOnceResult['metadata']>['prompt'];
   executionIntent: NonNullable<ExecuteOnceResult['metadata']>['executionIntent'];
 }): NonNullable<ExecuteOnceResult['metadata']> {
   return {
@@ -405,6 +437,7 @@ function buildMetadata(params: {
       swapInstructionCount: 0,
     },
     reliability: params.reliability,
+    prompt: params.prompt,
     executionIntent: params.executionIntent,
     counters: params.counters.snapshot(),
   };
@@ -446,6 +479,10 @@ function buildExecutionIntent(params: {
   };
 }
 
+function isPromptSigned(state: PromptState): boolean {
+  return state === 'signed';
+}
+
 export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnceResult> {
   const sleep = params.sleep ?? (async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const nowUnixMs = params.nowUnixMs ?? (() => Date.now());
@@ -476,11 +513,15 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   let quoteRebuilt = false;
   let quoteRebuildReason: 'QUOTE_STALE' | 'BOUND_CROSSED' | 'TICK_MOVED' | undefined;
   let blockhashRefreshed = false;
+  let retryExhaustedKey: string | undefined;
   let snapshotFetched = false;
   let buildStarted = false;
   let simulationStarted = false;
   let sendStarted = false;
+  let sendAttempts = 0;
   let txBuilt = false;
+  let promptState: PromptState = 'prompt_not_reached';
+  let failurePhase: CertificationFailurePhase | undefined;
   let shadowDetails: ExecuteOnceResult['shadow'] | undefined;
   let localReceiptKey: LocalReceiptKey | undefined;
   let localReceiptClaimToken: string | undefined;
@@ -494,6 +535,33 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
   let operatorState = {
     ...deriveEffectiveOperatorState(params.config, runtimeEnvironment.executionPausedOverride),
     runtimeMode: effectiveRuntimeMode,
+  };
+
+  const buildReliabilityMetadata = (): NonNullable<ExecuteOnceResult['metadata']>['reliability'] => ({
+    quoteRebuilt,
+    ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
+    quoteAgeMs: params.quoteAgeMs,
+    quoteFreshnessMs: params.config.execution.quoteFreshnessSec * 1000,
+    quoteFreshnessSlots: params.config.execution.quoteFreshnessSlots,
+    blockhashRefreshed,
+    sendAttempts,
+    retryAttempts,
+    ...(retryExhaustedKey ? { retryExhaustedKey } : {}),
+  });
+
+  const buildPromptMetadata = (): NonNullable<ExecuteOnceResult['metadata']>['prompt'] => ({
+    state: promptState,
+    walletPromptCount: counters.snapshot().walletPromptCount,
+  });
+
+  const maybeForceFailure = (phase: CertificationFailurePhase): void => {
+    if (params.certificationHooks?.forceFailure?.phase !== phase) return;
+    throw {
+      code: params.certificationHooks.forceFailure.code,
+      retryable: params.certificationHooks.forceFailure.retryable ?? false,
+      message: params.certificationHooks.forceFailure.message,
+      debug: params.certificationHooks.forceFailure.debug,
+    } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug?: Record<string, unknown> };
   };
 
   const withRetry = async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
@@ -510,6 +578,27 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         }
         return fn();
       }, sleep, params.config.execution);
+    } catch (error) {
+      const normalized = normalizeSolanaError(error);
+      if (
+        normalized.retryable &&
+        attempts >= params.config.execution.maxRetries &&
+        normalized.code !== 'BLOCKHASH_EXPIRED'
+      ) {
+        retryExhaustedKey = key;
+        throw {
+          code: 'RETRY_EXHAUSTED',
+          retryable: false,
+          message: `Retry ceiling reached for ${key}`,
+          debug: {
+            key,
+            attempts,
+            lastErrorCode: normalized.code,
+            lastErrorMessage: normalized.message,
+          },
+        } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
+      }
+      throw normalized;
     } finally {
       retryAttempts[key] = attempts;
     }
@@ -594,26 +683,23 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             swapRouter: router,
             swapInstructionCount: 0,
           },
-          reliability: {
-            quoteRebuilt: false,
-            blockhashRefreshed: false,
-            retryAttempts,
-          },
-            executionIntent: buildExecutionIntent({
-              config: params.config,
-              removeLiquidityPlanned: false,
-              collectFeesPlanned: false,
-              localReceiptReadPlanned,
-              localReceiptClaimed,
-              localReceiptConfirmed,
-              localReceiptStatus,
-              onChainReceiptEnabled,
-              onChainReceiptWritePlanned: false,
-              onChainReceiptConfigValid: receiptConfigValid,
-              onChainReceiptStepStructurallyBuildable: receiptStepStructurallyBuildable,
-              onChainReceiptIxIncluded: false,
-              onChainReceiptVerified,
-            }),
+          reliability: buildReliabilityMetadata(),
+          prompt: buildPromptMetadata(),
+          executionIntent: buildExecutionIntent({
+            config: params.config,
+            removeLiquidityPlanned: false,
+            collectFeesPlanned: false,
+            localReceiptReadPlanned,
+            localReceiptClaimed,
+            localReceiptConfirmed,
+            localReceiptStatus,
+            onChainReceiptEnabled,
+            onChainReceiptWritePlanned: false,
+            onChainReceiptConfigValid: receiptConfigValid,
+            onChainReceiptStepStructurallyBuildable: receiptStepStructurallyBuildable,
+            onChainReceiptIxIncluded: false,
+            onChainReceiptVerified,
+          }),
           }),
       };
     }
@@ -727,10 +813,11 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         }
         const swapBuild = await adapter.buildSwapIxs(planQuote, params.authority, swapContext);
         if (swapBuild.instructions.length === 0) {
+          failurePhase = 'quote';
           throw {
-            code: 'DATA_UNAVAILABLE',
+            code: 'UNSUPPORTED_SWAP_ROUTE',
             retryable: false,
-            message: 'swap adapter returned zero instructions for a planned swap',
+            message: 'swap adapter returned an unsupported route for a planned swap',
             debug: {
               router,
               cluster: params.config.cluster,
@@ -760,6 +847,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       };
     };
 
+    failurePhase = 'quote';
+    maybeForceFailure('quote');
     let assembled = await withRetry('buildPlan.initial', () => buildPlan(snapshot));
 
     const rebuildCheck = params.certificationHooks?.forceQuoteRebuildReason
@@ -839,6 +928,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       receiptStepStructurallyBuildable,
       receiptIxIncluded,
     };
+    failurePhase = 'precheck';
+    maybeForceFailure('precheck');
     localReceiptKey = {
       cluster: params.config.cluster,
       authority: params.authority.toBase58(),
@@ -850,6 +941,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         ? await params.checkExistingReceipt(receiptPda)
         : Boolean(await fetchReceiptByPda(params.connection, receiptPda));
       if (existingReceipt) {
+        failurePhase = 'precheck';
         onChainReceiptVerified = true;
         if (shadowDetails) shadowDetails.onChainReceiptVerified = onChainReceiptVerified;
         emitRuntimeEvent(
@@ -872,6 +964,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         return {
           status: 'ERROR',
           refresh: effectiveRefresh,
+          failurePhase,
           errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
           errorMessage: 'Execution receipt already exists for canonical epoch',
           shadow: shadowDetails,
@@ -890,12 +983,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
               swapRouter: assembled.plan.swapRouter,
               swapInstructionCount: assembled.swapIxs.length,
             },
-            reliability: {
-              quoteRebuilt,
-              ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
-              blockhashRefreshed,
-              retryAttempts,
-            },
+            reliability: buildReliabilityMetadata(),
+            prompt: buildPromptMetadata(),
             executionIntent: buildExecutionIntent({
               config: params.config,
               removeLiquidityPlanned: true,
@@ -922,6 +1011,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         params.config.execution.localReceiptClaimTtlMs,
       );
       if (precheck.kind === 'blocked') {
+        failurePhase = 'precheck';
         localReceiptStatus = precheck.status;
         if (shadowDetails) shadowDetails.localReceiptStatus = localReceiptStatus;
         emitRuntimeEvent(
@@ -932,7 +1022,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             status: 'failed',
             direction,
             whirlpool: snapshot.whirlpool.toBase58(),
-            errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+            errorCode: precheck.status === 'confirmed' ? 'ALREADY_EXECUTED_THIS_EPOCH' : 'LOCAL_RECEIPT_PENDING',
             details: {
               epoch,
               localReceiptStatus: precheck.status,
@@ -944,7 +1034,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         return {
           status: 'ERROR',
           refresh: effectiveRefresh,
-          errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+          failurePhase,
+          errorCode: precheck.status === 'confirmed' ? 'ALREADY_EXECUTED_THIS_EPOCH' : 'LOCAL_RECEIPT_PENDING',
           errorMessage:
             precheck.status === 'confirmed'
               ? 'Local receipt ledger already contains a confirmed execution for this epoch'
@@ -965,12 +1056,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
               swapRouter: assembled.plan.swapRouter,
               swapInstructionCount: assembled.swapIxs.length,
             },
-            reliability: {
-              quoteRebuilt,
-              ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
-              blockhashRefreshed,
-              retryAttempts,
-            },
+            reliability: buildReliabilityMetadata(),
+            prompt: buildPromptMetadata(),
             executionIntent: buildExecutionIntent({
               config: params.config,
               removeLiquidityPlanned: true,
@@ -1116,6 +1203,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       });
     };
 
+    failurePhase = 'build';
+    maybeForceFailure('build');
     buildStarted = true;
     emitRuntimeEvent(
       params.observer,
@@ -1164,12 +1253,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
             swapRouter: assembled.plan.swapRouter,
             swapInstructionCount: assembled.swapIxs.length,
           },
-          reliability: {
-            quoteRebuilt,
-            ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
-            blockhashRefreshed,
-            retryAttempts,
-          },
+          reliability: buildReliabilityMetadata(),
+          prompt: buildPromptMetadata(),
           executionIntent: buildExecutionIntent({
             config: params.config,
             removeLiquidityPlanned: true,
@@ -1212,12 +1297,14 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         onChainReceiptPda: receiptPda?.toBase58(),
       } satisfies LocalReceiptClaimParams);
       if (claim.kind === 'blocked') {
+        failurePhase = 'precheck';
         localReceiptStatus = claim.status;
         if (shadowDetails) shadowDetails.localReceiptStatus = localReceiptStatus;
         return {
           status: 'ERROR',
           refresh: effectiveRefresh,
-          errorCode: 'ALREADY_EXECUTED_THIS_EPOCH',
+          failurePhase,
+          errorCode: claim.status === 'confirmed' ? 'ALREADY_EXECUTED_THIS_EPOCH' : 'LOCAL_RECEIPT_PENDING',
           errorMessage:
             claim.status === 'confirmed'
               ? 'Local receipt ledger already contains a confirmed execution for this epoch'
@@ -1238,12 +1325,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
               swapRouter: assembled.plan.swapRouter,
               swapInstructionCount: assembled.swapIxs.length,
             },
-            reliability: {
-              quoteRebuilt,
-              ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
-              blockhashRefreshed,
-              retryAttempts,
-            },
+            reliability: buildReliabilityMetadata(),
+            prompt: buildPromptMetadata(),
             executionIntent: buildExecutionIntent({
               config: params.config,
               removeLiquidityPlanned: true,
@@ -1268,12 +1351,17 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     }
 
     const submitTx = async (): Promise<string> => {
+      sendAttempts += 1;
+      promptState = 'prompt_requested';
+      failurePhase = 'prompt';
+      maybeForceFailure('prompt');
       counters.increment('submitInvocations');
       if (transport.kind === 'live') {
         counters.increment('signerInvocations');
         counters.increment('walletPromptCount');
       }
       const signature = await transport.submit(msg);
+      promptState = 'signed';
       if (operatorState.executionMode === 'mainnet-shadow' && signature) {
         counters.increment('shadowTxSignaturesEmitted');
       }
@@ -1289,6 +1377,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         } satisfies { code: CanonicalErrorCode; retryable: boolean; message: string; debug: Record<string, unknown> };
       }
       sendStarted = true;
+      failurePhase = 'send';
       emitRuntimeEvent(
         params.observer,
         counters,
@@ -1314,7 +1403,11 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       };
       blockhashRefreshed = blockhashRefreshed || refreshedBlockhash.rebuilt;
       sig = await submitTx();
+      failurePhase = 'confirm';
     } catch (sendError) {
+      if (counters.snapshot().walletPromptCount > 0 && !isPromptSigned(promptState)) {
+        promptState = 'prompt_abandoned';
+      }
       const normalized = normalizeSolanaError(sendError);
       if (normalized.code !== 'BLOCKHASH_EXPIRED') throw normalized;
       const refreshedBlockhash = await refreshBlockhashIfNeeded({
@@ -1333,8 +1426,10 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       };
       blockhashRefreshed = blockhashRefreshed || refreshedBlockhash.rebuilt;
       sig = await submitTx();
+      failurePhase = 'confirm';
     }
 
+    maybeForceFailure('confirm');
     await params.connection.confirmTransaction(
       {
         signature: sig,
@@ -1346,6 +1441,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
 
     let receipt = null;
     if (receiptPda) {
+      failurePhase = 'receipt_verify';
+      maybeForceFailure('receipt_verify');
       for (let i = 0; i < params.config.execution.receiptPollMaxAttempts; i += 1) {
         receipt = await fetchReceiptByPda(params.connection, receiptPda);
         if (receipt) break;
@@ -1411,9 +1508,9 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       }
     }
 
-    return {
-      status: 'EXECUTED',
-      refresh: effectiveRefresh,
+      return {
+        status: 'EXECUTED',
+        refresh: effectiveRefresh,
       shadow: shadowDetails,
       metadata: buildMetadata({
         config: params.config,
@@ -1430,12 +1527,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
           swapRouter: assembled.plan.swapRouter,
           swapInstructionCount: assembled.swapIxs.length,
         },
-        reliability: {
-          quoteRebuilt,
-          ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
-          blockhashRefreshed,
-          retryAttempts,
-        },
+        reliability: buildReliabilityMetadata(),
+        prompt: buildPromptMetadata(),
         executionIntent: buildExecutionIntent({
           config: params.config,
           removeLiquidityPlanned: true,
@@ -1468,7 +1561,21 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
       receiptPda: receiptPda?.toBase58(),
     };
   } catch (error) {
+    if (counters.snapshot().walletPromptCount > 0 && !isPromptSigned(promptState)) {
+      promptState = 'prompt_abandoned';
+    }
     const normalized = normalizeSolanaError(error);
+    const resolvedFailurePhase =
+      failurePhase ??
+      (!snapshotFetched
+        ? 'precheck'
+        : sendStarted
+          ? 'send'
+          : promptState === 'prompt_abandoned'
+            ? 'prompt'
+            : buildStarted
+              ? 'build'
+              : 'quote');
     const txBuiltFromError =
       normalized.debug !== null &&
       typeof normalized.debug === 'object' &&
@@ -1528,6 +1635,7 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
     );
     return {
       status: 'ERROR',
+      failurePhase: resolvedFailurePhase,
       errorCode: normalized.code,
       errorMessage: normalized.message,
       errorDebug: normalized.debug,
@@ -1536,12 +1644,8 @@ export async function executeOnce(params: ExecuteOnceParams): Promise<ExecuteOnc
         config: params.config,
         operatorState,
         counters,
-        reliability: {
-          quoteRebuilt,
-          ...(quoteRebuildReason ? { quoteRebuildReason } : {}),
-          blockhashRefreshed,
-          retryAttempts,
-        },
+        reliability: buildReliabilityMetadata(),
+        prompt: buildPromptMetadata(),
         executionIntent: buildExecutionIntent({
           config: params.config,
           removeLiquidityPlanned: shadowDetails?.candidateInstructionSummary.removeLiquidityPlanned ?? false,

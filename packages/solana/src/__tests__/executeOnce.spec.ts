@@ -214,9 +214,9 @@ describe('executeOnce', () => {
       authority,
       position: new PublicKey(new Uint8Array(32).fill(21)),
       samples: [
-        { slot: 1, unixTs: 1, currentTickIndex: 25 },
-        { slot: 2, unixTs: 2, currentTickIndex: 26 },
-        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+        { slot: 1, unixTs: 1, currentTickIndex: 15 },
+        { slot: 2, unixTs: 2, currentTickIndex: 15 },
+        { slot: 3, unixTs: 3, currentTickIndex: 15 },
       ],
       config: EXECUTE_CONFIG,
       policyState: {},
@@ -1088,7 +1088,7 @@ describe('executeOnce', () => {
     });
 
     expect(res.status).toBe('ERROR');
-    expect(res.errorCode).toBe('DATA_UNAVAILABLE');
+    expect(res.errorCode).toBe('UNSUPPORTED_SWAP_ROUTE');
     expect(buildExitTransactionMock).not.toHaveBeenCalled();
   });
 
@@ -1115,7 +1115,11 @@ describe('executeOnce', () => {
       connection,
       authority,
       position: new PublicKey(new Uint8Array(32).fill(21)),
-      samples: [{ slot: 1, unixTs: 1, currentTickIndex: 11 }],
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
       quote: {
         inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
         outputMint: new PublicKey(DEVNET_USDC_MINT),
@@ -1155,7 +1159,11 @@ describe('executeOnce', () => {
       connection,
       authority,
       position: new PublicKey(new Uint8Array(32).fill(21)),
-      samples: [{ slot: 1, unixTs: 1, currentTickIndex: 11 }],
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 15 },
+        { slot: 2, unixTs: 2, currentTickIndex: 15 },
+        { slot: 3, unixTs: 3, currentTickIndex: 15 },
+      ],
       quote: {
         inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
         outputMint: new PublicKey(DEVNET_USDC_MINT),
@@ -1262,7 +1270,11 @@ describe('executeOnce', () => {
       connection,
       authority,
       position: new PublicKey(new Uint8Array(32).fill(21)),
-      samples: [{ slot: 1, unixTs: 1, currentTickIndex: 11 }],
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
       quote: {
         inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
         outputMint: new PublicKey(DEVNET_USDC_MINT),
@@ -1276,6 +1288,7 @@ describe('executeOnce', () => {
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
+      decisionOverride: { decision: 'TRIGGER_DOWN', reasonCode: 'TEST_FORCE' },
       attestationHash: new Uint8Array(32),
       attestationPayloadBytes: new Uint8Array(68),
       signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
@@ -1428,6 +1441,7 @@ describe('executeOnce', () => {
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
+      decisionOverride: { decision: 'TRIGGER_DOWN', reasonCode: 'TEST_FORCE' },
       attestationHash: new Uint8Array(32),
       attestationPayloadBytes: new Uint8Array(68),
       signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
@@ -1521,6 +1535,7 @@ describe('executeOnce', () => {
 
     expect(res.status).toBe('ERROR');
     expect(res.errorCode).toBe('ALREADY_EXECUTED_THIS_EPOCH');
+    expect(res.failurePhase).toBe('precheck');
     expect(buildExitTransactionMock).not.toHaveBeenCalled();
   });
 
@@ -1562,6 +1577,7 @@ describe('executeOnce', () => {
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
+      decisionOverride: { decision: 'TRIGGER_DOWN', reasonCode: 'TEST_FORCE' },
       attestationHash: new Uint8Array(32),
       attestationPayloadBytes: new Uint8Array(68),
       signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
@@ -1903,13 +1919,19 @@ describe('executeOnce', () => {
     const sleep = vi.fn(async () => {});
     const connection = {
       getAccountInfo: getAccountInfoForProgramOnly(),
+      getSlot: vi.fn(async () => 1),
+      getBalance: vi.fn(async () => 50_000_000),
     } as any;
 
     const res = await executeOnce({
       connection,
       authority,
       position: new PublicKey(new Uint8Array(32).fill(21)),
-      samples: [{ slot: 1, unixTs: 1, currentTickIndex: 11 }],
+      samples: [
+        { slot: 1, unixTs: 1, currentTickIndex: 25 },
+        { slot: 2, unixTs: 2, currentTickIndex: 26 },
+        { slot: 3, unixTs: 3, currentTickIndex: 27 },
+      ],
       quote: {
         inputMint: new PublicKey('So11111111111111111111111111111111111111112'),
         outputMint: new PublicKey(DEVNET_USDC_MINT),
@@ -1923,13 +1945,14 @@ describe('executeOnce', () => {
       policyState: {},
       expectedMinOut: '0',
       quoteAgeMs: 0,
+      decisionOverride: { decision: 'TRIGGER_DOWN', reasonCode: 'TEST_FORCE' },
       attestationHash: new Uint8Array(32),
       attestationPayloadBytes: new Uint8Array(68),
       signAndSend: vi.fn(async (_tx: VersionedTransaction) => 'sig'),
       sleep,
       certificationHooks: {
         forceRetryError: {
-          key: 'refreshPositionDecision',
+          key: 'buildPlan.initial',
           code: 'RPC_TRANSIENT',
           message: 'forced certification retry exhaustion',
           retryable: true,
@@ -1938,8 +1961,10 @@ describe('executeOnce', () => {
     });
 
     expect(res.status).toBe('ERROR');
-    expect(res.errorCode).toBe('RPC_TRANSIENT');
-    expect(res.metadata?.reliability.retryAttempts.refreshPositionDecision).toBe(DEFAULT_CONFIG.execution.maxRetries);
+    expect(res.errorCode).toBe('RETRY_EXHAUSTED');
+    expect(res.failurePhase).toBe('quote');
+    expect(res.metadata?.reliability.retryAttempts['buildPlan.initial']).toBe(DEFAULT_CONFIG.execution.maxRetries);
+    expect(res.metadata?.reliability.retryExhaustedKey).toBe('buildPlan.initial');
     expect(sleep).toHaveBeenCalledTimes(DEFAULT_CONFIG.execution.maxRetries - 1);
   });
 
